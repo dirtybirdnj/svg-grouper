@@ -13,15 +13,26 @@ export default function SVGCanvas({ svgContent, onSVGParsed }: SVGCanvasProps) {
   const [isPanning, setIsPanning] = useState(false)
   const [panStart, setPanStart] = useState({ x: 0, y: 0 })
 
+  const parsedRef = useRef(false)
+
   useEffect(() => {
-    // Parse and notify parent of SVG element
-    if (containerRef.current) {
+    // Parse and notify parent of SVG element only once per content change
+    if (containerRef.current && !parsedRef.current) {
       const svgElement = containerRef.current.querySelector('svg')
       if (svgElement && onSVGParsed) {
-        onSVGParsed(svgElement)
+        parsedRef.current = true
+        // Use setTimeout to ensure DOM is ready
+        setTimeout(() => {
+          onSVGParsed(svgElement)
+        }, 0)
       }
     }
-  }, [svgContent, onSVGParsed])
+  }, [svgContent])
+
+  // Reset parsed flag when content changes
+  useEffect(() => {
+    parsedRef.current = false
+  }, [svgContent])
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault()

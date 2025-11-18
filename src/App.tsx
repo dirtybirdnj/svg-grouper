@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import './App.css'
 import FileUpload from './components/FileUpload'
 import SVGCanvas from './components/SVGCanvas'
@@ -25,17 +25,18 @@ function App() {
     progress: 0,
     status: '',
   })
+  const parsingRef = useRef(false)
 
-  const handleLoadStart = () => {
+  const handleLoadStart = useCallback(() => {
     setLoadingState({
       isLoading: true,
       progress: 0,
       status: 'Preparing...',
       startTime: Date.now(),
     })
-  }
+  }, [])
 
-  const handleProgress = (progress: number, status: string) => {
+  const handleProgress = useCallback((progress: number, status: string) => {
     setLoadingState(prev => {
       const elapsed = prev.startTime ? (Date.now() - prev.startTime) / 1000 : 0
       const estimatedTotal = progress > 5 ? (elapsed / progress) * 100 : 0
@@ -48,15 +49,22 @@ function App() {
         estimatedTimeLeft,
       }
     })
-  }
+  }, [])
 
-  const handleFileLoad = (content: string, name: string) => {
+  const handleFileLoad = useCallback((content: string, name: string) => {
     setSvgContent(content)
     setFileName(name)
     setSelectedNodeId(null)
-  }
+    parsingRef.current = false // Reset parsing flag
+  }, [])
 
-  const handleSVGParsed = async (svg: SVGSVGElement) => {
+  const handleSVGParsed = useCallback(async (svg: SVGSVGElement) => {
+    // Prevent multiple simultaneous parsing attempts
+    if (parsingRef.current) {
+      return
+    }
+
+    parsingRef.current = true
     handleProgress(0, 'Starting to parse SVG...')
 
     try {
@@ -79,7 +87,7 @@ function App() {
         status: 'Error parsing SVG',
       })
     }
-  }
+  }, [handleProgress])
 
   const handleNodeSelect = (node: SVGNode) => {
     setSelectedNodeId(node.id)
