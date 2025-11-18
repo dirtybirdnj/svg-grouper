@@ -3,9 +3,11 @@ import './FileUpload.css'
 
 interface FileUploadProps {
   onFileLoad: (content: string, fileName: string) => void
+  onLoadStart?: () => void
+  onProgress?: (progress: number, status: string) => void
 }
 
-export default function FileUpload({ onFileLoad }: FileUploadProps) {
+export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -17,28 +19,44 @@ export default function FileUpload({ onFileLoad }: FileUploadProps) {
       return
     }
 
-    if (file.size > 10 * 1024 * 1024) { // 10MB limit
-      setError('File is too large (max 10MB)')
+    if (file.size > 100 * 1024 * 1024) { // 100MB limit
+      setError('File is too large (max 100MB)')
       return
     }
 
+    onLoadStart?.()
+    onProgress?.(0, 'Reading file...')
+
     const reader = new FileReader()
+
+    reader.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const percentLoaded = (e.loaded / e.total) * 100
+        onProgress?.(percentLoaded, 'Reading file...')
+      }
+    }
+
     reader.onload = (e) => {
       const content = e.target?.result as string
 
       // Basic SVG validation
       if (!content.includes('<svg')) {
         setError('File does not appear to be a valid SVG')
+        onProgress?.(100, 'Error')
         return
       }
 
+      onProgress?.(100, 'File loaded')
       onFileLoad(content, file.name)
     }
+
     reader.onerror = () => {
       setError('Failed to read file')
+      onProgress?.(100, 'Error')
     }
+
     reader.readAsText(file)
-  }, [onFileLoad])
+  }, [onFileLoad, onLoadStart, onProgress])
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <title>Test SVG</title>
+
+  <g id="background-layer">
+    <rect x="0" y="0" width="400" height="400" fill="#f0f0f0"/>
+  </g>
+
+  <g id="shapes-group">
+    <g id="circles">
+      <circle id="circle-1" cx="100" cy="100" r="40" fill="#ff6b6b" stroke="#c92a2a" stroke-width="2"/>
+      <circle id="circle-2" cx="300" cy="100" r="40" fill="#4ecdc4" stroke="#0b7285" stroke-width="2"/>
+    </g>
+
+    <g id="rectangles">
+      <rect id="rect-1" x="60" y="200" width="80" height="60" fill="#ffe66d" stroke="#fab005" stroke-width="2"/>
+      <rect id="rect-2" x="260" y="200" width="80" height="60" fill="#a29bfe" stroke="#6c5ce7" stroke-width="2"/>
+    </g>
+  </g>
+
+  <g id="paths-group">
+    <path id="path-1" d="M 200 280 Q 100 320, 200 360" stroke="#2d3436" fill="none" stroke-width="3" stroke-linecap="round"/>
+    <path id="path-2" d="M 200 280 Q 300 320, 200 360" stroke="#2d3436" fill="none" stroke-width="3" stroke-linecap="round"/>
+  </g>
+</svg>
