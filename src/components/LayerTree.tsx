@@ -16,9 +16,15 @@ interface LayerNodeProps {
 }
 
 function LayerNode({ node, level, selectedNodeId, onNodeSelect }: LayerNodeProps) {
-  const [isExpanded, setIsExpanded] = useState(true)
+  const [isExpanded, setIsExpanded] = useState(false) // Start collapsed
   const hasChildren = node.children.length > 0
   const isSelected = node.id === selectedNodeId
+
+  // Count total elements in this node (including nested children)
+  const countElements = (n: SVGNode): number => {
+    return 1 + n.children.reduce((sum, child) => sum + countElements(child), 0)
+  }
+  const elementCount = hasChildren ? countElements(node) - 1 : 0 // -1 to exclude the group itself
 
   const handleToggle = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -63,6 +69,9 @@ function LayerNode({ node, level, selectedNodeId, onNodeSelect }: LayerNodeProps
         {!hasChildren && <span className="expand-spacer" />}
         <span className="layer-icon">{getIcon()}</span>
         <span className="layer-name">{node.name}</span>
+        {hasChildren && elementCount > 0 && (
+          <span className="element-count">({elementCount})</span>
+        )}
         <span className="layer-type">{node.type}</span>
       </div>
       {hasChildren && isExpanded && (

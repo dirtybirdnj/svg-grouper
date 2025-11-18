@@ -81,11 +81,19 @@
   white-space: nowrap;
 }
 
+.element-count {
+  font-size: 0.75rem;
+  color: #999;
+  margin-left: 0.25rem;
+  flex-shrink: 0;
+}
+
 .layer-type {
   font-size: 0.75rem;
   color: #999;
   text-transform: uppercase;
   flex-shrink: 0;
+  margin-left: 0.5rem;
 }
 
 .layer-children {
