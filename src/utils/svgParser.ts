@@ -61,6 +61,79 @@ export function parseSVG(svgElement: SVGSVGElement): SVGNode[] {
   return children.map(child => parseNode(child))
 }
 
+// Progressive parsing for large SVGs
+export async function parseSVGProgressively(
+  svgElement: SVGSVGElement,
+  onProgress?: (progress: number, status: string) => void
+): Promise<SVGNode[]> {
+  nodeIdCounter = 0
+
+  const children = Array.from(svgElement.children).filter(shouldIncludeElement)
+  const totalElements = countTotalElements(svgElement)
+  let processedElements = 0
+
+  onProgress?.(0, 'Parsing SVG structure...')
+
+  const nodes: SVGNode[] = []
+
+  // Process in chunks to avoid blocking UI
+  for (let i = 0; i < children.length; i++) {
+    const node = await parseNodeProgressively(children[i], totalElements, (count) => {
+      processedElements += count
+      const progress = (processedElements / totalElements) * 100
+      onProgress?.(progress, `Parsing elements (${processedElements}/${totalElements})...`)
+    })
+    nodes.push(node)
+
+    // Yield to browser every 50ms to keep UI responsive
+    if (i % 10 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+  }
+
+  onProgress?.(100, 'Parsing complete')
+  return nodes
+}
+
+function countTotalElements(element: Element): number {
+  let count = 0
+  const walk = (el: Element) => {
+    if (shouldIncludeElement(el)) {
+      count++
+      Array.from(el.children).forEach(walk)
+    }
+  }
+  Array.from(element.children).forEach(walk)
+  return count
+}
+
+async function parseNodeProgressively(
+  element: Element,
+  totalElements: number,
+  onElementProcessed: (count: number) => void
+): Promise<SVGNode> {
+  const node: SVGNode = {
+    id: generateNodeId(),
+    type: element.tagName.toLowerCase(),
+    name: getElementName(element),
+    element,
+    children: [],
+    isGroup: isGroupElement(element),
+  }
+
+  onElementProcessed(1)
+
+  const children = Array.from(element.children).filter(shouldIncludeElement)
+
+  // Process children
+  for (let i = 0; i < children.length; i++) {
+    const childNode = await parseNodeProgressively(children[i], totalElements, onElementProcessed)
+    node.children.push(childNode)
+  }
+
+  return node
+}
+
 export function flattenTree(nodes: SVGNode[]): SVGNode[] {
   const result: SVGNode[] = []
 

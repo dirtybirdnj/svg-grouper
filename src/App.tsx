@@ -3,14 +3,52 @@ import './App.css'
 import FileUpload from './components/FileUpload'
 import SVGCanvas from './components/SVGCanvas'
 import LayerTree from './components/LayerTree'
+import LoadingOverlay from './components/LoadingOverlay'
 import { SVGNode } from './types/svg'
-import { parseSVG } from './utils/svgParser'
+import { parseSVGProgressively } from './utils/svgParser'
+
+interface LoadingState {
+  isLoading: boolean
+  progress: number
+  status: string
+  startTime?: number
+  estimatedTimeLeft?: number
+}
 
 function App() {
   const [svgContent, setSvgContent] = useState<string | null>(null)
   const [fileName, setFileName] = useState<string | null>(null)
   const [layerNodes, setLayerNodes] = useState<SVGNode[]>([])
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [loadingState, setLoadingState] = useState<LoadingState>({
+    isLoading: false,
+    progress: 0,
+    status: '',
+  })
+
+  const handleLoadStart = () => {
+    setLoadingState({
+      isLoading: true,
+      progress: 0,
+      status: 'Preparing...',
+      startTime: Date.now(),
+    })
+  }
+
+  const handleProgress = (progress: number, status: string) => {
+    setLoadingState(prev => {
+      const elapsed = prev.startTime ? (Date.now() - prev.startTime) / 1000 : 0
+      const estimatedTotal = progress > 5 ? (elapsed / progress) * 100 : 0
+      const estimatedTimeLeft = progress > 5 ? estimatedTotal - elapsed : undefined
+
+      return {
+        ...prev,
+        progress,
+        status,
+        estimatedTimeLeft,
+      }
+    })
+  }
 
   const handleFileLoad = (content: string, name: string) => {
     setSvgContent(content)
@@ -18,9 +56,29 @@ function App() {
     setSelectedNodeId(null)
   }
 
-  const handleSVGParsed = (svg: SVGSVGElement) => {
-    const nodes = parseSVG(svg)
-    setLayerNodes(nodes)
+  const handleSVGParsed = async (svg: SVGSVGElement) => {
+    handleProgress(0, 'Starting to parse SVG...')
+
+    try {
+      const nodes = await parseSVGProgressively(svg, handleProgress)
+      setLayerNodes(nodes)
+
+      // Clear loading state after a brief delay
+      setTimeout(() => {
+        setLoadingState({
+          isLoading: false,
+          progress: 100,
+          status: 'Complete',
+        })
+      }, 300)
+    } catch (error) {
+      console.error('Failed to parse SVG:', error)
+      setLoadingState({
+        isLoading: false,
+        progress: 0,
+        status: 'Error parsing SVG',
+      })
+    }
   }
 
   const handleNodeSelect = (node: SVGNode) => {
@@ -55,9 +113,21 @@ function App() {
         </div>
         <div className="canvas-container">
           {!svgContent ? (
-            <FileUpload onFileLoad={handleFileLoad} />
+            <FileUpload
+              onFileLoad={handleFileLoad}
+              onLoadStart={handleLoadStart}
+              onProgress={handleProgress}
+            />
           ) : (
             <SVGCanvas svgContent={svgContent} onSVGParsed={handleSVGParsed} />
+          )}
+
+          {loadingState.isLoading && (
+            <LoadingOverlay
+              progress={loadingState.progress}
+              status={loadingState.status}
+              estimatedTimeLeft={loadingState.estimatedTimeLeft}
+            />
           )}
         </div>
       </main>
