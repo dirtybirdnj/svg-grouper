@@ -22,3 +22,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+*.pyc
+*.svg
+__pycache__/
