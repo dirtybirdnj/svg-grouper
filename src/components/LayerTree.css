@@ -32,6 +32,22 @@
   border: 1px solid #4a90e2;
 }
 
+.layer-node-content.hidden {
+  opacity: 0.5;
+}
+
+.layer-node-content.hidden .layer-icon.group-fill,
+.layer-node-content.hidden .layer-icon.group-stroke,
+.layer-node-content.hidden .layer-icon.group-mixed,
+.layer-node-content.hidden .layer-icon.path {
+  background: #999 !important;
+}
+
+.layer-node-content.hidden .layer-name {
+  color: #999;
+  text-decoration: line-through;
+}
+
 .expand-button {
   width: 20px;
   height: 20px;
@@ -64,12 +80,53 @@
 }
 
 .layer-icon {
-  font-size: 1rem;
+  font-size: 0.75rem;
   flex-shrink: 0;
   width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-weight: 600;
+  border-radius: 3px;
+}
+
+.layer-icon.group-fill {
+  color: white;
+  background: #27ae60;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.layer-icon.group-fill:hover {
+  background: #229954;
+}
+
+.layer-icon.group-stroke {
+  color: white;
+  background: #9b59b6;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.layer-icon.group-stroke:hover {
+  background: #8e44ad;
+}
+
+.layer-icon.group-mixed {
+  color: white;
+  background: #e74c3c;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.layer-icon.group-mixed:hover {
+  background: #c0392b;
+}
+
+.layer-icon.path {
+  color: white;
+  background: #4a90e2;
 }
 
 .layer-name {
@@ -88,14 +145,53 @@
   flex-shrink: 0;
 }
 
-.layer-type {
-  font-size: 0.75rem;
-  color: #999;
-  text-transform: uppercase;
+.color-swatches {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  margin-left: auto;
+  padding-left: 0.5rem;
+}
+
+.color-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
   flex-shrink: 0;
-  margin-left: 0.5rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .layer-children {
   width: 100%;
+}
+
+/* Processing states */
+.layer-node-content.processing-pending {
+  background: #ddd !important;
+}
+
+.layer-node-content.processing-pending:hover {
+  background: #ccc !important;
+}
+
+.layer-node-content.processing-processing {
+  animation: throb 1s ease-in-out infinite;
+}
+
+@keyframes throb {
+  0%, 100% {
+    background: #ddd;
+  }
+  50% {
+    background: #b3d9ff;
+  }
+}
+
+.layer-node-content.processing-complete {
+  background: #d4edda !important;
+}
+
+.layer-node-content.processing-complete:hover {
+  background: #c3e6cb !important;
 }

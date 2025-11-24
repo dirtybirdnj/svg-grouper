@@ -5,4 +5,5 @@ export interface SVGNode {
   element: Element
   children: SVGNode[]
   isGroup: boolean
+  isHidden?: boolean
 }
