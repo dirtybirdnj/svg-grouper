@@ -841,7 +841,7 @@ function App() {
   }
 
   const handleCrop = async () => {
-    if (!svgDimensions || !window.electron?.cropSVG) {
+    if (!svgDimensions) {
       setStatusMessage('Cropping is not available.')
       return
     }
@@ -857,191 +857,10 @@ function App() {
     const cropX = svgCenterX - (cropW / 2)
     const cropY = svgCenterY - (cropH / 2)
 
-    // Determine which groups to crop
-    let groupsToCrop: SVGNode[] = []
+    console.log(`Crop dimensions: ${cropW}×${cropH}`)
+    console.log(`Crop position: (${cropX}, ${cropY})`)
 
-    if (selectedNodeIds.size > 0) {
-      // Crop only selected groups
-      const findSelectedGroups = (nodes: SVGNode[]): SVGNode[] => {
-        const groups: SVGNode[] = []
-        const traverse = (node: SVGNode) => {
-          if (selectedNodeIds.has(node.id) && node.isGroup) {
-            groups.push(node)
-          }
-          node.children.forEach(traverse)
-        }
-        nodes.forEach(traverse)
-        return groups
-      }
-      groupsToCrop = findSelectedGroups(layerNodes)
-
-      if (groupsToCrop.length === 0) {
-        setStatusMessage('Please select at least one group to crop.')
-        return
-      }
-    } else {
-      // Crop all groups
-      const getAllGroups = (nodes: SVGNode[]): SVGNode[] => {
-        const groups: SVGNode[] = []
-        const traverse = (node: SVGNode) => {
-          if (node.isGroup) {
-            groups.push(node)
-          }
-          node.children.forEach(traverse)
-        }
-        nodes.forEach(traverse)
-        return groups
-      }
-      groupsToCrop = getAllGroups(layerNodes)
-
-      if (groupsToCrop.length === 0) {
-        setStatusMessage('No groups found to crop.')
-        return
-      }
-    }
-
-    // First click: arm the crop
-    if (!cropArmed) {
-      setCropArmed(true)
-      setStatusMessage(
-        `This will crop ${groupsToCrop.length} group(s) to ${cropW.toFixed(1)}×${cropH.toFixed(1)} SVG units at position (${cropX.toFixed(1)}, ${cropY.toFixed(1)}). This operation cannot be undone. Click Crop again to continue.`
-      )
-      return
-    }
-
-    // Second click: execute the crop
-    setCropArmed(false)
-    setStatusMessage('')
-
-    // Get all groups (for hiding non-selected ones)
-    const getAllGroups = (nodes: SVGNode[]): SVGNode[] => {
-      const groups: SVGNode[] = []
-      const traverse = (node: SVGNode) => {
-        if (node.isGroup) {
-          groups.push(node)
-        }
-        node.children.forEach(traverse)
-      }
-      nodes.forEach(traverse)
-      return groups
-    }
-    const allGroups = getAllGroups(layerNodes)
-
-    // Hide all groups (we'll show only the ones being processed)
-    allGroups.forEach(node => {
-      if (node.element) {
-        node.element.style.display = 'none'
-      }
-    })
-
-    // Initialize all layers as pending
-    const initialStates: Record<string, 'pending' | 'processing' | 'complete'> = {}
-    groupsToCrop.forEach(node => {
-      const nodeId = node.element.id || node.name
-      initialStates[nodeId] = 'pending'
-    })
-    setLayerProcessingStates(initialStates)
-
-    // Build a single SVG document containing all groups
-    // IMPORTANT: Clone elements and remove any display:none styles that might hide geometry from vpype
-    const groupsHTML = groupsToCrop.map(node => {
-      const clonedElement = node.element.cloneNode(true) as SVGElement
-
-      // Remove any inline display styles from the clone and all descendants
-      const removeDisplayStyles = (elem: Element) => {
-        if (elem instanceof SVGElement || elem instanceof HTMLElement) {
-          // Remove display style while preserving other styles
-          const currentStyle = elem.getAttribute('style') || ''
-          if (currentStyle) {
-            const newStyle = currentStyle
-              .split(';')
-              .filter(rule => !rule.trim().startsWith('display'))
-              .join(';')
-              .trim()
-
-            if (newStyle) {
-              elem.setAttribute('style', newStyle)
-            } else {
-              elem.removeAttribute('style')
-            }
-          }
-        }
-
-        // Process children
-        Array.from(elem.children).forEach(removeDisplayStyles)
-      }
-
-      removeDisplayStyles(clonedElement)
-      return clonedElement.outerHTML
-    }).join('\n  ')
-
-    const consolidatedSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgDimensions.width}" height="${svgDimensions.height}" viewBox="0 0 ${svgDimensions.width} ${svgDimensions.height}">
-  ${groupsHTML}
-</svg>`
-
-    console.log(`Input SVG contains ${groupsToCrop.length} groups, size: ${(consolidatedSVG.length / 1024).toFixed(2)} KB`)
-    console.log(`Sending ONCE to vpype for split/crop/merge workflow`)
-
-
-    // Start cropping process
-    setCropProgress({
-      current: 0,
-      total: 1,
-      status: 'Cropping...'
-    })
-
-    try {
-      console.log(`Cropping consolidated SVG...`)
-      console.log(`Crop bounds: (${cropX}, ${cropY}) to (${cropX + cropW}, ${cropY + cropH})`)
-
-      // Send consolidated SVG to vpype for cropping
-      const croppedSVG = await window.electron.cropSVG({
-        svg: consolidatedSVG,
-        x: cropX,
-        y: cropY,
-        width: cropW,
-        height: cropH
-      })
-
-      console.log(`Crop completed, output size: ${(croppedSVG.length / 1024).toFixed(2)} KB`)
-
-      // Replace SVG content with cropped result
-      setSvgContent(croppedSVG)
-
-      // Wait for the final SVG to be rendered in the DOM
-      await new Promise(resolve => setTimeout(resolve, 100))
-
-      // Re-parse the SVG to update the layer tree
-      const svgElement = document.querySelector('.canvas-content svg')
-      if (svgElement) {
-        console.log('Re-parsing SVG to update layer tree...')
-        const nodes = await parseSVGProgressively(svgElement, () => {})
-        setLayerNodes(nodes)
-        console.log(`Layer tree updated with ${nodes.length} top-level nodes`)
-      }
-
-      // Hide crop overlay and show completion message briefly
-      setShowCrop(false)
-
-      setCropProgress({
-        current: groupsToCrop.length,
-        total: groupsToCrop.length,
-        status: 'Crop complete!'
-      })
-
-      setTimeout(() => {
-        setCropProgress(null)
-        // Clear processing states after completion
-        setLayerProcessingStates({})
-      }, 2000)
-
-    } catch (error) {
-      setCropProgress(null)
-      setLayerProcessingStates({})
-      const message = error instanceof Error ? error.message : 'Unknown error'
-      alert(`Cropping failed: ${message}`)
-      console.error('Crop error:', error)
-    }
+    // TODO: Implement crop logic
   }
 
   const handleResizeMouseDown = (e: React.MouseEvent) => {
@@ -1269,52 +1088,39 @@ function App() {
 
       <main className="main-panel">
         <div className="main-header">
-          <div>
-            <h1>SVG Grouper</h1>
-            {fileName && (
-              <div style={{ marginTop: '0.25rem' }}>
-                <p style={{ margin: 0, fontSize: '0.9rem', color: '#666' }}>{fileName}</p>
-                {svgDimensions && (
-                  <>
-                    <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#999' }}>
-                      {svgDimensions.width} × {svgDimensions.height} px
-                      {' • '}
-                      {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
-                      {' • '}
-                      {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
-                    </p>
-                    {documentColors.length > 0 && (
-                      <div style={{ display: 'flex', gap: '4px', marginTop: '0.5rem', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.75rem', color: '#999', marginRight: '0.25rem' }}>
-                          Colors:
-                        </span>
-                        {documentColors.map((color, index) => (
-                          <span
-                            key={index}
-                            style={{
-                              width: '16px',
-                              height: '16px',
-                              borderRadius: '3px',
-                              backgroundColor: normalizeColor(color),
-                              border: '1px solid #ddd',
-                              display: 'inline-block',
-                            }}
-                            title={color}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
           {svgContent && (
-            <div className="header-controls">
+            <>
+              {documentColors.length > 0 && (
+                <div className="colors-display">
+                  {documentColors.map((color, index) => (
+                    <span
+                      key={index}
+                      className="color-swatch"
+                      style={{
+                        backgroundColor: normalizeColor(color),
+                      }}
+                      title={color}
+                    />
+                  ))}
+                </div>
+              )}
+              <div className="header-controls">
               <div className="crop-controls">
                 {showCrop && (
                   <>
-                    <span style={{ fontSize: '0.85rem', color: '#666', marginRight: '0.25rem' }}>
+                    <label style={{ fontSize: '0.85rem', color: '#666', marginRight: '0.5rem' }}>
+                      Size: {Math.round(cropSize * 100)}%
+                    </label>
+                    <input
+                      type="range"
+                      min="25"
+                      max="100"
+                      value={cropSize * 100}
+                      onChange={(e) => setCropSize(Number(e.target.value) / 100)}
+                      style={{ width: '120px' }}
+                      className="crop-size-slider"
+                    />
+                    <span style={{ fontSize: '0.85rem', color: '#666', marginLeft: '0.5rem', marginRight: '0.25rem' }}>
                       {(getCropDimensions().width / 96).toFixed(1)} × {(getCropDimensions().height / 96).toFixed(1)} in • {getCropDimensions().width.toFixed(0)} × {getCropDimensions().height.toFixed(0)} px
                     </span>
                     <button
@@ -1435,6 +1241,7 @@ function App() {
                 <span className="zoom-level">{Math.round(scale * 100)}%</span>
               </div>
             </div>
+              </>
           )}
         </div>
         <div className="canvas-container">
@@ -1472,9 +1279,27 @@ function App() {
         </div>
       </main>
 
-      {statusMessage && (
+      {(statusMessage || fileName) && (
         <div className="status-bar">
-          {statusMessage}
+          {statusMessage ? (
+            statusMessage
+          ) : (
+            fileName && (
+              <>
+                <span className="status-filename">{fileName}</span>
+                {svgDimensions && (
+                  <span className="status-dimensions">
+                    {' • '}
+                    {svgDimensions.width} × {svgDimensions.height} px
+                    {' • '}
+                    {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
+                    {' • '}
+                    {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
+                  </span>
+                )}
+              </>
+            )
+          )}
         </div>
       )}
     </div>

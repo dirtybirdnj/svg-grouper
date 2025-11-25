@@ -132,18 +132,65 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  width: 100%;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
-.main-header h1 {
-  margin: 0;
-  font-size: 1.3rem;
+.info-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex: 1;
+  min-width: 300px;
+  flex-wrap: wrap;
+}
+
+.filename {
+  font-size: 0.9rem;
   color: #333;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dimensions {
+  font-size: 0.8rem;
+  color: #666;
+  white-space: nowrap;
+}
+
+.colors-display {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.colors-label {
+  font-size: 0.75rem;
+  color: #999;
+  margin-right: 0.25rem;
+  white-space: nowrap;
+}
+
+.color-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  border: 1px solid #ddd;
+  display: inline-block;
+  flex-shrink: 0;
 }
 
 .header-controls {
   display: flex;
   gap: 1rem;
   align-items: center;
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .crop-ratio-controls {
@@ -338,11 +385,48 @@
   bottom: 0;
   left: 0;
   right: 0;
-  padding: 0.75rem 1rem;
-  background: #fff3cd;
-  border-top: 2px solid #ffc107;
-  font-size: 0.9rem;
-  color: #856404;
+  padding: 0.5rem 1rem;
+  background: #fafafa;
+  border-top: 1px solid #ddd;
+  font-size: 0.85rem;
+  color: #666;
   z-index: 100;
-  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.status-bar .status-filename {
+  font-weight: 500;
+  color: #333;
+}
+
+.status-bar .status-dimensions {
+  color: #666;
+}
+
+.crop-size-slider {
+  cursor: pointer;
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+.crop-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4a90e2;
+  cursor: pointer;
+}
+
+.crop-size-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4a90e2;
+  cursor: pointer;
+  border: none;
 }
