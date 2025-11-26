@@ -272,6 +272,16 @@
   background: #e0e0e0;
 }
 
+.fill-preview-btn.active {
+  background: #27ae60;
+  color: white;
+  border-color: #27ae60;
+}
+
+.fill-preview-btn.active:hover:not(:disabled) {
+  background: #219a52;
+}
+
 .fill-apply-btn {
   background: #4a90e2;
   color: white;
@@ -417,4 +427,21 @@
 .fill-preview-empty p {
   margin: 0;
   font-size: 0.95rem;
+}
+
+/* Preview Container */
+.fill-preview-container {
+  position: relative;
+}
+
+.preview-label {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #27ae60;
+  color: white;
+  padding: 0.25rem 0.75rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
 }
