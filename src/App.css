@@ -544,6 +544,29 @@
 .status-bar-left {
   display: flex;
   align-items: center;
+  flex: 1;
+}
+
+.status-bar-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.status-bar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1;
+}
+
+.status-message {
+  font-weight: 500;
+}
+
+.status-message.error {
+  color: #e74c3c;
 }
 
 .status-bar-colors {

@@ -7,6 +7,7 @@ import { SVGNode } from './types/svg'
 function AppContent() {
   const {
     activeTab,
+    setActiveTab,
     svgContent,
     scale,
     setScale,
@@ -19,7 +20,9 @@ function AppContent() {
     setStatusMessage,
     layerNodes,
     setLayerNodes,
+    selectedNodeIds,
     setSelectedNodeIds,
+    setFillTargetNodeId,
   } = useAppContext()
 
   const handleZoomIn = () => {
@@ -172,6 +175,69 @@ function AppContent() {
     setShowCrop(!showCrop)
   }
 
+  const handleFill = () => {
+    disarmActions()
+
+    // Check if a layer is selected
+    if (selectedNodeIds.size !== 1) {
+      setStatusMessage('error:Select a single layer or group to use Fill')
+      return
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+
+    // Find the selected node
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedNode = findNode(layerNodes, selectedId)
+    if (!selectedNode) {
+      setStatusMessage('error:Could not find selected layer')
+      return
+    }
+
+    // Check if the layer contains fill paths (closed shapes with fill attribute)
+    const hasFillPaths = (node: SVGNode): boolean => {
+      const element = node.element
+      const fill = element.getAttribute('fill')
+      const style = element.getAttribute('style')
+
+      // Check for fill in attributes or style
+      if (fill && fill !== 'none' && fill !== 'transparent') {
+        return true
+      }
+      if (style) {
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1] !== 'transparent') {
+          return true
+        }
+      }
+
+      // Check children recursively
+      for (const child of node.children) {
+        if (hasFillPaths(child)) return true
+      }
+
+      return false
+    }
+
+    if (!hasFillPaths(selectedNode)) {
+      setStatusMessage('error:Fill is only supported for closed shapes with fills')
+      return
+    }
+
+    // Navigate to Fill tab with the selected node
+    setFillTargetNodeId(selectedId)
+    setActiveTab('fill')
+    setStatusMessage('')
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -183,6 +249,17 @@ function AppContent() {
         {svgContent && (
           <div className="header-right-controls">
             <div className="header-function-buttons">
+              <button
+                onClick={handleFill}
+                className="function-button"
+                title={selectedNodeIds.size === 1 ? "Convert fills to line hatching" : "Select a layer first"}
+                style={{
+                  background: selectedNodeIds.size === 1 ? '#9b59b6' : '#bdc3c7',
+                  opacity: selectedNodeIds.size === 1 ? 1 : 0.7,
+                }}
+              >
+                ▤ Fill
+              </button>
               <button
                 onClick={handleFlattenAll}
                 className="function-button"

@@ -61,6 +61,10 @@ interface AppContextType {
   setCropArmed: (armed: boolean) => void
   statusMessage: string
   setStatusMessage: (message: string) => void
+
+  // Fill mode state
+  fillTargetNodeId: string | null
+  setFillTargetNodeId: (id: string | null) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -102,6 +106,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [flattenArmed, setFlattenArmed] = useState(false)
   const [cropArmed, setCropArmed] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+
+  // Fill mode state
+  const [fillTargetNodeId, setFillTargetNodeId] = useState<string | null>(null)
 
   const handleLoadStart = useCallback(() => {
     setLoadingState({
@@ -163,6 +170,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCropArmed,
     statusMessage,
     setStatusMessage,
+    fillTargetNodeId,
+    setFillTargetNodeId,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

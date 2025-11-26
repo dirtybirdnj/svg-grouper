@@ -3,41 +3,51 @@ import { SVGNode } from '../types/svg'
 import { extractColors, normalizeColor } from '../utils/colorExtractor'
 import './LayerTree.css'
 
+// Helper to check if an element has fill or stroke
+function checkElementType(elem: Element): { hasFill: boolean; hasStroke: boolean } {
+  const fill = elem.getAttribute('fill')
+  const stroke = elem.getAttribute('stroke')
+  const style = elem.getAttribute('style') || ''
+
+  let hasFill = !!(fill && fill !== 'none' && fill !== 'transparent')
+  let hasStroke = !!(stroke && stroke !== 'none' && stroke !== 'transparent')
+
+  // Check style attribute
+  if (style.includes('fill:')) {
+    const fillMatch = style.match(/fill:\s*([^;]+)/)
+    if (fillMatch && fillMatch[1].trim() !== 'none' && fillMatch[1].trim() !== 'transparent') {
+      hasFill = true
+    }
+  }
+  if (style.includes('stroke:')) {
+    const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+    if (strokeMatch && strokeMatch[1].trim() !== 'none' && strokeMatch[1].trim() !== 'transparent') {
+      hasStroke = true
+    }
+  }
+
+  return { hasFill, hasStroke }
+}
+
+// Helper to determine if a path element is fill-based or stroke-based
+function getPathType(node: SVGNode): 'fill' | 'stroke' {
+  if (node.isGroup) return 'stroke'
+  const { hasFill } = checkElementType(node.element)
+  // If has fill (and possibly stroke), consider it a fill path
+  if (hasFill) return 'fill'
+  return 'stroke'
+}
+
 // Helper to determine group type: 'fill', 'stroke', or 'mixed'
 function getGroupType(node: SVGNode): 'fill' | 'stroke' | 'mixed' | null {
   if (!node.isGroup) return null
-
-  const checkElement = (elem: Element): { hasFill: boolean; hasStroke: boolean } => {
-    const fill = elem.getAttribute('fill')
-    const stroke = elem.getAttribute('stroke')
-    const style = elem.getAttribute('style') || ''
-
-    let hasFill = !!(fill && fill !== 'none')
-    let hasStroke = !!(stroke && stroke !== 'none')
-
-    // Check style attribute
-    if (style.includes('fill:')) {
-      const fillMatch = style.match(/fill:\s*([^;]+)/)
-      if (fillMatch && fillMatch[1].trim() !== 'none') {
-        hasFill = true
-      }
-    }
-    if (style.includes('stroke:')) {
-      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-      if (strokeMatch && strokeMatch[1].trim() !== 'none') {
-        hasStroke = true
-      }
-    }
-
-    return { hasFill, hasStroke }
-  }
 
   let hasAnyFills = false
   let hasAnyStrokes = false
 
   const checkNode = (n: SVGNode) => {
-    const result = checkElement(n.element)
-    if (result.hasFill && !result.hasStroke) hasAnyFills = true
+    const result = checkElementType(n.element)
+    if (result.hasFill) hasAnyFills = true
     if (result.hasStroke && !result.hasFill) hasAnyStrokes = true
     n.children.forEach(checkNode)
   }
@@ -97,6 +107,7 @@ function LayerNode({ node, level, selectedNodeIds, onNodeSelect, processingState
 
   // Determine group type and icon class
   const groupType = getGroupType(node)
+  const pathType = !node.isGroup ? getPathType(node) : null
   const iconClass = node.isGroup
     ? groupType === 'fill'
       ? 'group-fill'
@@ -106,6 +117,9 @@ function LayerNode({ node, level, selectedNodeIds, onNodeSelect, processingState
     : 'path'
 
   const colors = extractColors(node)
+
+  // For non-group nodes, determine F or P label for the swatch
+  const swatchLabel = !node.isGroup ? (pathType === 'fill' ? 'F' : 'P') : null
 
   return (
     <div className="layer-node">
@@ -133,10 +147,12 @@ function LayerNode({ node, level, selectedNodeIds, onNodeSelect, processingState
             {colors.map((color, index) => (
               <span
                 key={index}
-                className="color-swatch"
+                className={`color-swatch ${swatchLabel ? 'with-label' : ''}`}
                 style={{ backgroundColor: normalizeColor(color) }}
                 title={color}
-              />
+              >
+                {swatchLabel}
+              </span>
             ))}
           </div>
         )}
