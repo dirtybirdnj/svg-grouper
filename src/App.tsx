@@ -23,6 +23,7 @@ function AppContent() {
     selectedNodeIds,
     setSelectedNodeIds,
     setFillTargetNodeId,
+    syncSvgContent,
   } = useAppContext()
 
   const handleZoomIn = () => {
@@ -168,6 +169,7 @@ function AppContent() {
 
     setLayerNodes(processedNodes)
     setSelectedNodeIds(new Set())
+    syncSvgContent()
   }
 
   const handleToggleCrop = () => {

@@ -192,13 +192,64 @@ export default function ExportTab() {
   }
 
   const handleExport = () => {
-    const svgElement = document.querySelector('.canvas-content svg')
+    if (!svgContent) return
+
+    let svgString = svgContent
+
+    // Apply export options
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgString, 'image/svg+xml')
+    const svgElement = doc.querySelector('svg')
+
     if (!svgElement) return
 
-    const serializer = new XMLSerializer()
-    let svgString = serializer.serializeToString(svgElement)
+    // Apply paper size if not original
+    if (paperSize !== 'original' && svgDimensions) {
+      const paperSizes: Record<string, { width: number; height: number; unit: string }> = {
+        'letter': { width: 8.5, height: 11, unit: 'in' },
+        'legal': { width: 8.5, height: 14, unit: 'in' },
+        'tabloid': { width: 11, height: 17, unit: 'in' },
+        'a4': { width: 210, height: 297, unit: 'mm' },
+        'a3': { width: 297, height: 420, unit: 'mm' },
+        'a2': { width: 420, height: 594, unit: 'mm' },
+        'a1': { width: 594, height: 841, unit: 'mm' },
+      }
 
-    // TODO: Apply export options (paper size, background, stroke normalization)
+      const size = paperSizes[paperSize]
+      if (size) {
+        svgElement.setAttribute('width', `${size.width}${size.unit}`)
+        svgElement.setAttribute('height', `${size.height}${size.unit}`)
+      }
+    }
+
+    // Add white background if requested
+    if (includeBackground) {
+      const rect = doc.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      rect.setAttribute('width', '100%')
+      rect.setAttribute('height', '100%')
+      rect.setAttribute('fill', 'white')
+      svgElement.insertBefore(rect, svgElement.firstChild)
+    }
+
+    // Normalize stroke widths if requested
+    if (normalizeStrokes) {
+      const elements = svgElement.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
+      elements.forEach(el => {
+        const currentStroke = el.getAttribute('stroke')
+        if (currentStroke && currentStroke !== 'none') {
+          el.setAttribute('stroke-width', String(strokeWidth))
+        }
+        // Also check style attribute
+        const style = el.getAttribute('style')
+        if (style && style.includes('stroke:') && !style.includes('stroke:none')) {
+          const newStyle = style.replace(/stroke-width:\s*[^;]+;?/g, '') + `stroke-width:${strokeWidth}px;`
+          el.setAttribute('style', newStyle)
+        }
+      })
+    }
+
+    const serializer = new XMLSerializer()
+    svgString = serializer.serializeToString(svgElement)
 
     const blob = new Blob([svgString], { type: 'image/svg+xml' })
     const url = URL.createObjectURL(blob)

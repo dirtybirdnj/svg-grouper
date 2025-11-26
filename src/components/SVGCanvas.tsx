@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useAppContext } from '../context/AppContext'
 import './SVGCanvas.css'
 
 interface SVGCanvasProps {
@@ -28,6 +29,7 @@ export default function SVGCanvas({
   svgDimensions = null,
   onCropResize: _onCropResize
 }: SVGCanvasProps) {
+  const { svgElementRef } = useAppContext()
   const containerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -56,9 +58,11 @@ export default function SVGCanvas({
       const svg = svgContainerRef.current.querySelector('svg')
       if (svg) {
         svgRef.current = svg
+        // Store in context for export functionality
+        svgElementRef.current = svg
       }
     }
-  }, [svgContent])
+  }, [svgContent, svgElementRef])
 
   useEffect(() => {
     // Parse and notify parent of SVG element only once per content change

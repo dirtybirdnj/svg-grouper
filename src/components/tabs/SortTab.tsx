@@ -38,6 +38,7 @@ export default function SortTab() {
     cropSize,
     setCropSize,
     statusMessage,
+    syncSvgContent,
   } = useAppContext()
 
   const [sidebarWidth, setSidebarWidth] = useState(300)
@@ -219,6 +220,7 @@ export default function SortTab() {
     }
 
     setLayerNodes(toggleNodeVisibility(layerNodes))
+    syncSvgContent()
   }
 
   const handleIsolate = () => {
@@ -240,6 +242,7 @@ export default function SortTab() {
 
       setLayerNodes(showAllNodes(layerNodes))
       setIsIsolated(false)
+      syncSvgContent()
     } else {
       // Isolate: hide all except selected
       const isolateNodes = (nodes: SVGNode[], parentSelected: boolean): SVGNode[] => {
@@ -262,6 +265,7 @@ export default function SortTab() {
 
       setLayerNodes(isolateNodes(layerNodes, false))
       setIsIsolated(true)
+      syncSvgContent()
     }
   }
 
@@ -281,6 +285,7 @@ export default function SortTab() {
 
     setLayerNodes(deleteNode(layerNodes))
     setSelectedNodeIds(new Set())
+    syncSvgContent()
   }
 
   const canGroupByColor = (): boolean => {
@@ -415,6 +420,7 @@ export default function SortTab() {
 
     setLayerNodes(updateNodeChildren(layerNodes))
     setSelectedNodeIds(new Set())
+    syncSvgContent()
   }
 
   const handleGroupUngroup = () => {
@@ -459,6 +465,7 @@ export default function SortTab() {
 
         setLayerNodes(ungroupNode(layerNodes, selectedId))
         setSelectedNodeIds(new Set())
+        syncSvgContent()
         return
       }
     }
@@ -546,6 +553,7 @@ export default function SortTab() {
 
       setLayerNodes(removeAndGroup(layerNodes))
       setSelectedNodeIds(new Set())
+      syncSvgContent()
     }
   }
 
