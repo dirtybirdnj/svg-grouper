@@ -33,26 +33,19 @@ export default function SortTab() {
     offset,
     setOffset,
     showCrop,
-    setShowCrop,
     cropAspectRatio,
     setCropAspectRatio,
     cropSize,
     setCropSize,
+    statusMessage,
   } = useAppContext()
 
   const [sidebarWidth, setSidebarWidth] = useState(300)
   const [isResizing, setIsResizing] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [splitArmed, setSplitArmed] = useState(false)
-  const [cropArmed, setCropArmed] = useState(false)
-  const [flattenArmed, setFlattenArmed] = useState(false)
-  const [statusMessage, setStatusMessage] = useState<string>('')
-  const [cropProgress] = useState<{
-    current: number
-    total: number
-    status: string
-  } | null>(null)
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
+  const [isIsolated, setIsIsolated] = useState(false)
 
   const handleFileLoad = useCallback((content: string, name: string) => {
     setSvgContent(content)
@@ -108,9 +101,6 @@ export default function SortTab() {
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
     setSplitArmed(false)
-    setCropArmed(false)
-    setFlattenArmed(false)
-    setStatusMessage('')
   }, [])
 
   const collectAllColors = useCallback((nodes: SVGNode[]): string[] => {
@@ -201,19 +191,6 @@ export default function SortTab() {
     }
   }
 
-  const handleZoomIn = () => {
-    setScale(Math.min(10, scale * 1.2))
-  }
-
-  const handleZoomOut = () => {
-    setScale(Math.max(0.1, scale / 1.2))
-  }
-
-  const handleFitToScreen = () => {
-    setScale(1)
-    setOffset({ x: 0, y: 0 })
-  }
-
   const handleToggleVisibility = () => {
     const toggleNodeVisibility = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
@@ -245,39 +222,47 @@ export default function SortTab() {
   }
 
   const handleIsolate = () => {
-    const isolateNodes = (nodes: SVGNode[], parentSelected: boolean): SVGNode[] => {
-      return nodes.map(node => {
-        const isSelected = selectedNodeIds.has(node.id)
-        const shouldBeVisible = isSelected || parentSelected
-
-        const updateVisibility = (n: SVGNode, visible: boolean): SVGNode => {
-          const hidden = !visible
-
-          if (n.element instanceof SVGElement || n.element instanceof HTMLElement) {
-            n.element.style.display = hidden ? 'none' : ''
+    if (isIsolated) {
+      // Un-isolate: show all layers
+      const showAllNodes = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (node.element instanceof SVGElement || node.element instanceof HTMLElement) {
+            node.element.style.display = ''
           }
 
           return {
-            ...n,
+            ...node,
+            isHidden: false,
+            children: showAllNodes(node.children)
+          }
+        })
+      }
+
+      setLayerNodes(showAllNodes(layerNodes))
+      setIsIsolated(false)
+    } else {
+      // Isolate: hide all except selected
+      const isolateNodes = (nodes: SVGNode[], parentSelected: boolean): SVGNode[] => {
+        return nodes.map(node => {
+          const isSelected = selectedNodeIds.has(node.id)
+          const shouldBeVisible = isSelected || parentSelected
+          const hidden = !shouldBeVisible
+
+          if (node.element instanceof SVGElement || node.element instanceof HTMLElement) {
+            node.element.style.display = hidden ? 'none' : ''
+          }
+
+          return {
+            ...node,
             isHidden: hidden,
-            children: n.children.map(child => updateVisibility(child, visible))
+            children: isolateNodes(node.children, shouldBeVisible)
           }
-        }
+        })
+      }
 
-        const updatedNode = updateVisibility(node, shouldBeVisible)
-
-        if (node.children.length > 0) {
-          return {
-            ...updatedNode,
-            children: isolateNodes(node.children, isSelected || parentSelected)
-          }
-        }
-
-        return updatedNode
-      })
+      setLayerNodes(isolateNodes(layerNodes, false))
+      setIsIsolated(true)
     }
-
-    setLayerNodes(isolateNodes(layerNodes, false))
   }
 
   const handleDeleteNode = () => {
@@ -564,26 +549,6 @@ export default function SortTab() {
     }
   }
 
-  const handleSave = () => {
-    if (!svgContent) return
-
-    const svgElement = document.querySelector('.canvas-content svg')
-    if (!svgElement) return
-
-    const serializer = new XMLSerializer()
-    const svgString = serializer.serializeToString(svgElement)
-
-    const blob = new Blob([svgString], { type: 'image/svg+xml' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = fileName || 'edited.svg'
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
-  }
-
   const canFlatten = (): boolean => {
     if (selectedNodeIds.size !== 1) return false
 
@@ -749,154 +714,6 @@ export default function SortTab() {
   const rotateCropAspectRatio = () => {
     const [w, h] = cropAspectRatio.split(':')
     setCropAspectRatio(`${h}:${w}` as '1:2' | '3:4' | '16:9' | '9:16')
-  }
-
-  const handleCrop = async () => {
-    if (!svgDimensions) {
-      setStatusMessage('Cropping is not available.')
-      return
-    }
-
-    const { width: cropW, height: cropH } = getCropDimensions()
-
-    const svgCenterX = svgDimensions.width / 2
-    const svgCenterY = svgDimensions.height / 2
-
-    const cropX = svgCenterX - (cropW / 2)
-    const cropY = svgCenterY - (cropH / 2)
-
-    console.log(`Crop dimensions: ${cropW}×${cropH}`)
-    console.log(`Crop position: (${cropX}, ${cropY})`)
-
-    // TODO: Implement crop logic
-  }
-
-  const handleFlattenAll = () => {
-    if (!flattenArmed) {
-      setFlattenArmed(true)
-      setDeleteArmed(false)
-      setSplitArmed(false)
-      setCropArmed(false)
-      setStatusMessage('Click Flatten again to confirm')
-      return
-    }
-
-    setFlattenArmed(false)
-    setStatusMessage('')
-
-    const getElementColor = (element: Element): string | null => {
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-      const style = element.getAttribute('style')
-
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
-        if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
-      }
-
-      if (fill && fill !== 'none' && fill !== 'transparent') return fill
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
-
-      return null
-    }
-
-    const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.filter(node => {
-        if (node.isGroup && node.children.length === 0) {
-          node.element.remove()
-          return false
-        }
-        if (node.children.length > 0) {
-          node.children = deleteEmptyLayers(node.children)
-          if (node.isGroup && node.children.length === 0) {
-            node.element.remove()
-            return false
-          }
-        }
-        return true
-      })
-    }
-
-    const ungroupAll = (nodes: SVGNode[]): SVGNode[] => {
-      let result: SVGNode[] = []
-
-      for (const node of nodes) {
-        if (node.isGroup && node.children.length > 0) {
-          const parent = node.element.parentElement
-          if (parent) {
-            const ungroupedChildren = ungroupAll(node.children)
-
-            for (const child of ungroupedChildren) {
-              parent.insertBefore(child.element, node.element)
-              result.push(child)
-            }
-
-            node.element.remove()
-          }
-        } else if (!node.isGroup) {
-          result.push(node)
-        }
-      }
-
-      return result
-    }
-
-    const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
-      const colorGroups = new Map<string, SVGNode[]>()
-      nodes.forEach(node => {
-        const color = getElementColor(node.element) || 'no-color'
-        if (!colorGroups.has(color)) {
-          colorGroups.set(color, [])
-        }
-        colorGroups.get(color)!.push(node)
-      })
-
-      if (colorGroups.size <= 1) return nodes
-
-      const svgElement = document.querySelector('.canvas-content svg')
-      if (!svgElement) return nodes
-
-      const newNodes: SVGNode[] = []
-      colorGroups.forEach((groupNodes, color) => {
-        if (groupNodes.length === 1) {
-          newNodes.push(groupNodes[0])
-        } else {
-          const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-          const groupId = `color-group-${color.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-          newGroup.setAttribute('id', groupId)
-
-          groupNodes.forEach(node => {
-            newGroup.appendChild(node.element)
-          })
-
-          svgElement.appendChild(newGroup)
-
-          const groupNode: SVGNode = {
-            id: groupId,
-            type: 'g',
-            name: `color-${color}`,
-            element: newGroup,
-            isGroup: true,
-            children: groupNodes
-          }
-
-          newNodes.push(groupNode)
-        }
-      })
-
-      return newNodes
-    }
-
-    let processedNodes = [...layerNodes]
-
-    processedNodes = deleteEmptyLayers(processedNodes)
-    processedNodes = ungroupAll(processedNodes)
-    processedNodes = groupByColor(processedNodes)
-
-    setLayerNodes(processedNodes)
-    setSelectedNodeIds(new Set())
   }
 
   const handleResizeMouseDown = (e: React.MouseEvent) => {
@@ -1109,177 +926,82 @@ export default function SortTab() {
       </aside>
 
       <main className="main-panel">
-        <div className="main-header">
-          {svgContent && (
-            <>
-              {documentColors.length > 0 && (
-                <div className="colors-display">
-                  {documentColors.map((color, index) => (
-                    <span
-                      key={index}
-                      className="color-swatch"
-                      style={{
-                        backgroundColor: normalizeColor(color),
-                      }}
-                      title={color}
-                    />
-                  ))}
-                </div>
-              )}
-              <div className="header-controls">
-              <div className="crop-controls">
-                {showCrop && (
-                  <>
-                    <label style={{ fontSize: '0.85rem', color: '#666', marginRight: '0.5rem' }}>
-                      Size: {Math.round(cropSize * 100)}%
-                    </label>
-                    <input
-                      type="range"
-                      min="25"
-                      max="100"
-                      value={cropSize * 100}
-                      onChange={(e) => setCropSize(Number(e.target.value) / 100)}
-                      style={{ width: '120px' }}
-                      className="crop-size-slider"
-                    />
-                    <span style={{ fontSize: '0.85rem', color: '#666', marginLeft: '0.5rem', marginRight: '0.25rem' }}>
-                      {(getCropDimensions().width / 96).toFixed(1)} × {(getCropDimensions().height / 96).toFixed(1)} in • {getCropDimensions().width.toFixed(0)} × {getCropDimensions().height.toFixed(0)} px
-                    </span>
-                    <button
-                      className="crop-toggle-button"
-                      onClick={() => setCropAspectRatio('1:2')}
-                      title="Aspect Ratio 1:2"
-                      style={{
-                        background: cropAspectRatio === '1:2' ? '#4a90e2' : 'white',
-                        color: cropAspectRatio === '1:2' ? 'white' : 'inherit',
-                        width: 'auto',
-                        padding: '0 0.5rem',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      1:2
-                    </button>
-                    <button
-                      className="crop-toggle-button"
-                      onClick={() => setCropAspectRatio('3:4')}
-                      title="Aspect Ratio 3:4"
-                      style={{
-                        background: cropAspectRatio === '3:4' ? '#4a90e2' : 'white',
-                        color: cropAspectRatio === '3:4' ? 'white' : 'inherit',
-                        width: 'auto',
-                        padding: '0 0.5rem',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      3:4
-                    </button>
-                    <button
-                      className="crop-toggle-button"
-                      onClick={() => setCropAspectRatio('16:9')}
-                      title="Aspect Ratio 16:9"
-                      style={{
-                        background: cropAspectRatio === '16:9' ? '#4a90e2' : 'white',
-                        color: cropAspectRatio === '16:9' ? 'white' : 'inherit',
-                        width: 'auto',
-                        padding: '0 0.5rem',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      16:9
-                    </button>
-                    <button
-                      className="crop-toggle-button"
-                      onClick={() => setCropAspectRatio('9:16')}
-                      title="Aspect Ratio 9:16"
-                      style={{
-                        background: cropAspectRatio === '9:16' ? '#4a90e2' : 'white',
-                        color: cropAspectRatio === '9:16' ? 'white' : 'inherit',
-                        width: 'auto',
-                        padding: '0 0.5rem',
-                        fontSize: '0.75rem'
-                      }}
-                    >
-                      9:16
-                    </button>
-                    <button
-                      className="crop-toggle-button"
-                      onClick={rotateCropAspectRatio}
-                      title="Rotate Aspect Ratio 90°"
-                      style={{
-                        background: '#8e44ad',
-                        color: 'white'
-                      }}
-                    >
-                      ↻
-                    </button>
-                  </>
-                )}
-                <button
-                  className="crop-toggle-button"
-                  onClick={() => setShowCrop(!showCrop)}
-                  title={showCrop ? "Hide Crop" : "Show Crop"}
-                  style={{
-                    background: showCrop ? '#e74c3c' : '#e67e22',
-                    color: 'white'
-                  }}
-                >
-                  {showCrop ? '✕' : '◯'}
-                </button>
-              </div>
+        {showCrop && svgContent && (
+          <div className="crop-options-bar">
+            <label style={{ fontSize: '0.85rem', color: '#666', marginRight: '0.5rem' }}>
+              Size: {Math.round(cropSize * 100)}%
+            </label>
+            <input
+              type="range"
+              min="25"
+              max="100"
+              value={cropSize * 100}
+              onChange={(e) => setCropSize(Number(e.target.value) / 100)}
+              style={{ width: '120px' }}
+              className="crop-size-slider"
+            />
+            <span style={{ fontSize: '0.85rem', color: '#666', marginLeft: '0.5rem', marginRight: '0.5rem' }}>
+              {(getCropDimensions().width / 96).toFixed(1)} × {(getCropDimensions().height / 96).toFixed(1)} in • {getCropDimensions().width.toFixed(0)} × {getCropDimensions().height.toFixed(0)} px
+            </span>
+            <div className="crop-ratio-buttons">
               <button
-                onClick={handleFlattenAll}
-                className="save-button"
-                title={flattenArmed ? "Click again to confirm flatten" : "Flatten: Remove empty layers, ungroup all, group by color"}
+                className="crop-ratio-button"
+                onClick={() => setCropAspectRatio('1:2')}
+                title="Aspect Ratio 1:2"
                 style={{
-                  background: flattenArmed ? '#e67e22' : '#3498db',
-                  borderColor: flattenArmed ? '#e67e22' : '#3498db',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem'
+                  background: cropAspectRatio === '1:2' ? '#4a90e2' : 'white',
+                  color: cropAspectRatio === '1:2' ? 'white' : 'inherit',
                 }}
               >
-                🗄️ Flatten
+                1:2
               </button>
-              {showCrop && (
-                <button
-                  onClick={handleCrop}
-                  className="save-button"
-                  title={cropArmed ? "Click again to confirm crop" : "Crop all groups"}
-                  disabled={!!cropProgress}
-                  style={{
-                    background: cropProgress ? '#95a5a6' : cropArmed ? '#e67e22' : '#27ae60',
-                    borderColor: cropProgress ? '#95a5a6' : cropArmed ? '#e67e22' : '#27ae60',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}
-                >
-                  {cropProgress && (
-                    <span className="spinner" style={{
-                      width: '12px',
-                      height: '12px',
-                      border: '2px solid rgba(255,255,255,0.3)',
-                      borderTopColor: 'white',
-                      borderRadius: '50%',
-                      animation: 'spin 0.8s linear infinite'
-                    }} />
-                  )}
-                  {cropProgress ? `${cropProgress.current}/${cropProgress.total}` : 'Crop'}
-                </button>
-              )}
-              <button onClick={handleSave} className="save-button" title="Save SVG">
-                Save
+              <button
+                className="crop-ratio-button"
+                onClick={() => setCropAspectRatio('3:4')}
+                title="Aspect Ratio 3:4"
+                style={{
+                  background: cropAspectRatio === '3:4' ? '#4a90e2' : 'white',
+                  color: cropAspectRatio === '3:4' ? 'white' : 'inherit',
+                }}
+              >
+                3:4
               </button>
-              <div className="zoom-controls">
-                <button onClick={handleZoomIn} title="Zoom In">+</button>
-                <button onClick={handleZoomOut} title="Zoom Out">-</button>
-                <button onClick={handleFitToScreen} title="Fit to Screen">Fit</button>
-                <span className="zoom-level">{Math.round(scale * 100)}%</span>
-              </div>
+              <button
+                className="crop-ratio-button"
+                onClick={() => setCropAspectRatio('16:9')}
+                title="Aspect Ratio 16:9"
+                style={{
+                  background: cropAspectRatio === '16:9' ? '#4a90e2' : 'white',
+                  color: cropAspectRatio === '16:9' ? 'white' : 'inherit',
+                }}
+              >
+                16:9
+              </button>
+              <button
+                className="crop-ratio-button"
+                onClick={() => setCropAspectRatio('9:16')}
+                title="Aspect Ratio 9:16"
+                style={{
+                  background: cropAspectRatio === '9:16' ? '#4a90e2' : 'white',
+                  color: cropAspectRatio === '9:16' ? 'white' : 'inherit',
+                }}
+              >
+                9:16
+              </button>
+              <button
+                className="crop-ratio-button"
+                onClick={rotateCropAspectRatio}
+                title="Rotate Aspect Ratio 90°"
+                style={{
+                  background: '#8e44ad',
+                  color: 'white'
+                }}
+              >
+                ↻
+              </button>
             </div>
-              </>
-          )}
-        </div>
+          </div>
+        )}
         <div className="canvas-container">
           {!svgContent ? (
             <FileUpload
@@ -1317,24 +1039,40 @@ export default function SortTab() {
 
       {(statusMessage || fileName) && (
         <div className="status-bar">
-          {statusMessage ? (
-            statusMessage
-          ) : (
-            fileName && (
-              <>
-                <span className="status-filename">{fileName}</span>
-                {svgDimensions && (
-                  <span className="status-dimensions">
-                    {' • '}
-                    {svgDimensions.width} × {svgDimensions.height} px
-                    {' • '}
-                    {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
-                    {' • '}
-                    {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
-                  </span>
-                )}
-              </>
-            )
+          <div className="status-bar-left">
+            {statusMessage ? (
+              statusMessage
+            ) : (
+              fileName && (
+                <>
+                  <span className="status-filename">{fileName}</span>
+                  {svgDimensions && (
+                    <span className="status-dimensions">
+                      {' • '}
+                      {svgDimensions.width} × {svgDimensions.height} px
+                      {' • '}
+                      {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
+                      {' • '}
+                      {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
+                    </span>
+                  )}
+                </>
+              )
+            )}
+          </div>
+          {documentColors.length > 0 && (
+            <div className="status-bar-colors">
+              {documentColors.map((color, index) => (
+                <span
+                  key={index}
+                  className="color-swatch"
+                  style={{
+                    backgroundColor: normalizeColor(color),
+                  }}
+                  title={color}
+                />
+              ))}
+            </div>
           )}
         </div>
       )}

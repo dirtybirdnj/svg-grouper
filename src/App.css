@@ -17,6 +17,83 @@
   flex-shrink: 0;
 }
 
+.header-right-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-left: auto;
+}
+
+.header-function-buttons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding-right: 1rem;
+  border-right: 1px solid #ddd;
+}
+
+.function-button {
+  padding: 0 0.75rem;
+  height: 32px;
+  border: 1px solid transparent;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  transition: all 0.2s;
+}
+
+.function-button:hover {
+  filter: brightness(1.1);
+}
+
+.function-button:active {
+  transform: scale(0.95);
+}
+
+.header-zoom-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.header-zoom-controls button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.header-zoom-controls button:hover {
+  background: #f0f0f0;
+  border-color: #4a90e2;
+}
+
+.header-zoom-controls button:active {
+  transform: scale(0.95);
+}
+
+.header-zoom-controls .zoom-level {
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  font-size: 0.85rem;
+  color: #666;
+  min-width: 50px;
+  justify-content: center;
+}
+
 .app-title {
   display: flex;
   align-items: center;
@@ -247,6 +324,39 @@
   border: 1px solid #ddd;
 }
 
+.crop-options-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #fafafa;
+  border-bottom: 1px solid #ddd;
+  flex-wrap: wrap;
+}
+
+.crop-ratio-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.crop-ratio-button {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: all 0.2s;
+}
+
+.crop-ratio-button:hover {
+  border-color: #4a90e2;
+}
+
+.crop-ratio-button:active {
+  transform: scale(0.95);
+}
+
 .crop-input {
   width: 80px;
   padding: 0.25rem 0.5rem;
@@ -426,6 +536,20 @@
   color: #666;
   z-index: 100;
   box-shadow: 0 -2px 4px rgba(0, 0, 0, 0.05);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.status-bar-left {
+  display: flex;
+  align-items: center;
+}
+
+.status-bar-colors {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .status-bar .status-filename {

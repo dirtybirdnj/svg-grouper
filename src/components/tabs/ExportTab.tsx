@@ -11,7 +11,7 @@ interface SVGStatistics {
   maxDepth: number
   colorPalette: string[]
   operationCounts: Record<string, number>
-  layerStats: { name: string; paths: number; depth: number }[]
+  layerStats: { name: string; paths: number; depth: number; colors: string[] }[]
 }
 
 function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
@@ -86,19 +86,41 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
   // Calculate layer stats
   const collectLayerStats = (node: SVGNode, depth: number) => {
     let pathCount = 0
-    const countPaths = (n: SVGNode) => {
+    const layerColors = new Set<string>()
+
+    const collectFromNode = (n: SVGNode) => {
       const tagName = n.element.tagName.toLowerCase()
       if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) {
         pathCount++
       }
-      n.children.forEach(countPaths)
+
+      // Extract colors from this element
+      const fill = n.element.getAttribute('fill')
+      const stroke = n.element.getAttribute('stroke')
+      const style = n.element.getAttribute('style')
+
+      if (fill && fill !== 'none' && fill !== 'transparent') {
+        layerColors.add(fill)
+      }
+      if (stroke && stroke !== 'none' && stroke !== 'transparent') {
+        layerColors.add(stroke)
+      }
+      if (style) {
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (fillMatch && fillMatch[1] !== 'none') layerColors.add(fillMatch[1].trim())
+        if (strokeMatch && strokeMatch[1] !== 'none') layerColors.add(strokeMatch[1].trim())
+      }
+
+      n.children.forEach(collectFromNode)
     }
-    countPaths(node)
+    collectFromNode(node)
 
     stats.layerStats.push({
       name: node.name || node.id,
       paths: pathCount,
       depth,
+      colors: Array.from(layerColors),
     })
 
     node.children.forEach(child => {
@@ -270,60 +292,56 @@ export default function ExportTab() {
         <div className="analysis-container">
           <h2>SVG Analysis</h2>
 
-          {/* Document Info */}
-          <section className="analysis-section">
-            <h3>Document Information</h3>
-            <div className="info-grid">
-              <div className="info-item">
-                <span className="info-label">File Name</span>
-                <span className="info-value">{fileName || 'Untitled'}</span>
-              </div>
-              <div className="info-item">
-                <span className="info-label">File Size</span>
-                <span className="info-value">{formatBytes(svgSizeBytes)}</span>
-              </div>
-            </div>
-          </section>
-
-          {/* Dimensions */}
-          {svgDimensions && (
-            <section className="analysis-section">
-              <h3>Dimensions</h3>
-              <div className="info-grid">
+          {/* Top row: Document Info & Dimensions, Content Statistics */}
+          <div className="analysis-top-row">
+            {/* Document Info & Dimensions */}
+            <section className="analysis-section compact">
+              <h3>Document</h3>
+              <div className="info-list">
                 <div className="info-item">
-                  <span className="info-label">Pixels</span>
-                  <span className="info-value">
-                    {svgDimensions.width.toFixed(0)} × {svgDimensions.height.toFixed(0)} px
-                  </span>
+                  <span className="info-label">File Name</span>
+                  <span className="info-value">{fileName || 'Untitled'}</span>
                 </div>
                 <div className="info-item">
-                  <span className="info-label">Inches (96 DPI)</span>
-                  <span className="info-value">
-                    {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)}"
-                  </span>
+                  <span className="info-label">File Size</span>
+                  <span className="info-value">{formatBytes(svgSizeBytes)}</span>
                 </div>
-                <div className="info-item">
-                  <span className="info-label">Millimeters</span>
-                  <span className="info-value">
-                    {(svgDimensions.width / 3.78).toFixed(1)} × {(svgDimensions.height / 3.78).toFixed(1)} mm
-                  </span>
-                </div>
-                <div className="info-item">
-                  <span className="info-label">Aspect Ratio</span>
-                  <span className="info-value">
-                    {(svgDimensions.width / svgDimensions.height).toFixed(3)}:1
-                  </span>
-                </div>
+                {svgDimensions && (
+                  <>
+                    <div className="info-item">
+                      <span className="info-label">Pixels</span>
+                      <span className="info-value">
+                        {svgDimensions.width.toFixed(0)} × {svgDimensions.height.toFixed(0)} px
+                      </span>
+                    </div>
+                    <div className="info-item">
+                      <span className="info-label">Inches (96 DPI)</span>
+                      <span className="info-value">
+                        {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)}"
+                      </span>
+                    </div>
+                    <div className="info-item">
+                      <span className="info-label">Millimeters</span>
+                      <span className="info-value">
+                        {(svgDimensions.width / 3.78).toFixed(1)} × {(svgDimensions.height / 3.78).toFixed(1)} mm
+                      </span>
+                    </div>
+                    <div className="info-item">
+                      <span className="info-label">Aspect Ratio</span>
+                      <span className="info-value">
+                        {(svgDimensions.width / svgDimensions.height).toFixed(3)}:1
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
             </section>
-          )}
 
-          {/* Content Statistics */}
-          {stats && (
-            <>
-              <section className="analysis-section">
+            {/* Content Statistics */}
+            {stats && (
+              <section className="analysis-section compact">
                 <h3>Content Statistics</h3>
-                <div className="info-grid">
+                <div className="info-list">
                   <div className="info-item">
                     <span className="info-label">Total Elements</span>
                     <span className="info-value">{stats.totalNodes.toLocaleString()}</span>
@@ -346,45 +364,52 @@ export default function ExportTab() {
                   </div>
                 </div>
               </section>
+            )}
+          </div>
 
-              {/* Path Operations */}
-              {Object.keys(stats.operationCounts).length > 0 && (
-                <section className="analysis-section">
-                  <h3>Path Operations</h3>
-                  <div className="operations-list">
-                    {Object.entries(stats.operationCounts)
-                      .sort((a, b) => b[1] - a[1])
-                      .map(([cmd, count]) => (
-                        <div key={cmd} className="operation-item">
-                          <span className="operation-cmd">{cmd}</span>
-                          <span className="operation-name">{COMMAND_NAMES[cmd] || cmd}</span>
-                          <span className="operation-count">{count.toLocaleString()}</span>
+          {stats && (
+            <>
+              {/* Path Operations & Color Palette row */}
+              <div className="analysis-middle-row">
+                {/* Path Operations */}
+                {Object.keys(stats.operationCounts).length > 0 && (
+                  <section className="analysis-section compact">
+                    <h3>Path Operations</h3>
+                    <div className="operations-list">
+                      {Object.entries(stats.operationCounts)
+                        .sort((a, b) => b[1] - a[1])
+                        .map(([cmd, count]) => (
+                          <div key={cmd} className="operation-item">
+                            <span className="operation-cmd">{cmd}</span>
+                            <span className="operation-name">{COMMAND_NAMES[cmd] || cmd}</span>
+                            <span className="operation-count">{count.toLocaleString()}</span>
+                          </div>
+                        ))}
+                    </div>
+                    <div className="operations-total">
+                      Total: {Object.values(stats.operationCounts).reduce((a, b) => a + b, 0).toLocaleString()} operations
+                    </div>
+                  </section>
+                )}
+
+                {/* Color Palette */}
+                {stats.colorPalette.length > 0 && (
+                  <section className="analysis-section compact">
+                    <h3>Color Palette ({stats.colorPalette.length} colors)</h3>
+                    <div className="color-palette">
+                      {stats.colorPalette.map((color, index) => (
+                        <div key={index} className="color-item" title={color}>
+                          <span
+                            className="color-swatch"
+                            style={{ backgroundColor: color }}
+                          />
+                          <span className="color-value">{color}</span>
                         </div>
                       ))}
-                  </div>
-                  <div className="operations-total">
-                    Total: {Object.values(stats.operationCounts).reduce((a, b) => a + b, 0).toLocaleString()} operations
-                  </div>
-                </section>
-              )}
-
-              {/* Color Palette */}
-              {stats.colorPalette.length > 0 && (
-                <section className="analysis-section">
-                  <h3>Color Palette ({stats.colorPalette.length} colors)</h3>
-                  <div className="color-palette">
-                    {stats.colorPalette.map((color, index) => (
-                      <div key={index} className="color-item" title={color}>
-                        <span
-                          className="color-swatch"
-                          style={{ backgroundColor: color }}
-                        />
-                        <span className="color-value">{color}</span>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
+                    </div>
+                  </section>
+                )}
+              </div>
 
               {/* Layer Summary */}
               {stats.layerStats.length > 0 && (
@@ -399,7 +424,24 @@ export default function ExportTab() {
                         >
                           {layer.name}
                         </span>
-                        <span className="layer-paths">{layer.paths} paths</span>
+                        <div className="layer-info">
+                          {layer.colors.length > 0 && (
+                            <div className="layer-colors">
+                              {layer.colors.slice(0, 5).map((color, colorIndex) => (
+                                <span
+                                  key={colorIndex}
+                                  className="layer-color-swatch"
+                                  style={{ backgroundColor: color }}
+                                  title={color}
+                                />
+                              ))}
+                              {layer.colors.length > 5 && (
+                                <span className="layer-colors-more">+{layer.colors.length - 5}</span>
+                              )}
+                            </div>
+                          )}
+                          <span className="layer-paths">{layer.paths} paths</span>
+                        </div>
                       </div>
                     ))}
                     {stats.layerStats.length > 20 && (
