@@ -164,7 +164,7 @@ const COMMAND_NAMES: Record<string, string> = {
 }
 
 export default function ExportTab() {
-  const { svgContent, svgDimensions, layerNodes, fileName } = useAppContext()
+  const { svgContent, svgDimensions, layerNodes, fileName, svgElementRef } = useAppContext()
   const [paperSize, setPaperSize] = useState('original')
   const [includeBackground, setIncludeBackground] = useState(false)
   const [normalizeStrokes, setNormalizeStrokes] = useState(false)
@@ -192,14 +192,11 @@ export default function ExportTab() {
   }
 
   const handleExport = () => {
-    if (!svgContent) return
+    // Use the live SVG element from the DOM (includes all modifications like hatching)
+    if (!svgElementRef.current) return
 
-    let svgString = svgContent
-
-    // Apply export options
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(svgString, 'image/svg+xml')
-    const svgElement = doc.querySelector('svg')
+    // Clone the SVG element to avoid modifying the original
+    const svgElement = svgElementRef.current.cloneNode(true) as SVGSVGElement
 
     if (!svgElement) return
 
@@ -224,7 +221,7 @@ export default function ExportTab() {
 
     // Add white background if requested
     if (includeBackground) {
-      const rect = doc.createElementNS('http://www.w3.org/2000/svg', 'rect')
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
       rect.setAttribute('width', '100%')
       rect.setAttribute('height', '100%')
       rect.setAttribute('fill', 'white')
@@ -249,7 +246,7 @@ export default function ExportTab() {
     }
 
     const serializer = new XMLSerializer()
-    svgString = serializer.serializeToString(svgElement)
+    const svgString = serializer.serializeToString(svgElement)
 
     const blob = new Blob([svgString], { type: 'image/svg+xml' })
     const url = URL.createObjectURL(blob)

@@ -6,4 +6,6 @@ export interface SVGNode {
   children: SVGNode[]
   isGroup: boolean
   isHidden?: boolean
+  // Custom SVG markup to render instead of the original element (used for line fill)
+  customMarkup?: string
 }
