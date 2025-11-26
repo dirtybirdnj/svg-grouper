@@ -38,6 +38,7 @@ function App() {
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [splitArmed, setSplitArmed] = useState(false)
   const [cropArmed, setCropArmed] = useState(false)
+  const [flattenArmed, setFlattenArmed] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>('')
   const [cropProgress, setCropProgress] = useState<{
     current: number
@@ -125,11 +126,12 @@ function App() {
     }
   }, [handleProgress])
 
-  // Disarm delete/split/crop when user interacts with other features
+  // Disarm delete/split/crop/flatten when user interacts with other features
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
     setSplitArmed(false)
     setCropArmed(false)
+    setFlattenArmed(false)
     setStatusMessage('')
   }, [])
 
@@ -863,6 +865,162 @@ function App() {
     // TODO: Implement crop logic
   }
 
+  const handleFlattenAll = () => {
+    if (!flattenArmed) {
+      // First click - arm the flatten action
+      setFlattenArmed(true)
+      setDeleteArmed(false)
+      setSplitArmed(false)
+      setCropArmed(false)
+      setStatusMessage('Click Flatten again to confirm')
+      return
+    }
+
+    // Second click - execute flatten
+    setFlattenArmed(false)
+    setStatusMessage('')
+
+    // Helper to get color from an element
+    const getElementColor = (element: Element): string | null => {
+      const fill = element.getAttribute('fill')
+      const stroke = element.getAttribute('stroke')
+      const style = element.getAttribute('style')
+
+      if (style) {
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
+        if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
+      }
+
+      if (fill && fill !== 'none' && fill !== 'transparent') return fill
+      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
+
+      return null
+    }
+
+    // Step 1: Delete empty layers (groups with no children)
+    const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.filter(node => {
+        if (node.isGroup && node.children.length === 0) {
+          // Remove empty group from DOM
+          node.element.remove()
+          return false
+        }
+        if (node.children.length > 0) {
+          node.children = deleteEmptyLayers(node.children)
+          // Check again after processing children
+          if (node.isGroup && node.children.length === 0) {
+            node.element.remove()
+            return false
+          }
+        }
+        return true
+      })
+    }
+
+    // Step 2: Recursively ungroup all groups until only paths remain
+    const ungroupAll = (nodes: SVGNode[]): SVGNode[] => {
+      let result: SVGNode[] = []
+
+      for (const node of nodes) {
+        if (node.isGroup && node.children.length > 0) {
+          // Move children out of this group in the DOM
+          const parent = node.element.parentElement
+          if (parent) {
+            // First recursively ungroup children
+            const ungroupedChildren = ungroupAll(node.children)
+
+            // Move each child to the parent
+            for (const child of ungroupedChildren) {
+              parent.insertBefore(child.element, node.element)
+              result.push(child)
+            }
+
+            // Remove the now-empty group
+            node.element.remove()
+          }
+        } else if (!node.isGroup) {
+          // It's a path or other non-group element, keep it
+          result.push(node)
+        }
+      }
+
+      return result
+    }
+
+    // Step 3: Group by color (similar to handleGroupByColor but operates on root level)
+    const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
+      // Group children by color
+      const colorGroups = new Map<string, SVGNode[]>()
+      nodes.forEach(node => {
+        const color = getElementColor(node.element) || 'no-color'
+        if (!colorGroups.has(color)) {
+          colorGroups.set(color, [])
+        }
+        colorGroups.get(color)!.push(node)
+      })
+
+      // If only one color or no colors, no grouping needed
+      if (colorGroups.size <= 1) return nodes
+
+      // Get the SVG element to append groups to
+      const svgElement = document.querySelector('.canvas-content svg')
+      if (!svgElement) return nodes
+
+      // Create new groups
+      const newNodes: SVGNode[] = []
+      colorGroups.forEach((groupNodes, color) => {
+        if (groupNodes.length === 1) {
+          // Single node, don't group
+          newNodes.push(groupNodes[0])
+        } else {
+          // Create a new group
+          const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+          const groupId = `color-group-${color.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+          newGroup.setAttribute('id', groupId)
+
+          // Move elements into the new group
+          groupNodes.forEach(node => {
+            newGroup.appendChild(node.element)
+          })
+
+          // Append group to SVG
+          svgElement.appendChild(newGroup)
+
+          // Create SVGNode for the group
+          const groupNode: SVGNode = {
+            id: groupId,
+            type: 'g',
+            name: `color-${color}`,
+            element: newGroup,
+            isGroup: true,
+            children: groupNodes
+          }
+
+          newNodes.push(groupNode)
+        }
+      })
+
+      return newNodes
+    }
+
+    // Execute the flatten operation
+    let processedNodes = [...layerNodes]
+
+    // Step 1: Delete empty layers
+    processedNodes = deleteEmptyLayers(processedNodes)
+
+    // Step 2: Ungroup all groups recursively
+    processedNodes = ungroupAll(processedNodes)
+
+    // Step 3: Group by color
+    processedNodes = groupByColor(processedNodes)
+
+    setLayerNodes(processedNodes)
+    setSelectedNodeIds(new Set())
+  }
+
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
     setIsResizing(true)
@@ -1204,6 +1362,20 @@ function App() {
                   {showCrop ? '✕' : '◯'}
                 </button>
               </div>
+              <button
+                onClick={handleFlattenAll}
+                className="save-button"
+                title={flattenArmed ? "Click again to confirm flatten" : "Flatten: Remove empty layers, ungroup all, group by color"}
+                style={{
+                  background: flattenArmed ? '#e67e22' : '#3498db',
+                  borderColor: flattenArmed ? '#e67e22' : '#3498db',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem'
+                }}
+              >
+                🗄️ Flatten
+              </button>
               {showCrop && (
                 <button
                   onClick={handleCrop}
