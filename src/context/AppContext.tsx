@@ -26,6 +26,12 @@ interface AppContextType {
   // SVG element reference for syncing content
   svgElementRef: React.MutableRefObject<SVGSVGElement | null>
   syncSvgContent: () => void
+  // Rebuild SVG content from layer tree (uses customMarkup when available)
+  rebuildSvgFromLayers: (nodes?: SVGNode[]) => void
+  // Flag to skip re-parsing when SVG is updated programmatically
+  skipNextParse: React.MutableRefObject<boolean>
+  // Refresh element references after SVG rebuild
+  refreshElementRefs: () => void
 
   // Layer state
   layerNodes: SVGNode[]
@@ -99,6 +105,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // SVG element reference for syncing content
   const svgElementRef = useRef<SVGSVGElement | null>(null)
+  // Flag to skip re-parsing when SVG is updated programmatically
+  const skipNextParse = useRef(false)
 
   const syncSvgContent = useCallback(() => {
     if (svgElementRef.current) {
@@ -107,6 +115,138 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSvgContent(svgString)
     }
   }, [])
+
+  // Rebuild SVG content from the layer tree
+  // This uses customMarkup when available, otherwise the original element markup
+  // Pass nodes explicitly to avoid stale closure issues
+  const rebuildSvgFromLayers = useCallback((nodes?: SVGNode[]) => {
+    const nodesToUse = nodes ?? layerNodes
+    if (!svgElementRef.current || nodesToUse.length === 0) return
+
+    // Get the root SVG element's attributes
+    const rootSvg = svgElementRef.current
+    const svgAttrs: string[] = []
+    for (const attr of Array.from(rootSvg.attributes)) {
+      svgAttrs.push(`${attr.name}="${attr.value}"`)
+    }
+
+    // Build content from layer nodes
+    const buildNodeContent = (node: SVGNode): string => {
+      // If node has custom markup (e.g., from line fill), use that
+      if (node.customMarkup) {
+        // Apply visibility
+        if (node.isHidden) {
+          // Wrap in a group with display:none
+          return `<g style="display:none">${node.customMarkup}</g>`
+        }
+        return node.customMarkup
+      }
+
+      // For groups, build children recursively
+      if (node.isGroup && node.children.length > 0) {
+        const childContent = node.children.map(buildNodeContent).join('\n')
+        const el = node.element
+        const attrs: string[] = []
+        for (const attr of Array.from(el.attributes)) {
+          attrs.push(`${attr.name}="${attr.value}"`)
+        }
+        const style = node.isHidden ? ' style="display:none"' : ''
+        return `<${el.tagName} ${attrs.join(' ')}${style}>\n${childContent}\n</${el.tagName}>`
+      }
+
+      // For leaf nodes, use the element's outer HTML
+      const serializer = new XMLSerializer()
+      let markup = serializer.serializeToString(node.element)
+
+      // Ensure the element has an ID for later lookup
+      if (!markup.includes(` id="`)) {
+        // Add the node ID to the element
+        markup = markup.replace(/^<(\w+)/, `<$1 id="${node.id}"`)
+      }
+
+      // Apply visibility
+      if (node.isHidden) {
+        // Add display:none style
+        if (markup.includes('style="')) {
+          markup = markup.replace('style="', 'style="display:none;')
+        } else {
+          markup = markup.replace(/^<(\w+)(\s|>)/, '<$1 style="display:none"$2')
+        }
+      }
+
+      return markup
+    }
+
+    const content = nodesToUse.map(buildNodeContent).join('\n')
+    const newSvgContent = `<svg ${svgAttrs.join(' ')}>\n${content}\n</svg>`
+
+    // Set flag to skip re-parsing since we're updating from layer state
+    skipNextParse.current = true
+    setSvgContent(newSvgContent)
+
+    // Schedule element reference refresh after DOM updates
+    // This ensures layer nodes have fresh element references
+    setTimeout(() => {
+      if (svgElementRef.current) {
+        const refreshRefs = (nodes: SVGNode[]): SVGNode[] => {
+          return nodes.map(node => {
+            // Try to find fresh element by ID
+            let newElement: Element | null = null
+            try {
+              newElement = svgElementRef.current?.querySelector(`#${CSS.escape(node.id)}`) || null
+              // Also try hatch group ID
+              if (!newElement && node.customMarkup) {
+                newElement = svgElementRef.current?.querySelector(`#hatch-${CSS.escape(node.id)}`) || null
+              }
+            } catch {
+              // CSS.escape might fail on some IDs
+            }
+
+            return {
+              ...node,
+              element: newElement || node.element,
+              children: node.children.length > 0 ? refreshRefs(node.children) : node.children
+            }
+          })
+        }
+
+        const refreshedNodes = refreshRefs(nodesToUse)
+        setLayerNodes(refreshedNodes)
+      }
+    }, 50) // Small delay to ensure DOM has updated
+  }, [layerNodes, setLayerNodes])
+
+  // Refresh element references in layer nodes after SVG rebuild
+  // This re-queries the DOM to get fresh element references
+  const refreshElementRefs = useCallback(() => {
+    if (!svgElementRef.current) return
+
+    const svg = svgElementRef.current
+
+    const updateElementRefs = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.map(node => {
+        // Try to find the element by ID in the new DOM
+        let newElement = svg.querySelector(`#${CSS.escape(node.id)}`)
+
+        // If element has customMarkup, look for the hatch group
+        if (!newElement && node.customMarkup) {
+          newElement = svg.querySelector(`#hatch-${CSS.escape(node.id)}`)
+        }
+
+        // Fall back to original element if not found (might be detached)
+        const element = newElement || node.element
+
+        return {
+          ...node,
+          element,
+          children: node.children.length > 0 ? updateElementRefs(node.children) : node.children
+        }
+      })
+    }
+
+    const updatedNodes = updateElementRefs(layerNodes)
+    setLayerNodes(updatedNodes)
+  }, [layerNodes, setLayerNodes])
 
   // Canvas state
   const [scale, setScale] = useState(1)
@@ -160,6 +300,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSvgDimensions,
     svgElementRef,
     syncSvgContent,
+    rebuildSvgFromLayers,
+    skipNextParse,
+    refreshElementRefs,
     layerNodes,
     setLayerNodes,
     selectedNodeIds,

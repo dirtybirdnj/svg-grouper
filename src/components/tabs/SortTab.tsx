@@ -38,7 +38,8 @@ export default function SortTab() {
     cropSize,
     setCropSize,
     statusMessage,
-    syncSvgContent,
+    rebuildSvgFromLayers,
+    skipNextParse,
   } = useAppContext()
 
   const [sidebarWidth, setSidebarWidth] = useState(300)
@@ -57,6 +58,12 @@ export default function SortTab() {
   }, [setSvgContent, setFileName, setSelectedNodeIds, setLastSelectedNodeId, parsingRef])
 
   const handleSVGParsed = useCallback(async (svg: SVGSVGElement) => {
+    // Skip parsing if this was a programmatic update from rebuildSvgFromLayers
+    if (skipNextParse.current) {
+      skipNextParse.current = false
+      return
+    }
+
     if (parsingRef.current) {
       return
     }
@@ -97,7 +104,7 @@ export default function SortTab() {
         status: 'Error parsing SVG',
       })
     }
-  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef])
+  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse])
 
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
@@ -199,10 +206,6 @@ export default function SortTab() {
           const newHiddenState = !node.isHidden
 
           const updateVisibility = (n: SVGNode, hidden: boolean): SVGNode => {
-            if (n.element instanceof SVGElement || n.element instanceof HTMLElement) {
-              n.element.style.display = hidden ? 'none' : ''
-            }
-
             return {
               ...n,
               isHidden: hidden,
@@ -219,8 +222,9 @@ export default function SortTab() {
       })
     }
 
-    setLayerNodes(toggleNodeVisibility(layerNodes))
-    syncSvgContent()
+    const updatedNodes = toggleNodeVisibility(layerNodes)
+    setLayerNodes(updatedNodes)
+    rebuildSvgFromLayers(updatedNodes)
   }
 
   const handleIsolate = () => {
@@ -228,10 +232,6 @@ export default function SortTab() {
       // Un-isolate: show all layers
       const showAllNodes = (nodes: SVGNode[]): SVGNode[] => {
         return nodes.map(node => {
-          if (node.element instanceof SVGElement || node.element instanceof HTMLElement) {
-            node.element.style.display = ''
-          }
-
           return {
             ...node,
             isHidden: false,
@@ -240,9 +240,10 @@ export default function SortTab() {
         })
       }
 
-      setLayerNodes(showAllNodes(layerNodes))
+      const updatedNodes = showAllNodes(layerNodes)
+      setLayerNodes(updatedNodes)
       setIsIsolated(false)
-      syncSvgContent()
+      rebuildSvgFromLayers(updatedNodes)
     } else {
       // Isolate: hide all except selected
       const isolateNodes = (nodes: SVGNode[], parentSelected: boolean): SVGNode[] => {
@@ -250,10 +251,6 @@ export default function SortTab() {
           const isSelected = selectedNodeIds.has(node.id)
           const shouldBeVisible = isSelected || parentSelected
           const hidden = !shouldBeVisible
-
-          if (node.element instanceof SVGElement || node.element instanceof HTMLElement) {
-            node.element.style.display = hidden ? 'none' : ''
-          }
 
           return {
             ...node,
@@ -263,9 +260,10 @@ export default function SortTab() {
         })
       }
 
-      setLayerNodes(isolateNodes(layerNodes, false))
+      const updatedNodes = isolateNodes(layerNodes, false)
+      setLayerNodes(updatedNodes)
       setIsIsolated(true)
-      syncSvgContent()
+      rebuildSvgFromLayers(updatedNodes)
     }
   }
 
@@ -273,19 +271,24 @@ export default function SortTab() {
     const deleteNode = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.filter(node => {
         if (selectedNodeIds.has(node.id)) {
-          node.element.remove()
           return false
         }
         if (node.children.length > 0) {
-          node.children = deleteNode(node.children)
+          return { ...node, children: deleteNode(node.children) }
         }
         return true
+      }).map(node => {
+        if (node.children && node.children.length > 0) {
+          return { ...node, children: deleteNode(node.children) }
+        }
+        return node
       })
     }
 
-    setLayerNodes(deleteNode(layerNodes))
+    const updatedNodes = deleteNode(layerNodes)
+    setLayerNodes(updatedNodes)
     setSelectedNodeIds(new Set())
-    syncSvgContent()
+    rebuildSvgFromLayers(updatedNodes)
   }
 
   const canGroupByColor = (): boolean => {
@@ -418,9 +421,10 @@ export default function SortTab() {
       })
     }
 
-    setLayerNodes(updateNodeChildren(layerNodes))
+    const updatedNodes = updateNodeChildren(layerNodes)
+    setLayerNodes(updatedNodes)
     setSelectedNodeIds(new Set())
-    syncSvgContent()
+    rebuildSvgFromLayers(updatedNodes)
   }
 
   const handleGroupUngroup = () => {
@@ -463,9 +467,10 @@ export default function SortTab() {
           return result
         }
 
-        setLayerNodes(ungroupNode(layerNodes, selectedId))
+        const updatedNodes = ungroupNode(layerNodes, selectedId)
+        setLayerNodes(updatedNodes)
         setSelectedNodeIds(new Set())
-        syncSvgContent()
+        rebuildSvgFromLayers(updatedNodes)
         return
       }
     }
@@ -551,9 +556,10 @@ export default function SortTab() {
         return result
       }
 
-      setLayerNodes(removeAndGroup(layerNodes))
+      const updatedNodes = removeAndGroup(layerNodes)
+      setLayerNodes(updatedNodes)
       setSelectedNodeIds(new Set())
-      syncSvgContent()
+      rebuildSvgFromLayers(updatedNodes)
     }
   }
 

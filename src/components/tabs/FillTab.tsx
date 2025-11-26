@@ -319,10 +319,12 @@ export default function FillTab() {
   const {
     svgContent,
     layerNodes,
+    setLayerNodes,
     fillTargetNodeId,
     setFillTargetNodeId,
     setActiveTab,
-    syncSvgContent,
+    rebuildSvgFromLayers,
+    svgElementRef,
   } = useAppContext()
 
   const [lineSpacing, setLineSpacing] = useState(5)
@@ -351,9 +353,68 @@ export default function FillTab() {
     return findNode(layerNodes, fillTargetNodeId)
   }, [layerNodes, fillTargetNodeId])
 
+  // Helper to get a fresh element reference from the live DOM
+  const getFreshElement = useCallback((nodeId: string, originalElement: Element): Element => {
+    if (!svgElementRef.current) {
+      console.log(`getFreshElement: No svgElementRef for ${nodeId}`)
+      return originalElement
+    }
+
+    // If original element is still connected to DOM, use it directly
+    if (originalElement.isConnected) {
+      console.log(`getFreshElement: Using connected original element for ${nodeId}`)
+      return originalElement
+    }
+
+    // Try to find the element by ID in the live DOM
+    try {
+      const freshElement = svgElementRef.current.querySelector(`#${CSS.escape(nodeId)}`)
+      if (freshElement) {
+        console.log(`getFreshElement: Found fresh element by ID for ${nodeId}`)
+        return freshElement
+      }
+    } catch (e) {
+      console.log(`getFreshElement: querySelector failed for ${nodeId}:`, e)
+    }
+
+    // Try to find by matching tag and attributes from original element
+    const origD = originalElement.getAttribute('d')
+    const origPoints = originalElement.getAttribute('points')
+
+    if (origD) {
+      // For paths, try to find by d attribute
+      const allPaths = svgElementRef.current.querySelectorAll('path')
+      for (const path of allPaths) {
+        if (path.getAttribute('d') === origD) {
+          console.log(`getFreshElement: Found fresh path by d attribute for ${nodeId}`)
+          return path
+        }
+      }
+    } else if (origPoints) {
+      // For polygons, try to find by points attribute
+      const allPolygons = svgElementRef.current.querySelectorAll('polygon')
+      for (const poly of allPolygons) {
+        if (poly.getAttribute('points') === origPoints) {
+          console.log(`getFreshElement: Found fresh polygon by points for ${nodeId}`)
+          return poly
+        }
+      }
+    }
+
+    console.log(`getFreshElement: Could not find fresh element for ${nodeId}, using disconnected original`)
+    return originalElement
+  }, [svgElementRef])
+
   // Extract all fill paths from the target node (including nested children)
   const fillPaths = useMemo(() => {
-    if (!targetNode) return []
+    console.log('=== fillPaths useMemo running ===')
+    console.log('targetNode:', targetNode?.id, targetNode?.name)
+    console.log('svgElementRef.current:', svgElementRef.current ? 'exists' : 'null')
+
+    if (!targetNode) {
+      console.log('No targetNode, returning empty array')
+      return []
+    }
 
     const paths: FillPathInfo[] = []
 
@@ -376,8 +437,17 @@ export default function FillTab() {
     }
 
     const extractFillPaths = (node: SVGNode) => {
-      const element = node.element
+      // Skip nodes that already have customMarkup (already filled)
+      if (node.customMarkup) {
+        console.log(`Skipping node ${node.id} - has customMarkup`)
+        return
+      }
+
+      // Get fresh element reference from the live DOM
+      const element = getFreshElement(node.id, node.element)
       const fill = getElementFill(element)
+
+      console.log(`Processing node ${node.id}: isGroup=${node.isGroup}, fill=${fill}, tagName=${element.tagName}, isConnected=${element.isConnected}`)
 
       // Only include actual shape elements with fills (not groups)
       if (fill && !node.isGroup) {
@@ -408,6 +478,7 @@ export default function FillTab() {
           pathData = element.getAttribute('points') || ''
         }
 
+        console.log(`  -> Adding path: ${node.id}, type=${tagName}, pathData length=${pathData.length}`)
         paths.push({
           id: node.id,
           type: tagName,
@@ -424,42 +495,71 @@ export default function FillTab() {
     }
 
     extractFillPaths(targetNode)
+    console.log(`fillPaths result: ${paths.length} paths`)
     return paths
-  }, [targetNode])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetNode, getFreshElement, svgContent]) // svgContent dependency ensures we get fresh elements after rebuild
 
   // Calculate bounding box of all fill paths
   const boundingBox = useMemo(() => {
-    if (fillPaths.length === 0) return null
+    console.log('=== boundingBox useMemo running ===')
+    console.log(`fillPaths.length: ${fillPaths.length}`)
+
+    if (fillPaths.length === 0) {
+      console.log('No fill paths, returning null')
+      return null
+    }
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    let successfulBBoxCount = 0
 
-    fillPaths.forEach(path => {
+    fillPaths.forEach((path, index) => {
       try {
-        const bbox = (path.element as SVGGraphicsElement).getBBox?.()
+        const element = path.element as SVGGraphicsElement
+        console.log(`  Path ${index} (${path.id}): isConnected=${element.isConnected}, tagName=${element.tagName}`)
+
+        const bbox = element.getBBox?.()
         if (bbox) {
+          console.log(`    -> getBBox success: x=${bbox.x}, y=${bbox.y}, w=${bbox.width}, h=${bbox.height}`)
           minX = Math.min(minX, bbox.x)
           minY = Math.min(minY, bbox.y)
           maxX = Math.max(maxX, bbox.x + bbox.width)
           maxY = Math.max(maxY, bbox.y + bbox.height)
+          successfulBBoxCount++
+        } else {
+          console.log(`    -> getBBox returned null/undefined`)
         }
-      } catch {
-        // getBBox can fail if element isn't rendered
+      } catch (e) {
+        console.log(`    -> getBBox FAILED:`, e)
       }
     })
 
-    if (minX === Infinity) return null
+    console.log(`Successful getBBox calls: ${successfulBBoxCount}/${fillPaths.length}`)
 
-    return {
+    if (minX === Infinity) {
+      console.log('No valid bboxes found, returning null')
+      return null
+    }
+
+    const result = {
       x: minX,
       y: minY,
       width: maxX - minX,
       height: maxY - minY,
     }
+    console.log('boundingBox result:', result)
+    return result
   }, [fillPaths])
 
   // Generate hatch lines for each path
   const hatchedPaths = useMemo(() => {
-    if (!showHatchPreview || fillPaths.length === 0 || !boundingBox) return []
+    console.log('=== hatchedPaths useMemo running ===')
+    console.log(`showHatchPreview=${showHatchPreview}, fillPaths.length=${fillPaths.length}, boundingBox=`, boundingBox)
+
+    if (!showHatchPreview || fillPaths.length === 0 || !boundingBox) {
+      console.log('Early return from hatchedPaths')
+      return []
+    }
 
     // Generate global hatch lines that cover all shapes - aligned to origin for consistency
     const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
@@ -467,13 +567,16 @@ export default function FillTab() {
 
     const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
 
-    fillPaths.forEach(path => {
+    fillPaths.forEach((path, index) => {
       try {
+        console.log(`Generating hatch for path ${index} (${path.id}): element connected=${path.element.isConnected}`)
         const polygon = getPolygonPoints(path.element)
+        console.log(`  -> polygon points: ${polygon.length}`)
 
         if (polygon.length >= 3) {
           // Clip global lines to this polygon
           let lines = clipLinesToPolygon(globalLines, polygon, inset)
+          console.log(`  -> clipped lines: ${lines.length}`)
 
           // Add cross-hatch if enabled
           if (crossHatch) {
@@ -482,12 +585,15 @@ export default function FillTab() {
           }
 
           results.push({ pathInfo: path, lines, polygon })
+        } else {
+          console.log(`  -> skipping, not enough polygon points`)
         }
-      } catch {
-        // getBBox or polygon extraction failed
+      } catch (e) {
+        console.log(`  -> FAILED:`, e)
       }
     })
 
+    console.log(`hatchedPaths result: ${results.length} paths with hatching`)
     return results
   }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset])
 
@@ -496,10 +602,17 @@ export default function FillTab() {
 
   // Generate preview SVG content
   const previewSvg = useMemo(() => {
-    if (fillPaths.length === 0 || !boundingBox) return null
+    console.log('=== previewSvg useMemo running ===')
+    console.log(`fillPaths.length=${fillPaths.length}, boundingBox=`, boundingBox)
+
+    if (fillPaths.length === 0 || !boundingBox) {
+      console.log('previewSvg: early return, no fillPaths or boundingBox')
+      return null
+    }
 
     const padding = 20
     const viewBox = `${boundingBox.x - padding} ${boundingBox.y - padding} ${boundingBox.width + padding * 2} ${boundingBox.height + padding * 2}`
+    console.log(`previewSvg viewBox: ${viewBox}`)
 
     const pathElements: string[] = []
 
@@ -550,48 +663,61 @@ export default function FillTab() {
   const handleApplyFill = useCallback(() => {
     if (!targetNode || hatchedPaths.length === 0) return
 
-    // Apply the hatching to the actual SVG elements
+    // Build a map of node ID to custom markup
+    const customMarkupMap = new Map<string, string>()
+
+    // Generate markup for each hatched path
     hatchedPaths.forEach(({ pathInfo, lines }) => {
-      const element = pathInfo.element
-      const parent = element.parentElement
-      if (!parent) return
+      // Build the hatch group markup as a string
+      const linesMarkup = lines.map(line =>
+        `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${pathInfo.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
+      ).join('\n')
 
-      // Create a group to hold the hatched lines
-      const hatchGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-      hatchGroup.setAttribute('id', `hatch-${pathInfo.id}`)
-
-      // Add hatch lines directly (no clip path - lines are already clipped via intersection math)
-      lines.forEach(line => {
-        const lineEl = document.createElementNS('http://www.w3.org/2000/svg', 'line')
-        lineEl.setAttribute('x1', String(line.x1.toFixed(2)))
-        lineEl.setAttribute('y1', String(line.y1.toFixed(2)))
-        lineEl.setAttribute('x2', String(line.x2.toFixed(2)))
-        lineEl.setAttribute('y2', String(line.y2.toFixed(2)))
-        lineEl.setAttribute('stroke', pathInfo.color)
-        lineEl.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
-        lineEl.setAttribute('stroke-linecap', 'round')
-        hatchGroup.appendChild(lineEl)
-      })
-
-      // Add outline if retaining strokes
+      let outlineMarkup = ''
       if (retainStrokes) {
-        const outline = element.cloneNode(true) as Element
-        outline.setAttribute('fill', 'none')
-        outline.setAttribute('stroke', pathInfo.color)
-        outline.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
-        outline.removeAttribute('style')
-        hatchGroup.appendChild(outline)
+        // Clone the original element and modify attributes for outline
+        const el = pathInfo.element.cloneNode(true) as Element
+        el.setAttribute('fill', 'none')
+        el.setAttribute('stroke', pathInfo.color)
+        el.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
+        el.removeAttribute('style')
+        const serializer = new XMLSerializer()
+        outlineMarkup = serializer.serializeToString(el)
       }
 
-      // Replace original element with hatch group
-      parent.replaceChild(hatchGroup, element)
+      const groupMarkup = `<g id="hatch-${pathInfo.id}">\n${linesMarkup}\n${outlineMarkup}\n</g>`
+      customMarkupMap.set(pathInfo.id, groupMarkup)
     })
 
-    // Sync the SVG content and go back to sort tab
-    syncSvgContent()
+    // Update layer nodes with custom markup
+    const updateNodeMarkup = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.map(node => {
+        const customMarkup = customMarkupMap.get(node.id)
+        if (customMarkup) {
+          return {
+            ...node,
+            customMarkup,
+            type: 'g',
+            isGroup: true,
+            name: `hatch-${node.name || node.id}`,
+          }
+        }
+        if (node.children.length > 0) {
+          return { ...node, children: updateNodeMarkup(node.children) }
+        }
+        return node
+      })
+    }
+
+    const updatedNodes = updateNodeMarkup(layerNodes)
+    setLayerNodes(updatedNodes)
+
+    // Rebuild SVG with the updated nodes (pass explicitly to avoid stale closure)
+    rebuildSvgFromLayers(updatedNodes)
+
     setFillTargetNodeId(null)
     setActiveTab('sort')
-  }, [targetNode, hatchedPaths, retainStrokes, penWidthPx, syncSvgContent, setFillTargetNodeId, setActiveTab])
+  }, [targetNode, hatchedPaths, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers])
 
   if (!svgContent) {
     return (
