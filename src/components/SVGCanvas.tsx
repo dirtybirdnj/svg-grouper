@@ -26,7 +26,7 @@ export default function SVGCanvas({
   cropAspectRatio = '3:4',
   cropSize = 0.5,
   svgDimensions = null,
-  onCropResize
+  onCropResize: _onCropResize
 }: SVGCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const svgContainerRef = useRef<HTMLDivElement>(null)

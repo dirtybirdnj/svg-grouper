@@ -12,8 +12,8 @@ function getGroupType(node: SVGNode): 'fill' | 'stroke' | 'mixed' | null {
     const stroke = elem.getAttribute('stroke')
     const style = elem.getAttribute('style') || ''
 
-    let hasFill = fill && fill !== 'none'
-    let hasStroke = stroke && stroke !== 'none'
+    let hasFill = !!(fill && fill !== 'none')
+    let hasStroke = !!(stroke && stroke !== 'none')
 
     // Check style attribute
     if (style.includes('fill:')) {
