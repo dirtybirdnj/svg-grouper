@@ -53,6 +53,14 @@ interface AppContextType {
   setCropAspectRatio: (ratio: '1:2' | '3:4' | '16:9' | '9:16') => void
   cropSize: number
   setCropSize: (size: number) => void
+
+  // Armed states for confirmation buttons
+  flattenArmed: boolean
+  setFlattenArmed: (armed: boolean) => void
+  cropArmed: boolean
+  setCropArmed: (armed: boolean) => void
+  statusMessage: string
+  setStatusMessage: (message: string) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -89,6 +97,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [showCrop, setShowCrop] = useState(false)
   const [cropAspectRatio, setCropAspectRatio] = useState<'1:2' | '3:4' | '16:9' | '9:16'>('3:4')
   const [cropSize, setCropSize] = useState(0.25)
+
+  // Armed states for confirmation buttons
+  const [flattenArmed, setFlattenArmed] = useState(false)
+  const [cropArmed, setCropArmed] = useState(false)
+  const [statusMessage, setStatusMessage] = useState('')
 
   const handleLoadStart = useCallback(() => {
     setLoadingState({
@@ -144,6 +157,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCropAspectRatio,
     cropSize,
     setCropSize,
+    flattenArmed,
+    setFlattenArmed,
+    cropArmed,
+    setCropArmed,
+    statusMessage,
+    setStatusMessage,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

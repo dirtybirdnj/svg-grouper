@@ -124,6 +124,41 @@ export default function SVGCanvas({
     setIsPanning(false)
   }
 
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+
+    // Get container bounds
+    const container = containerRef.current
+    if (!container) return
+
+    const rect = container.getBoundingClientRect()
+
+    // Click position relative to container
+    const clickX = e.clientX - rect.left
+    const clickY = e.clientY - rect.top
+
+    // Container center
+    const centerX = rect.width / 2
+    const centerY = rect.height / 2
+
+    // Calculate new scale (zoom in by 1.5x)
+    const zoomFactor = 1.5
+    const newScale = Math.min(10, scale * zoomFactor)
+
+    // Convert click position to SVG coordinates (before zoom)
+    // The SVG is transformed from center, so we need to account for that
+    const svgX = (clickX - centerX - offset.x) / scale
+    const svgY = (clickY - centerY - offset.y) / scale
+
+    // Calculate new offset to center the clicked point
+    // After zoom, we want the clicked SVG point to be at the container center
+    const newOffsetX = -svgX * newScale
+    const newOffsetY = -svgY * newScale
+
+    setScale(newScale)
+    setOffset({ x: newOffsetX, y: newOffsetY })
+  }
+
   // Calculate crop dimensions based on aspect ratio and size
   // Returns dimensions in SVG coordinate space (NOT VIEWPORT PIXELS!)
   const getCropDimensionsInPixels = () => {
@@ -163,6 +198,7 @@ export default function SVGCanvas({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onDoubleClick={handleDoubleClick}
       >
         <div
           ref={svgContainerRef}
