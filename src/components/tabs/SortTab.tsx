@@ -1040,40 +1040,45 @@ export default function SortTab() {
       {(statusMessage || fileName) && (
         <div className="status-bar">
           <div className="status-bar-left">
-            {statusMessage ? (
-              statusMessage
-            ) : (
-              fileName && (
-                <>
-                  <span className="status-filename">{fileName}</span>
-                  {svgDimensions && (
-                    <span className="status-dimensions">
-                      {' • '}
-                      {svgDimensions.width} × {svgDimensions.height} px
-                      {' • '}
-                      {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
-                      {' • '}
-                      {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
-                    </span>
-                  )}
-                </>
-              )
+            {fileName && (
+              <>
+                <span className="status-filename">{fileName}</span>
+                {svgDimensions && (
+                  <span className="status-dimensions">
+                    {' • '}
+                    {svgDimensions.width} × {svgDimensions.height} px
+                    {' • '}
+                    {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
+                    {' • '}
+                    {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
+                  </span>
+                )}
+              </>
             )}
           </div>
-          {documentColors.length > 0 && (
-            <div className="status-bar-colors">
-              {documentColors.map((color, index) => (
-                <span
-                  key={index}
-                  className="color-swatch"
-                  style={{
-                    backgroundColor: normalizeColor(color),
-                  }}
-                  title={color}
-                />
-              ))}
-            </div>
-          )}
+          <div className="status-bar-center">
+            {statusMessage && (
+              <span className={`status-message ${statusMessage.startsWith('error:') ? 'error' : ''}`}>
+                {statusMessage.startsWith('error:') ? statusMessage.slice(6) : statusMessage}
+              </span>
+            )}
+          </div>
+          <div className="status-bar-right">
+            {documentColors.length > 0 && (
+              <div className="status-bar-colors">
+                {documentColors.map((color, index) => (
+                  <span
+                    key={index}
+                    className="color-swatch"
+                    style={{
+                      backgroundColor: normalizeColor(color),
+                    }}
+                    title={color}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
