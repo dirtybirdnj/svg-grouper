@@ -23,6 +23,10 @@ interface AppContextType {
   svgDimensions: { width: number; height: number } | null
   setSvgDimensions: (dims: { width: number; height: number } | null) => void
 
+  // SVG element reference for syncing content
+  svgElementRef: React.MutableRefObject<SVGSVGElement | null>
+  syncSvgContent: () => void
+
   // Layer state
   layerNodes: SVGNode[]
   setLayerNodes: (nodes: SVGNode[]) => void
@@ -93,6 +97,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Parsing ref
   const parsingRef = useRef(false)
 
+  // SVG element reference for syncing content
+  const svgElementRef = useRef<SVGSVGElement | null>(null)
+
+  const syncSvgContent = useCallback(() => {
+    if (svgElementRef.current) {
+      const serializer = new XMLSerializer()
+      const svgString = serializer.serializeToString(svgElementRef.current)
+      setSvgContent(svgString)
+    }
+  }, [])
+
   // Canvas state
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState({ x: 0, y: 0 })
@@ -143,6 +158,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFileName,
     svgDimensions,
     setSvgDimensions,
+    svgElementRef,
+    syncSvgContent,
     layerNodes,
     setLayerNodes,
     selectedNodeIds,
