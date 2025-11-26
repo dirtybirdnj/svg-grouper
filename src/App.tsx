@@ -40,12 +40,12 @@ function App() {
   const [cropArmed, setCropArmed] = useState(false)
   const [flattenArmed, setFlattenArmed] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string>('')
-  const [cropProgress, setCropProgress] = useState<{
+  const [cropProgress] = useState<{
     current: number
     total: number
     status: string
   } | null>(null)
-  const [layerProcessingStates, setLayerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
+  const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const parsingRef = useRef(false)
 
   const handleLoadStart = useCallback(() => {
@@ -279,11 +279,6 @@ function App() {
   }
 
   const handleIsolate = () => {
-    // Helper to check if a node or any of its ancestors is selected
-    const isNodeOrAncestorSelected = (nodeId: string): boolean => {
-      return selectedNodeIds.has(nodeId)
-    }
-
     const isolateNodes = (nodes: SVGNode[], parentSelected: boolean): SVGNode[] => {
       return nodes.map(node => {
         const isSelected = selectedNodeIds.has(node.id)
