@@ -23,6 +23,13 @@ interface Point {
   y: number
 }
 
+interface OrderedLine extends HatchLine {
+  originalIndex: number
+  pathId: string
+  color: string
+  reversed: boolean
+}
+
 // Get polygon points from an SVG element
 function getPolygonPoints(element: Element): Point[] {
   const points: Point[] = []
@@ -315,6 +322,114 @@ function clipLinesToPolygon(
   return clippedLines
 }
 
+// Calculate distance between two points
+function distance(p1: Point, p2: Point): number {
+  const dx = p2.x - p1.x
+  const dy = p2.y - p1.y
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+// Get the start and end points of a line
+function lineEndpoints(line: HatchLine): { start: Point; end: Point } {
+  return {
+    start: { x: line.x1, y: line.y1 },
+    end: { x: line.x2, y: line.y2 }
+  }
+}
+
+// Optimize line order using nearest-neighbor algorithm (greedy TSP approximation)
+// Also considers reversing lines to minimize travel distance
+function optimizeLineOrder(
+  lines: { line: HatchLine; pathId: string; color: string; originalIndex: number }[]
+): OrderedLine[] {
+  if (lines.length === 0) return []
+  if (lines.length === 1) {
+    const { line, pathId, color, originalIndex } = lines[0]
+    return [{ ...line, pathId, color, originalIndex, reversed: false }]
+  }
+
+  const result: OrderedLine[] = []
+  const remaining = [...lines]
+
+  // Start with the first line (could also start from top-left corner)
+  const first = remaining.shift()!
+  result.push({ ...first.line, pathId: first.pathId, color: first.color, originalIndex: first.originalIndex, reversed: false })
+
+  let currentEnd = lineEndpoints(first.line).end
+
+  while (remaining.length > 0) {
+    let bestIndex = 0
+    let bestDistance = Infinity
+    let shouldReverse = false
+
+    // Find the nearest line (considering both orientations)
+    for (let i = 0; i < remaining.length; i++) {
+      const { start, end } = lineEndpoints(remaining[i].line)
+
+      // Distance to start of line (normal orientation)
+      const distToStart = distance(currentEnd, start)
+      if (distToStart < bestDistance) {
+        bestDistance = distToStart
+        bestIndex = i
+        shouldReverse = false
+      }
+
+      // Distance to end of line (reversed orientation)
+      const distToEnd = distance(currentEnd, end)
+      if (distToEnd < bestDistance) {
+        bestDistance = distToEnd
+        bestIndex = i
+        shouldReverse = true
+      }
+    }
+
+    const chosen = remaining.splice(bestIndex, 1)[0]
+    const { line, pathId, color, originalIndex } = chosen
+
+    if (shouldReverse) {
+      // Reverse the line direction
+      result.push({
+        x1: line.x2,
+        y1: line.y2,
+        x2: line.x1,
+        y2: line.y1,
+        pathId,
+        color,
+        originalIndex,
+        reversed: true
+      })
+      currentEnd = { x: line.x1, y: line.y1 }
+    } else {
+      result.push({ ...line, pathId, color, originalIndex, reversed: false })
+      currentEnd = { x: line.x2, y: line.y2 }
+    }
+  }
+
+  return result
+}
+
+// Calculate total travel distance (sum of distances between consecutive line ends and starts)
+function calculateTravelDistance(lines: OrderedLine[]): number {
+  if (lines.length <= 1) return 0
+
+  let totalDistance = 0
+  for (let i = 1; i < lines.length; i++) {
+    const prevEnd = { x: lines[i - 1].x2, y: lines[i - 1].y2 }
+    const currStart = { x: lines[i].x1, y: lines[i].y1 }
+    totalDistance += distance(prevEnd, currStart)
+  }
+  return totalDistance
+}
+
+// Interpolate between red and blue based on position (0 = red, 1 = blue)
+function getGradientColor(position: number): string {
+  // Red to blue gradient
+  const r = Math.round(255 * (1 - position))
+  const g = 0
+  const b = Math.round(255 * position)
+  return `rgb(${r}, ${g}, ${b})`
+}
+
 export default function FillTab() {
   const {
     svgContent,
@@ -334,6 +449,10 @@ export default function FillTab() {
   const [retainStrokes, setRetainStrokes] = useState(true)
   const [penWidth, setPenWidth] = useState(0.5) // in mm, converted to px for display
   const [showHatchPreview, setShowHatchPreview] = useState(false)
+  const [showOrderVisualization, setShowOrderVisualization] = useState(false)
+  const [isAnimating, setIsAnimating] = useState(false)
+  const [animationProgress, setAnimationProgress] = useState(0)
+  const animationRef = useRef<number | null>(null)
 
   const previewRef = useRef<HTMLDivElement>(null)
 
@@ -597,6 +716,54 @@ export default function FillTab() {
     return results
   }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset])
 
+  // Compute ordered lines - both unoptimized (original order) and optimized (TSP)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats } = useMemo(() => {
+    if (hatchedPaths.length === 0) {
+      return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0 } }
+    }
+
+    // Flatten all hatch lines into a single array with metadata
+    const allLines: { line: HatchLine; pathId: string; color: string; originalIndex: number }[] = []
+    let globalIndex = 0
+
+    hatchedPaths.forEach(({ pathInfo, lines }) => {
+      lines.forEach(line => {
+        allLines.push({
+          line,
+          pathId: pathInfo.id,
+          color: pathInfo.color,
+          originalIndex: globalIndex++
+        })
+      })
+    })
+
+    // Unoptimized: just use original order
+    const unoptimized: OrderedLine[] = allLines.map(({ line, pathId, color, originalIndex }) => ({
+      ...line,
+      pathId,
+      color,
+      originalIndex,
+      reversed: false
+    }))
+
+    // Optimized: use nearest-neighbor TSP
+    const optimized = optimizeLineOrder(allLines)
+
+    // Calculate statistics
+    const unoptimizedDistance = calculateTravelDistance(unoptimized)
+    const optimizedDistance = calculateTravelDistance(optimized)
+    const improvement = unoptimizedDistance > 0
+      ? ((unoptimizedDistance - optimizedDistance) / unoptimizedDistance) * 100
+      : 0
+
+    return {
+      unoptimizedLines: unoptimized,
+      optimizedLines: optimized,
+      stats: { unoptimizedDistance, optimizedDistance, improvement }
+    }
+  }, [hatchedPaths])
+
   // Convert mm to SVG units (assuming 96 DPI, 1mm = 3.7795px)
   const penWidthPx = penWidth * 3.7795
 
@@ -616,9 +783,55 @@ export default function FillTab() {
 
     const pathElements: string[] = []
 
-    fillPaths.forEach((path) => {
-      if (showHatchPreview) {
-        // Show hatched lines (already clipped to shape via intersection math)
+    if (showHatchPreview && showOrderVisualization) {
+      // Show ordered lines with gradient visualization
+      const linesToShow = optimizedLines
+      const totalLines = linesToShow.length
+
+      // For animation, only show lines up to the current progress
+      const visibleCount = isAnimating
+        ? Math.floor((animationProgress / 100) * totalLines)
+        : totalLines
+
+      // Draw the hatch lines with gradient colors
+      const linesHtml = linesToShow.slice(0, visibleCount).map((line, index) => {
+        const position = totalLines > 1 ? index / (totalLines - 1) : 0
+        const color = getGradientColor(position)
+        return `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
+      }).join('\n')
+
+      pathElements.push(`<g class="order-visualization">${linesHtml}</g>`)
+
+      // Draw travel paths (connections between line ends and next line starts)
+      if (!isAnimating || visibleCount > 1) {
+        const travelLines: string[] = []
+        const lineCount = isAnimating ? visibleCount : linesToShow.length
+        for (let i = 1; i < lineCount; i++) {
+          const prevEnd = { x: linesToShow[i - 1].x2, y: linesToShow[i - 1].y2 }
+          const currStart = { x: linesToShow[i].x1, y: linesToShow[i].y1 }
+          travelLines.push(
+            `<line x1="${prevEnd.x.toFixed(2)}" y1="${prevEnd.y.toFixed(2)}" x2="${currStart.x.toFixed(2)}" y2="${currStart.y.toFixed(2)}" stroke="#999" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.5" />`
+          )
+        }
+        if (travelLines.length > 0) {
+          pathElements.push(`<g class="travel-paths">${travelLines.join('\n')}</g>`)
+        }
+      }
+
+      // Add outline strokes if retaining strokes
+      if (retainStrokes) {
+        fillPaths.forEach((path) => {
+          const outlineEl = path.element.cloneNode(true) as Element
+          outlineEl.setAttribute('fill', 'none')
+          outlineEl.setAttribute('stroke', '#ccc')
+          outlineEl.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
+          outlineEl.removeAttribute('style')
+          pathElements.push(outlineEl.outerHTML)
+        })
+      }
+    } else if (showHatchPreview) {
+      // Normal hatch preview (original color, no ordering)
+      fillPaths.forEach((path) => {
         const hatchData = hatchedPaths.find(h => h.pathInfo.id === path.id)
         if (hatchData && hatchData.lines.length > 0) {
           const linesHtml = hatchData.lines.map(line =>
@@ -637,19 +850,21 @@ export default function FillTab() {
           outlineEl.removeAttribute('style')
           pathElements.push(outlineEl.outerHTML)
         }
-      } else {
-        // Show original shapes with semi-transparent fill
+      })
+    } else {
+      // Show original shapes with semi-transparent fill
+      fillPaths.forEach((path) => {
         const el = path.element.cloneNode(true) as Element
         el.setAttribute('fill', path.color)
         el.setAttribute('fill-opacity', '0.3')
         el.setAttribute('stroke', path.color)
         el.setAttribute('stroke-width', '2')
         pathElements.push(el.outerHTML)
-      }
-    })
+      })
+    }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, retainStrokes, penWidthPx])
+  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, retainStrokes, penWidthPx, showOrderVisualization, optimizedLines, isAnimating, animationProgress])
 
   const handleBack = () => {
     setFillTargetNodeId(null)
@@ -658,7 +873,64 @@ export default function FillTab() {
 
   const handlePreview = useCallback(() => {
     setShowHatchPreview(!showHatchPreview)
+    // Reset order visualization when toggling preview
+    if (showHatchPreview) {
+      setShowOrderVisualization(false)
+      setIsAnimating(false)
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
+    }
   }, [showHatchPreview])
+
+  const handleToggleOrder = useCallback(() => {
+    if (!showOrderVisualization) {
+      // Turning on order visualization
+      setShowOrderVisualization(true)
+    } else {
+      // Turning off - also stop animation
+      setShowOrderVisualization(false)
+      setIsAnimating(false)
+      setAnimationProgress(0)
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
+    }
+  }, [showOrderVisualization])
+
+  const handleToggleAnimation = useCallback(() => {
+    if (isAnimating) {
+      // Stop animation
+      setIsAnimating(false)
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
+    } else {
+      // Start animation
+      setIsAnimating(true)
+      setAnimationProgress(0)
+      const startTime = performance.now()
+      const duration = 5000 // 5 seconds for full animation
+
+      const animate = (currentTime: number) => {
+        const elapsed = currentTime - startTime
+        const progress = Math.min((elapsed / duration) * 100, 100)
+        setAnimationProgress(progress)
+
+        if (progress < 100) {
+          animationRef.current = requestAnimationFrame(animate)
+        } else {
+          setIsAnimating(false)
+          animationRef.current = null
+        }
+      }
+
+      animationRef.current = requestAnimationFrame(animate)
+    }
+  }, [isAnimating])
 
   const handleApplyFill = useCallback(() => {
     if (!targetNode || hatchedPaths.length === 0) return
@@ -666,11 +938,21 @@ export default function FillTab() {
     // Build a map of node ID to custom markup
     const customMarkupMap = new Map<string, string>()
 
-    // Generate markup for each hatched path
-    hatchedPaths.forEach(({ pathInfo, lines }) => {
-      // Build the hatch group markup as a string
+    // Group optimized lines by their original path ID to maintain per-path grouping
+    // but use the optimized order within each path
+    const linesByPath = new Map<string, OrderedLine[]>()
+    optimizedLines.forEach(line => {
+      const existing = linesByPath.get(line.pathId) || []
+      existing.push(line)
+      linesByPath.set(line.pathId, existing)
+    })
+
+    // Generate markup for each hatched path using optimized line order
+    hatchedPaths.forEach(({ pathInfo }) => {
+      const lines = linesByPath.get(pathInfo.id) || []
+      // Build the hatch group markup as a string using optimized order
       const linesMarkup = lines.map(line =>
-        `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${pathInfo.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
+        `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${line.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
       ).join('\n')
 
       let outlineMarkup = ''
@@ -717,7 +999,7 @@ export default function FillTab() {
 
     setFillTargetNodeId(null)
     setActiveTab('sort')
-  }, [targetNode, hatchedPaths, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers])
+  }, [targetNode, hatchedPaths, optimizedLines, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers])
 
   if (!svgContent) {
     return (
@@ -883,6 +1165,58 @@ export default function FillTab() {
               {showHatchPreview ? 'Hide Preview' : 'Preview'}
             </button>
             <button
+              className={`fill-order-btn ${showOrderVisualization ? 'active' : ''}`}
+              disabled={fillPaths.length === 0 || !showHatchPreview}
+              onClick={handleToggleOrder}
+              title="Visualize path order with red→blue gradient"
+            >
+              {showOrderVisualization ? 'Hide Order' : 'Order'}
+            </button>
+          </div>
+
+          {showOrderVisualization && (
+            <div className="order-controls">
+              <button
+                className={`animate-btn ${isAnimating ? 'active' : ''}`}
+                onClick={handleToggleAnimation}
+                disabled={optimizedLines.length === 0}
+              >
+                {isAnimating ? 'Stop' : 'Play'}
+              </button>
+              {isAnimating && (
+                <div className="animation-progress">
+                  <div
+                    className="animation-progress-bar"
+                    style={{ width: `${animationProgress}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {showOrderVisualization && stats.unoptimizedDistance > 0 && (
+            <div className="order-stats">
+              <div className="stat-row">
+                <span className="stat-label">Lines:</span>
+                <span className="stat-value">{optimizedLines.length}</span>
+              </div>
+              <div className="stat-row">
+                <span className="stat-label">Travel (orig):</span>
+                <span className="stat-value">{stats.unoptimizedDistance.toFixed(1)}px</span>
+              </div>
+              <div className="stat-row">
+                <span className="stat-label">Travel (opt):</span>
+                <span className="stat-value">{stats.optimizedDistance.toFixed(1)}px</span>
+              </div>
+              <div className="stat-row highlight">
+                <span className="stat-label">Saved:</span>
+                <span className="stat-value">{stats.improvement.toFixed(1)}%</span>
+              </div>
+            </div>
+          )}
+
+          <div className="fill-actions secondary">
+            <button
               className="fill-apply-btn"
               disabled={fillPaths.length === 0 || !showHatchPreview}
               onClick={handleApplyFill}
@@ -903,8 +1237,18 @@ export default function FillTab() {
               preserveAspectRatio="xMidYMid meet"
               dangerouslySetInnerHTML={{ __html: previewSvg.content }}
             />
-            {showHatchPreview && (
+            {showHatchPreview && !showOrderVisualization && (
               <div className="preview-label">Hatch Preview</div>
+            )}
+            {showOrderVisualization && (
+              <div className="preview-label order">
+                Order View
+                <span className="gradient-legend">
+                  <span className="start">Start</span>
+                  <span className="gradient-bar" />
+                  <span className="end">End</span>
+                </span>
+              </div>
             )}
           </div>
         ) : (
