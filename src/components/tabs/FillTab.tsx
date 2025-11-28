@@ -374,7 +374,7 @@ function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
       if (dot > 0.1) {
         const miterScale = 1 / dot
         // Limit miter to avoid spikes at sharp angles
-        const limitedScale = Math.min(miterScale, 3)
+        const limitedScale = Math.min(miterScale, 2)
         nx *= limitedScale
         ny *= limitedScale
       }
@@ -389,20 +389,40 @@ function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
   return result
 }
 
-// Check if a polygon is valid (has area and reasonable shape)
-function isValidPolygon(polygon: Point[], minArea: number = 1): boolean {
-  if (polygon.length < 3) return false
-
-  // Calculate signed area using shoelace formula
+// Calculate signed area of polygon (positive = CCW, negative = CW)
+function polygonSignedArea(polygon: Point[]): number {
+  if (polygon.length < 3) return 0
   let area = 0
   for (let i = 0; i < polygon.length; i++) {
     const j = (i + 1) % polygon.length
     area += polygon[i].x * polygon[j].y
     area -= polygon[j].x * polygon[i].y
   }
-  area = Math.abs(area) / 2
+  return area / 2
+}
 
-  return area >= minArea
+// Check if a polygon is valid for concentric fill
+function isValidConcentricPolygon(polygon: Point[], minArea: number, originalArea: number): boolean {
+  if (polygon.length < 3) return false
+
+  const area = Math.abs(polygonSignedArea(polygon))
+
+  // Must have minimum area
+  if (area < minArea) return false
+
+  // Area should be smaller than original (sanity check for self-intersection)
+  if (area > originalArea * 1.1) return false
+
+  // Check for degenerate edges (very short edges indicate collapse)
+  for (let i = 0; i < polygon.length; i++) {
+    const j = (i + 1) % polygon.length
+    const dx = polygon[j].x - polygon[i].x
+    const dy = polygon[j].y - polygon[i].y
+    const len = Math.sqrt(dx * dx + dy * dy)
+    if (len < 0.1) return false
+  }
+
+  return true
 }
 
 // Generate concentric fill lines (snake pattern from outside in)
@@ -414,16 +434,32 @@ function generateConcentricLines(
   const lines: HatchLine[] = []
   if (polygon.length < 3) return lines
 
+  const originalArea = Math.abs(polygonSignedArea(polygon))
+  const minArea = spacing * spacing * 2 // Minimum area threshold
+
+  // Safety: limit based on expected max loops
+  const maxDimension = Math.max(
+    ...polygon.map(p => Math.abs(p.x)),
+    ...polygon.map(p => Math.abs(p.y))
+  ) * 2
+  const maxLoops = Math.min(50, Math.ceil(maxDimension / spacing))
+
   const loops: Point[][] = []
   let currentPolygon = [...polygon]
+  let prevArea = originalArea
 
   // Generate inward offset polygons until we can't anymore
-  while (isValidPolygon(currentPolygon, spacing * spacing)) {
+  for (let loopCount = 0; loopCount < maxLoops; loopCount++) {
+    if (!isValidConcentricPolygon(currentPolygon, minArea, prevArea)) {
+      break
+    }
+
     loops.push([...currentPolygon])
+    prevArea = Math.abs(polygonSignedArea(currentPolygon))
     currentPolygon = offsetPolygon(currentPolygon, -spacing)
 
-    // Safety limit
-    if (loops.length > 1000) break
+    // Early termination if polygon collapsed
+    if (currentPolygon.length < 3) break
   }
 
   // Convert polygon loops to lines
@@ -576,7 +612,7 @@ function generateSpiralLines(
   let workingPolygon = polygon
   if (inset > 0) {
     workingPolygon = offsetPolygon(polygon, -inset)
-    if (!isValidPolygon(workingPolygon)) return []
+    if (workingPolygon.length < 3) return []
   }
 
   // Find bounding box and center
