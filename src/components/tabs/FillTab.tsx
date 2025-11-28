@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import './FillTab.css'
@@ -30,155 +30,390 @@ interface OrderedLine extends HatchLine {
   reversed: boolean
 }
 
+// Result of parsing a polygon - contains outer boundary and optional holes
+interface PolygonWithHoles {
+  outer: Point[]
+  holes: Point[][]
+}
+
 // Get polygon points from an SVG element
-function getPolygonPoints(element: Element): Point[] {
-  const points: Point[] = []
+// Returns outer boundary and holes separately for proper fill handling
+function getPolygonPoints(element: Element): PolygonWithHoles {
   const tagName = element.tagName.toLowerCase()
 
-  if (tagName === 'polygon' || tagName === 'polyline') {
+  if (tagName === 'polygon') {
+    const points: Point[] = []
     const pointsAttr = element.getAttribute('points') || ''
     const pairs = pointsAttr.trim().split(/[\s,]+/)
     for (let i = 0; i < pairs.length - 1; i += 2) {
       points.push({ x: parseFloat(pairs[i]), y: parseFloat(pairs[i + 1]) })
     }
-  } else if (tagName === 'rect') {
+    return { outer: points, holes: [] }
+  }
+
+  if (tagName === 'polyline') {
+    const points: Point[] = []
+    const pointsAttr = element.getAttribute('points') || ''
+    const pairs = pointsAttr.trim().split(/[\s,]+/)
+    for (let i = 0; i < pairs.length - 1; i += 2) {
+      points.push({ x: parseFloat(pairs[i]), y: parseFloat(pairs[i + 1]) })
+    }
+    // Close the polyline if needed
+    if (points.length >= 2) {
+      const first = points[0]
+      const last = points[points.length - 1]
+      const dist = Math.sqrt(Math.pow(last.x - first.x, 2) + Math.pow(last.y - first.y, 2))
+      if (dist > 1) {
+        points.push({ x: first.x, y: first.y })
+      }
+    }
+    return { outer: points, holes: [] }
+  }
+
+  if (tagName === 'rect') {
     const x = parseFloat(element.getAttribute('x') || '0')
     const y = parseFloat(element.getAttribute('y') || '0')
     const w = parseFloat(element.getAttribute('width') || '0')
     const h = parseFloat(element.getAttribute('height') || '0')
-    points.push({ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h })
-  } else if (tagName === 'path') {
-    // Parse path data to extract polygon points
-    // This handles simple paths - for complex curves, we'd need to sample them
+    return { outer: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], holes: [] }
+  }
+
+  if (tagName === 'path') {
+    // Parse path data into separate subpaths
     const d = element.getAttribute('d') || ''
-    const commands = d.match(/[MLHVCZmlhvcsqtaz][^MLHVCZmlhvcsqtaz]*/gi) || []
-    let currentX = 0, currentY = 0
-    let startX = 0, startY = 0
+    const subpaths = parsePathIntoSubpaths(d)
 
-    for (const cmd of commands) {
-      const type = cmd[0]
-      const args = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n))
-
-      switch (type) {
-        case 'M':
-          currentX = args[0]
-          currentY = args[1]
-          startX = currentX
-          startY = currentY
-          points.push({ x: currentX, y: currentY })
-          // Handle implicit lineto after moveto
-          for (let i = 2; i < args.length; i += 2) {
-            currentX = args[i]
-            currentY = args[i + 1]
-            points.push({ x: currentX, y: currentY })
-          }
-          break
-        case 'm':
-          currentX += args[0]
-          currentY += args[1]
-          startX = currentX
-          startY = currentY
-          points.push({ x: currentX, y: currentY })
-          for (let i = 2; i < args.length; i += 2) {
-            currentX += args[i]
-            currentY += args[i + 1]
-            points.push({ x: currentX, y: currentY })
-          }
-          break
-        case 'L':
-          for (let i = 0; i < args.length; i += 2) {
-            currentX = args[i]
-            currentY = args[i + 1]
-            points.push({ x: currentX, y: currentY })
-          }
-          break
-        case 'l':
-          for (let i = 0; i < args.length; i += 2) {
-            currentX += args[i]
-            currentY += args[i + 1]
-            points.push({ x: currentX, y: currentY })
-          }
-          break
-        case 'H':
-          currentX = args[0]
-          points.push({ x: currentX, y: currentY })
-          break
-        case 'h':
-          currentX += args[0]
-          points.push({ x: currentX, y: currentY })
-          break
-        case 'V':
-          currentY = args[0]
-          points.push({ x: currentX, y: currentY })
-          break
-        case 'v':
-          currentY += args[0]
-          points.push({ x: currentX, y: currentY })
-          break
-        case 'Z':
-        case 'z':
-          currentX = startX
-          currentY = startY
-          break
-        // For curves, we'll sample points along them
-        case 'C':
-          for (let i = 0; i < args.length; i += 6) {
-            // Sample cubic bezier
-            const x0 = currentX, y0 = currentY
-            const x1 = args[i], y1 = args[i + 1]
-            const x2 = args[i + 2], y2 = args[i + 3]
-            const x3 = args[i + 4], y3 = args[i + 5]
-            for (let t = 0.1; t <= 1; t += 0.1) {
-              const mt = 1 - t
-              const px = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
-              const py = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
-              points.push({ x: px, y: py })
-            }
-            currentX = x3
-            currentY = y3
-          }
-          break
-        case 'c':
-          for (let i = 0; i < args.length; i += 6) {
-            const x0 = currentX, y0 = currentY
-            const x1 = currentX + args[i], y1 = currentY + args[i + 1]
-            const x2 = currentX + args[i + 2], y2 = currentY + args[i + 3]
-            const x3 = currentX + args[i + 4], y3 = currentY + args[i + 5]
-            for (let t = 0.1; t <= 1; t += 0.1) {
-              const mt = 1 - t
-              const px = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
-              const py = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
-              points.push({ x: px, y: py })
-            }
-            currentX = x3
-            currentY = y3
-          }
-          break
-      }
+    if (subpaths.length === 0) {
+      return { outer: [], holes: [] }
     }
-  } else if (tagName === 'circle') {
+
+    if (subpaths.length === 1) {
+      return { outer: subpaths[0], holes: [] }
+    }
+
+    // Multiple subpaths - identify outer boundary vs holes
+    return identifyOuterAndHoles(subpaths)
+  }
+
+  if (tagName === 'circle') {
     const cx = parseFloat(element.getAttribute('cx') || '0')
     const cy = parseFloat(element.getAttribute('cy') || '0')
     const r = parseFloat(element.getAttribute('r') || '0')
-    // Approximate circle with polygon
+    const points: Point[] = []
     const segments = 32
     for (let i = 0; i < segments; i++) {
       const angle = (i / segments) * Math.PI * 2
       points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) })
     }
-  } else if (tagName === 'ellipse') {
+    return { outer: points, holes: [] }
+  }
+
+  if (tagName === 'ellipse') {
     const cx = parseFloat(element.getAttribute('cx') || '0')
     const cy = parseFloat(element.getAttribute('cy') || '0')
     const rx = parseFloat(element.getAttribute('rx') || '0')
     const ry = parseFloat(element.getAttribute('ry') || '0')
+    const points: Point[] = []
     const segments = 32
     for (let i = 0; i < segments; i++) {
       const angle = (i / segments) * Math.PI * 2
       points.push({ x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) })
     }
+    return { outer: points, holes: [] }
   }
 
-  return points
+  return { outer: [], holes: [] }
+}
+
+// Parse SVG path data into separate subpaths (split at M commands after Z)
+function parsePathIntoSubpaths(d: string): Point[][] {
+  const commands = d.match(/[MLHVCSQTAZmlhvcsqtaz][^MLHVCSQTAZmlhvcsqtaz]*/gi) || []
+
+  const subpaths: Point[][] = []
+  let currentSubpath: Point[] = []
+  let currentX = 0, currentY = 0
+  let startX = 0, startY = 0
+  let justClosed = false
+
+  for (const cmd of commands) {
+    const type = cmd[0]
+    const args = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n))
+
+    // Start new subpath on M after Z, or first M
+    if ((type === 'M' || type === 'm') && (justClosed || currentSubpath.length === 0)) {
+      if (currentSubpath.length >= 3) {
+        subpaths.push(currentSubpath)
+      }
+      currentSubpath = []
+      justClosed = false
+    }
+
+    switch (type) {
+      case 'M':
+        currentX = args[0]
+        currentY = args[1]
+        startX = currentX
+        startY = currentY
+        currentSubpath.push({ x: currentX, y: currentY })
+        for (let i = 2; i < args.length; i += 2) {
+          currentX = args[i]
+          currentY = args[i + 1]
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'm':
+        currentX += args[0]
+        currentY += args[1]
+        startX = currentX
+        startY = currentY
+        currentSubpath.push({ x: currentX, y: currentY })
+        for (let i = 2; i < args.length; i += 2) {
+          currentX += args[i]
+          currentY += args[i + 1]
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'L':
+        for (let i = 0; i < args.length; i += 2) {
+          currentX = args[i]
+          currentY = args[i + 1]
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'l':
+        for (let i = 0; i < args.length; i += 2) {
+          currentX += args[i]
+          currentY += args[i + 1]
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'H':
+        for (const arg of args) {
+          currentX = arg
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'h':
+        for (const arg of args) {
+          currentX += arg
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'V':
+        for (const arg of args) {
+          currentY = arg
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'v':
+        for (const arg of args) {
+          currentY += arg
+          currentSubpath.push({ x: currentX, y: currentY })
+        }
+        break
+      case 'Z':
+      case 'z':
+        // Close subpath - don't add duplicate point if already at start
+        const dist = Math.sqrt(Math.pow(currentX - startX, 2) + Math.pow(currentY - startY, 2))
+        if (dist > 0.1) {
+          currentSubpath.push({ x: startX, y: startY })
+        }
+        currentX = startX
+        currentY = startY
+        justClosed = true
+        break
+      // Cubic bezier
+      case 'C':
+        for (let i = 0; i < args.length; i += 6) {
+          const x0 = currentX, y0 = currentY
+          const x1 = args[i], y1 = args[i + 1]
+          const x2 = args[i + 2], y2 = args[i + 3]
+          const x3 = args[i + 4], y3 = args[i + 5]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
+            const py = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x3
+          currentY = y3
+        }
+        break
+      case 'c':
+        for (let i = 0; i < args.length; i += 6) {
+          const x0 = currentX, y0 = currentY
+          const x1 = currentX + args[i], y1 = currentY + args[i + 1]
+          const x2 = currentX + args[i + 2], y2 = currentY + args[i + 3]
+          const x3 = currentX + args[i + 4], y3 = currentY + args[i + 5]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * mt * x0 + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x3
+            const py = mt * mt * mt * y0 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y3
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x3
+          currentY = y3
+        }
+        break
+      case 'S':
+        for (let i = 0; i < args.length; i += 4) {
+          const x0 = currentX, y0 = currentY
+          const x2 = args[i], y2 = args[i + 1]
+          const x3 = args[i + 2], y3 = args[i + 3]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * mt * x0 + 3 * mt * mt * t * x0 + 3 * mt * t * t * x2 + t * t * t * x3
+            const py = mt * mt * mt * y0 + 3 * mt * mt * t * y0 + 3 * mt * t * t * y2 + t * t * t * y3
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x3
+          currentY = y3
+        }
+        break
+      case 's':
+        for (let i = 0; i < args.length; i += 4) {
+          const x0 = currentX, y0 = currentY
+          const x2 = currentX + args[i], y2 = currentY + args[i + 1]
+          const x3 = currentX + args[i + 2], y3 = currentY + args[i + 3]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * mt * x0 + 3 * mt * mt * t * x0 + 3 * mt * t * t * x2 + t * t * t * x3
+            const py = mt * mt * mt * y0 + 3 * mt * mt * t * y0 + 3 * mt * t * t * y2 + t * t * t * y3
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x3
+          currentY = y3
+        }
+        break
+      case 'Q':
+        for (let i = 0; i < args.length; i += 4) {
+          const x0 = currentX, y0 = currentY
+          const x1 = args[i], y1 = args[i + 1]
+          const x2 = args[i + 2], y2 = args[i + 3]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * x0 + 2 * mt * t * x1 + t * t * x2
+            const py = mt * mt * y0 + 2 * mt * t * y1 + t * t * y2
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x2
+          currentY = y2
+        }
+        break
+      case 'q':
+        for (let i = 0; i < args.length; i += 4) {
+          const x0 = currentX, y0 = currentY
+          const x1 = currentX + args[i], y1 = currentY + args[i + 1]
+          const x2 = currentX + args[i + 2], y2 = currentY + args[i + 3]
+          for (let t = 0.1; t <= 1; t += 0.1) {
+            const mt = 1 - t
+            const px = mt * mt * x0 + 2 * mt * t * x1 + t * t * x2
+            const py = mt * mt * y0 + 2 * mt * t * y1 + t * t * y2
+            currentSubpath.push({ x: px, y: py })
+          }
+          currentX = x2
+          currentY = y2
+        }
+        break
+      case 'A':
+        for (let i = 0; i < args.length; i += 7) {
+          const x = args[i + 5]
+          const y = args[i + 6]
+          const dx = x - currentX
+          const dy = y - currentY
+          for (let t = 0.2; t <= 1; t += 0.2) {
+            currentSubpath.push({ x: currentX + dx * t, y: currentY + dy * t })
+          }
+          currentX = x
+          currentY = y
+        }
+        break
+      case 'a':
+        for (let i = 0; i < args.length; i += 7) {
+          const x = currentX + args[i + 5]
+          const y = currentY + args[i + 6]
+          const dx = x - currentX
+          const dy = y - currentY
+          for (let t = 0.2; t <= 1; t += 0.2) {
+            currentSubpath.push({ x: currentX + dx * t, y: currentY + dy * t })
+          }
+          currentX = x
+          currentY = y
+        }
+        break
+    }
+  }
+
+  // Don't forget the last subpath
+  if (currentSubpath.length >= 3) {
+    subpaths.push(currentSubpath)
+  }
+
+  return subpaths
+}
+
+// Calculate signed area of polygon (positive = CCW, negative = CW in screen coords)
+function calcPolygonArea(polygon: Point[]): number {
+  if (polygon.length < 3) return 0
+  let area = 0
+  for (let i = 0; i < polygon.length; i++) {
+    const j = (i + 1) % polygon.length
+    area += polygon[i].x * polygon[j].y
+    area -= polygon[j].x * polygon[i].y
+  }
+  return area / 2
+}
+
+// Identify which subpath is the outer boundary and which are holes
+function identifyOuterAndHoles(subpaths: Point[][]): PolygonWithHoles {
+  if (subpaths.length === 0) {
+    return { outer: [], holes: [] }
+  }
+
+  if (subpaths.length === 1) {
+    return { outer: subpaths[0], holes: [] }
+  }
+
+  // Calculate absolute area for each subpath
+  const areasWithIndex = subpaths.map((subpath, index) => ({
+    index,
+    area: Math.abs(calcPolygonArea(subpath)),
+    signedArea: calcPolygonArea(subpath)
+  }))
+
+  // Sort by area descending - largest is the outer boundary
+  areasWithIndex.sort((a, b) => b.area - a.area)
+
+  const outerIndex = areasWithIndex[0].index
+  const outer = subpaths[outerIndex]
+  const holes: Point[][] = []
+
+  // All other subpaths are holes
+  for (let i = 1; i < areasWithIndex.length; i++) {
+    holes.push(subpaths[areasWithIndex[i].index])
+  }
+
+  return { outer, holes }
+}
+
+// Check if a point is inside a polygon using ray casting
+function pointInPolygon(point: Point, polygon: Point[]): boolean {
+  if (polygon.length < 3) return false
+
+  let inside = false
+  const n = polygon.length
+
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y
+    const xj = polygon[j].x, yj = polygon[j].y
+
+    if (((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi)) {
+      inside = !inside
+    }
+  }
+
+  return inside
 }
 
 // Line segment intersection with polygon edge
@@ -278,22 +513,23 @@ function generateGlobalHatchLines(
   return lines
 }
 
-// Clip a set of lines to a polygon, returning only the segments inside
+// Clip a set of lines to a polygon with holes, returning only the segments inside outer but outside holes
 function clipLinesToPolygon(
   lines: HatchLine[],
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   inset: number = 0
 ): HatchLine[] {
   const clippedLines: HatchLine[] = []
-  if (polygon.length < 3) return clippedLines
+  const { outer, holes } = polygonData
 
-  // Apply inset to polygon if needed
-  let workingPolygon = polygon
+  if (outer.length < 3) return clippedLines
+
+  // Apply inset to outer polygon if needed
+  let workingOuter = outer
   if (inset > 0) {
-    // Simple inset: shrink polygon toward centroid
-    const centroidX = polygon.reduce((sum, p) => sum + p.x, 0) / polygon.length
-    const centroidY = polygon.reduce((sum, p) => sum + p.y, 0) / polygon.length
-    workingPolygon = polygon.map(p => {
+    const centroidX = outer.reduce((sum, p) => sum + p.x, 0) / outer.length
+    const centroidY = outer.reduce((sum, p) => sum + p.y, 0) / outer.length
+    workingOuter = outer.map(p => {
       const dx = p.x - centroidX
       const dy = p.y - centroidY
       const dist = Math.sqrt(dx * dx + dy * dy)
@@ -303,23 +539,116 @@ function clipLinesToPolygon(
     })
   }
 
-  for (const line of lines) {
-    const intersections = linePolygonIntersections(line, workingPolygon)
+  // Apply outset to holes (expand them slightly to ensure clean gaps)
+  const workingHoles = holes.map(hole => {
+    if (inset > 0) {
+      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
+      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
+      return hole.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        // Outset the hole by the inset amount
+        const scale = (dist + inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return hole
+  })
 
-    // Create line segments from pairs of intersections
-    for (let j = 0; j < intersections.length - 1; j += 2) {
-      if (j + 1 < intersections.length) {
-        clippedLines.push({
-          x1: intersections[j].x,
-          y1: intersections[j].y,
-          x2: intersections[j + 1].x,
-          y2: intersections[j + 1].y
-        })
+  for (const line of lines) {
+    // First, clip to outer boundary
+    const outerIntersections = linePolygonIntersections(line, workingOuter)
+
+    // Create line segments from pairs of intersections (inside outer)
+    for (let j = 0; j < outerIntersections.length - 1; j += 2) {
+      if (j + 1 < outerIntersections.length) {
+        const segment = {
+          x1: outerIntersections[j].x,
+          y1: outerIntersections[j].y,
+          x2: outerIntersections[j + 1].x,
+          y2: outerIntersections[j + 1].y
+        }
+
+        // Now clip this segment against all holes
+        const finalSegments = clipSegmentAroundHoles(segment, workingHoles)
+        clippedLines.push(...finalSegments)
       }
     }
   }
 
   return clippedLines
+}
+
+// Clip a single line segment around holes - returns segments that are outside all holes
+function clipSegmentAroundHoles(segment: HatchLine, holes: Point[][]): HatchLine[] {
+  if (holes.length === 0) {
+    return [segment]
+  }
+
+  let currentSegments: HatchLine[] = [segment]
+
+  for (const hole of holes) {
+    if (hole.length < 3) continue
+
+    const newSegments: HatchLine[] = []
+
+    for (const seg of currentSegments) {
+      // Find intersections with this hole
+      const line: HatchLine = { x1: seg.x1, y1: seg.y1, x2: seg.x2, y2: seg.y2 }
+      const intersections = linePolygonIntersections(line, hole)
+
+      if (intersections.length === 0) {
+        // No intersections - check if segment is entirely inside or outside hole
+        const midpoint = { x: (seg.x1 + seg.x2) / 2, y: (seg.y1 + seg.y2) / 2 }
+        if (!pointInPolygon(midpoint, hole)) {
+          // Segment is outside hole, keep it
+          newSegments.push(seg)
+        }
+        // If inside hole, discard segment
+      } else {
+        // Has intersections - split segment
+        // Build list of all points along segment: start, intersections, end
+        const p1 = { x: seg.x1, y: seg.y1 }
+        const p2 = { x: seg.x2, y: seg.y2 }
+        const dx = p2.x - p1.x
+        const dy = p2.y - p1.y
+
+        // Calculate t parameter for each intersection
+        const points: { t: number; point: Point }[] = [
+          { t: 0, point: p1 },
+          { t: 1, point: p2 }
+        ]
+
+        for (const inter of intersections) {
+          const t = Math.abs(dx) > Math.abs(dy)
+            ? (inter.x - p1.x) / dx
+            : (inter.y - p1.y) / dy
+          if (t > 0.001 && t < 0.999) {
+            points.push({ t, point: inter })
+          }
+        }
+
+        // Sort by t
+        points.sort((a, b) => a.t - b.t)
+
+        // Create segments between consecutive points, keeping only those outside hole
+        for (let i = 0; i < points.length - 1; i++) {
+          const start = points[i].point
+          const end = points[i + 1].point
+          const midpoint = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+
+          if (!pointInPolygon(midpoint, hole)) {
+            newSegments.push({ x1: start.x, y1: start.y, x2: end.x, y2: end.y })
+          }
+        }
+      }
+    }
+
+    currentSegments = newSegments
+  }
+
+  return currentSegments
 }
 
 // ============================================================================
@@ -519,19 +848,36 @@ function generateConcentricLines(
 
 // Generate a honeycomb/hexagonal grid pattern
 function generateHoneycombLines(
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   spacing: number,
   inset: number = 0,
   angleDegrees: number = 0
 ): HatchLine[] {
-  if (polygon.length < 3) return []
+  const { outer, holes } = polygonData
+  if (outer.length < 3) return []
 
   // Apply inset first
-  let workingPolygon = polygon
+  let workingPolygon = outer
   if (inset > 0) {
-    workingPolygon = offsetPolygon(polygon, -inset)
+    workingPolygon = offsetPolygon(outer, -inset)
     if (workingPolygon.length < 3) return []
   }
+
+  // Apply outset to holes
+  const workingHoles = holes.map(hole => {
+    if (inset > 0) {
+      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
+      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
+      return hole.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const scale = (dist + inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return hole
+  })
 
   // Find bounding box
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -571,15 +917,18 @@ function generateHoneycombLines(
 
   const lines: HatchLine[] = []
   // Increase padding for rotated grid coverage
-  const padding = hexSize * 3
+  const padding = hexSize * 2
 
-  // Generate hexagon centers in a grid
+  // Generate hexagon centers in a proper hexagonal grid
   let row = 0
-  for (let y = minY - padding; y <= maxY + padding; y += vertSpacing / 2) {
+  for (let y = minY - padding; y <= maxY + padding; y += vertSpacing * 0.5) {
     const isOddRow = row % 2 === 1
-    const xOffset = isOddRow ? horizSpacing / 2 : 0
+    const xOffset = isOddRow ? horizSpacing * 0.5 : 0
 
     for (let x = minX - padding + xOffset; x <= maxX + padding; x += horizSpacing) {
+      // Quick bounding box check - skip if hexagon center is clearly outside extended bounds
+      const rotatedCenter = rotatePoint({ x, y })
+
       // Generate hexagon vertices (flat-top orientation) then rotate
       const hexPoints: Point[] = []
       for (let i = 0; i < 6; i++) {
@@ -590,9 +939,6 @@ function generateHoneycombLines(
         }
         hexPoints.push(rotatePoint(unrotated))
       }
-
-      // Rotate center point too for point-in-polygon check
-      const rotatedCenter = rotatePoint({ x, y })
 
       // Create lines for this hexagon, but only if at least one vertex is inside polygon
       const anyVertexInside = hexPoints.some(p => pointInPolygon(p, workingPolygon))
@@ -609,8 +955,10 @@ function generateHoneycombLines(
           const p1Inside = pointInPolygon(p1, workingPolygon)
           const p2Inside = pointInPolygon(p2, workingPolygon)
 
+          let candidateSegments: HatchLine[] = []
+
           if (p1Inside && p2Inside) {
-            lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+            candidateSegments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
           } else if (p1Inside || p2Inside) {
             // One endpoint inside - clip the line
             const intersections = linePolygonIntersections(
@@ -625,8 +973,14 @@ function generateHoneycombLines(
                 const distB = Math.sqrt(Math.pow(b.x - inside.x, 2) + Math.pow(b.y - inside.y, 2))
                 return distA > distB ? a : b
               })
-              lines.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
+              candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
             }
+          }
+
+          // Clip candidate segments around holes
+          for (const seg of candidateSegments) {
+            const clippedSegments = clipSegmentAroundHoles(seg, workingHoles)
+            lines.push(...clippedSegments)
           }
         }
       }
@@ -702,7 +1056,7 @@ function generateWiggleLine(
 
 // Generate wiggle fill pattern (wavy parallel lines)
 function generateWiggleLines(
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   globalBbox: { x: number; y: number; width: number; height: number },
   spacing: number,
   angleDegrees: number,
@@ -712,7 +1066,7 @@ function generateWiggleLines(
 ): HatchLine[] {
   // First generate straight hatch lines
   const straightLines = generateGlobalHatchLines(globalBbox, spacing, angleDegrees)
-  const clippedLines = clipLinesToPolygon(straightLines, polygon, inset)
+  const clippedLines = clipLinesToPolygon(straightLines, polygonData, inset)
 
   // Convert each straight line to a wiggle
   const wiggleLines: HatchLine[] = []
@@ -745,19 +1099,37 @@ function generateWiggleLines(
 
 // Generate an Archimedean spiral from center outward
 function generateSpiralLines(
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   spacing: number,
   inset: number = 0,
-  angleDegrees: number = 0
+  angleDegrees: number = 0,
+  overDiameter: number = 1.5
 ): HatchLine[] {
-  if (polygon.length < 3) return []
+  const { outer, holes } = polygonData
+  if (outer.length < 3) return []
 
   // Apply inset first
-  let workingPolygon = polygon
+  let workingPolygon = outer
   if (inset > 0) {
-    workingPolygon = offsetPolygon(polygon, -inset)
+    workingPolygon = offsetPolygon(outer, -inset)
     if (workingPolygon.length < 3) return []
   }
+
+  // Apply outset to holes
+  const workingHoles = holes.map(hole => {
+    if (inset > 0) {
+      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
+      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
+      return hole.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const scale = (dist + inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return hole
+  })
 
   // Find bounding box and center
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -770,10 +1142,16 @@ function generateSpiralLines(
 
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
-  const maxRadius = Math.sqrt(
-    Math.pow((maxX - minX) / 2, 2) +
-    Math.pow((maxY - minY) / 2, 2)
-  ) * 1.5
+
+  // Calculate max radius as the furthest distance from center to any polygon vertex
+  // This ensures the spiral covers the entire shape even for irregular polygons
+  let maxRadius = 0
+  for (const p of workingPolygon) {
+    const dist = Math.sqrt(Math.pow(p.x - centerX, 2) + Math.pow(p.y - centerY, 2))
+    maxRadius = Math.max(maxRadius, dist)
+  }
+  // Apply over-diameter multiplier to ensure full coverage
+  maxRadius *= overDiameter
 
   // Convert angle offset to radians
   const angleOffset = (angleDegrees * Math.PI) / 180
@@ -807,9 +1185,14 @@ function generateSpiralLines(
     const p1 = spiralPoints[i]
     const p2 = spiralPoints[i + 1]
 
-    // Simple point-in-polygon test for both endpoints
+    // Check if both endpoints are inside the outer polygon
     if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
-      lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
+      // Clip around holes
+      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
+      for (const seg of clippedSegments) {
+        lines.push(seg)
+      }
     }
   }
 
@@ -824,19 +1207,36 @@ function generateSpiralLines(
 // The gyroid is a triply periodic minimal surface: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0
 // For 2D, we trace level curves of the gyroid function at different "z slices"
 function generateGyroidLines(
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   spacing: number,
   inset: number = 0,
   angleDegrees: number = 0
 ): HatchLine[] {
-  if (polygon.length < 3) return []
+  const { outer, holes } = polygonData
+  if (outer.length < 3) return []
 
   // Apply inset first
-  let workingPolygon = polygon
+  let workingPolygon = outer
   if (inset > 0) {
-    workingPolygon = offsetPolygon(polygon, -inset)
+    workingPolygon = offsetPolygon(outer, -inset)
     if (workingPolygon.length < 3) return []
   }
+
+  // Apply outset to holes
+  const workingHoles = holes.map(hole => {
+    if (inset > 0) {
+      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
+      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
+      return hole.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const scale = (dist + inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return hole
+  })
 
   // Find bounding box
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -933,8 +1333,10 @@ function generateGyroidLines(
             // Only add if at least one point is inside the polygon
             const p1In = pointInPolygon(p1, workingPolygon)
             const p2In = pointInPolygon(p2, workingPolygon)
+
+            let candidateSegments: HatchLine[] = []
             if (p1In && p2In) {
-              lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+              candidateSegments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
             } else if (p1In || p2In) {
               // Clip to polygon
               const intersections = linePolygonIntersections(
@@ -944,8 +1346,13 @@ function generateGyroidLines(
               if (intersections.length > 0) {
                 const inside = p1In ? p1 : p2
                 const closest = intersections[0]
-                lines.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
+                candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
               }
+            }
+            // Clip around holes
+            for (const seg of candidateSegments) {
+              const clippedSegments = clipSegmentAroundHoles(seg, workingHoles)
+              lines.push(...clippedSegments)
             }
           } else if (crossings.length === 4) {
             // Saddle point - connect based on center value
@@ -968,7 +1375,9 @@ function generateGyroidLines(
               const p1In = pointInPolygon(p1, workingPolygon)
               const p2In = pointInPolygon(p2, workingPolygon)
               if (p1In && p2In) {
-                lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+                const candidateSeg = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
+                const clippedSegments = clipSegmentAroundHoles(candidateSeg, workingHoles)
+                lines.push(...clippedSegments)
               }
             }
           }
@@ -978,24 +1387,6 @@ function generateGyroidLines(
   }
 
   return lines
-}
-
-// Point in polygon test using ray casting
-function pointInPolygon(point: Point, polygon: Point[]): boolean {
-  let inside = false
-  const n = polygon.length
-
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const xi = polygon[i].x, yi = polygon[i].y
-    const xj = polygon[j].x, yj = polygon[j].y
-
-    if (((yi > point.y) !== (yj > point.y)) &&
-        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi)) {
-      inside = !inside
-    }
-  }
-
-  return inside
 }
 
 // Fill pattern type
@@ -1154,7 +1545,7 @@ function optimizeLineOrderMultiPass(
   }
 
   // Now optimize lines within each shape, chaining them together
-  const result: OrderedLine[] = []
+  let result: OrderedLine[] = []
   let penPosition: Point = { x: 0, y: 0 }
   let globalIndex = 0
 
@@ -1172,7 +1563,8 @@ function optimizeLineOrderMultiPass(
       line.originalIndex = globalIndex++
     }
 
-    result.push(...orderedLines)
+    // Use concat instead of spread to avoid stack overflow with large arrays
+    result = result.concat(orderedLines)
     penPosition = endPoint
   }
 
@@ -1202,9 +1594,14 @@ export default function FillTab() {
     setActiveTab,
     rebuildSvgFromLayers,
     setOrderData,
+    setIsProcessing,
+    scale,
+    setScale,
+    offset,
+    setOffset,
   } = useAppContext()
 
-  const [lineSpacing, setLineSpacing] = useState(5)
+  const [lineSpacing, setLineSpacing] = useState(15)
   const [angle, setAngle] = useState(45)
   const [crossHatch, setCrossHatch] = useState(false)
   const [inset, setInset] = useState(0)
@@ -1212,12 +1609,11 @@ export default function FillTab() {
   const [penWidth, setPenWidth] = useState(0.5) // in mm, converted to px for display
   const [showHatchPreview, setShowHatchPreview] = useState(false)
   const [fillPattern, setFillPattern] = useState<FillPatternType>('lines')
-  const [wiggleAmplitude, setWiggleAmplitude] = useState(3)
+  const [wiggleAmplitude, setWiggleAmplitude] = useState(5)
   const [wiggleFrequency, setWiggleFrequency] = useState(2)
+  const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
 
-  // Local zoom state (independent from Sort tab)
-  const [fillScale, setFillScale] = useState(1)
-  const [fillOffset, setFillOffset] = useState({ x: 0, y: 0 })
+  // Drag state for pan
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
 
@@ -1327,12 +1723,21 @@ export default function FillTab() {
     fillPaths.forEach(path => {
       // Use getPolygonPoints which parses element attributes directly
       // This works even if the element isn't in the live DOM
-      const points = getPolygonPoints(path.element)
-      for (const p of points) {
+      const polygonData = getPolygonPoints(path.element)
+      for (const p of polygonData.outer) {
         minX = Math.min(minX, p.x)
         minY = Math.min(minY, p.y)
         maxX = Math.max(maxX, p.x)
         maxY = Math.max(maxY, p.y)
+      }
+      // Also check hole boundaries for complete bounding box
+      for (const hole of polygonData.holes) {
+        for (const p of hole) {
+          minX = Math.min(minX, p.x)
+          minY = Math.min(minY, p.y)
+          maxX = Math.max(maxX, p.x)
+          maxY = Math.max(maxY, p.y)
+        }
       }
     })
 
@@ -1346,72 +1751,106 @@ export default function FillTab() {
     }
   }, [fillPaths])
 
-  // Generate hatch lines for each path
-  const hatchedPaths = useMemo(() => {
+  // Generate hatch lines for each path - using async processing to keep UI responsive
+  const [hatchedPaths, setHatchedPaths] = useState<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]>([])
+  const [, setIsGeneratingHatch] = useState(false)
+  const hatchAbortRef = useRef<{ aborted: boolean }>({ aborted: false })
+
+  useEffect(() => {
+    // Abort any in-progress generation
+    hatchAbortRef.current.aborted = true
+
     if (!showHatchPreview || fillPaths.length === 0 || !boundingBox) {
-      return []
+      setHatchedPaths([])
+      return
     }
 
-    // Generate global hatch lines for line-based patterns
-    const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
-    const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
+    // Create new abort controller for this generation
+    const abortController = { aborted: false }
+    hatchAbortRef.current = abortController
 
-    const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
+    setIsGeneratingHatch(true)
+    setIsProcessing(true)
 
-    fillPaths.forEach(path => {
-      try {
-        const polygon = getPolygonPoints(path.element)
+    // Process paths asynchronously in batches
+    const processAsync = async () => {
+      // Generate global hatch lines for line-based patterns
+      const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
+      const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
 
-        if (polygon.length >= 3) {
-          let lines: HatchLine[] = []
+      const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
+      const BATCH_SIZE = 5 // Process 5 paths per frame
 
-          switch (fillPattern) {
-            case 'concentric':
-              // Generate concentric (snake) pattern
-              lines = generateConcentricLines(polygon, lineSpacing, true)
-              break
+      for (let i = 0; i < fillPaths.length; i += BATCH_SIZE) {
+        // Check if aborted
+        if (abortController.aborted) return
 
-            case 'wiggle':
-              // Generate wiggle/wave pattern
-              lines = generateWiggleLines(polygon, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-              break
+        const batch = fillPaths.slice(i, i + BATCH_SIZE)
 
-            case 'spiral':
-              // Generate spiral pattern
-              lines = generateSpiralLines(polygon, lineSpacing, inset, angle)
-              break
+        for (const path of batch) {
+          if (abortController.aborted) return
 
-            case 'honeycomb':
-              // Generate honeycomb/hexagonal pattern
-              lines = generateHoneycombLines(polygon, lineSpacing, inset, angle)
-              break
+          try {
+            const polygonData = getPolygonPoints(path.element)
 
-            case 'gyroid':
-              // Generate gyroid infill pattern
-              lines = generateGyroidLines(polygon, lineSpacing, inset, angle)
-              break
+            if (polygonData.outer.length >= 3) {
+              let lines: HatchLine[] = []
 
-            case 'lines':
-            default:
-              // Standard line hatching
-              lines = clipLinesToPolygon(globalLines, polygon, inset)
-              // Add cross-hatch if enabled
-              if (crossHatch) {
-                const crossLines = clipLinesToPolygon(globalCrossLines, polygon, inset)
-                lines = [...lines, ...crossLines]
+              switch (fillPattern) {
+                case 'concentric':
+                  // Concentric works inward from outer boundary - holes handled naturally
+                  lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                  break
+                case 'wiggle':
+                  lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+                  break
+                case 'spiral':
+                  // Spiral works from center outward on outer boundary
+                  lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  break
+                case 'honeycomb':
+                  lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+                  break
+                case 'gyroid':
+                  lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+                  break
+                case 'lines':
+                default:
+                  lines = clipLinesToPolygon(globalLines, polygonData, inset)
+                  if (crossHatch) {
+                    const crossLines = clipLinesToPolygon(globalCrossLines, polygonData, inset)
+                    lines = [...lines, ...crossLines]
+                  }
+                  break
               }
-              break
+
+              results.push({ pathInfo: path, lines, polygon: polygonData.outer })
+            }
+          } catch {
+            // Failed to generate hatch for this path
           }
-
-          results.push({ pathInfo: path, lines, polygon })
         }
-      } catch {
-        // Failed to generate hatch for this path
-      }
-    })
 
-    return results
-  }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency])
+        // Yield to browser to keep UI responsive
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+
+      // Only update state if not aborted
+      if (!abortController.aborted) {
+        setHatchedPaths(results)
+        setIsGeneratingHatch(false)
+        setIsProcessing(false)
+      }
+    }
+
+    processAsync()
+
+    // Cleanup on unmount or dependency change
+    return () => {
+      abortController.aborted = true
+      setIsProcessing(false)
+    }
+  }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, setIsProcessing])
 
   // Compute ordered lines using multi-pass optimization:
   // 1. Order shapes by proximity (starting from top-left)
@@ -1610,41 +2049,36 @@ export default function FillTab() {
     setActiveTab('order')
   }, [boundingBox, optimizedLines, setOrderData, setActiveTab, handleApplyFill])
 
-  // Zoom handlers
-  const handleZoomIn = useCallback(() => {
-    setFillScale(prev => Math.min(10, prev * 1.2))
-  }, [])
+  // Wheel zoom handler - use native event listener to support passive: false
+  useEffect(() => {
+    const element = previewRef.current
+    if (!element) return
 
-  const handleZoomOut = useCallback(() => {
-    setFillScale(prev => Math.max(0.1, prev / 1.2))
-  }, [])
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? 0.9 : 1.1
+      setScale(Math.max(0.1, Math.min(10, scale * delta)))
+    }
 
-  const handleFitToView = useCallback(() => {
-    setFillScale(1)
-    setFillOffset({ x: 0, y: 0 })
-  }, [])
-
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? 0.9 : 1.1
-    setFillScale(prev => Math.max(0.1, Math.min(10, prev * delta)))
-  }, [])
+    element.addEventListener('wheel', handleWheel, { passive: false })
+    return () => element.removeEventListener('wheel', handleWheel)
+  }, [scale, setScale])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 0) {
       setIsDragging(true)
-      setDragStart({ x: e.clientX - fillOffset.x, y: e.clientY - fillOffset.y })
+      setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y })
     }
-  }, [fillOffset])
+  }, [offset])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (isDragging) {
-      setFillOffset({
+      setOffset({
         x: e.clientX - dragStart.x,
         y: e.clientY - dragStart.y
       })
     }
-  }, [isDragging, dragStart])
+  }, [isDragging, dragStart, setOffset])
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false)
@@ -1710,23 +2144,16 @@ export default function FillTab() {
       <main
         className="fill-main"
         ref={previewRef}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        <div className="fill-zoom-controls">
-          <button onClick={handleZoomIn} title="Zoom In">+</button>
-          <button onClick={handleZoomOut} title="Zoom Out">-</button>
-          <button onClick={handleFitToView} title="Fit to View">Fit</button>
-          <span className="zoom-level">{Math.round(fillScale * 100)}%</span>
-        </div>
         {previewSvg ? (
           <div
             className="fill-preview-container"
             style={{
-              transform: `translate(${fillOffset.x}px, ${fillOffset.y}px) scale(${fillScale})`,
+              transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
               cursor: isDragging ? 'grabbing' : 'grab'
             }}
           >
@@ -1818,6 +2245,13 @@ export default function FillTab() {
             <div className="fill-control">
               <label>Angle</label>
               <div className="control-row">
+                <span
+                  className="angle-arrow"
+                  style={{ transform: `rotate(${angle}deg)` }}
+                  title={`${angle}° direction`}
+                >
+                  →
+                </span>
                 <input
                   type="range"
                   min="0"
@@ -1875,6 +2309,25 @@ export default function FillTab() {
                   </div>
                 </div>
               </>
+            )}
+
+            {fillPattern === 'spiral' && (
+              <div className="fill-control">
+                <label>Over Diameter</label>
+                <div className="control-row">
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    step="0.1"
+                    value={spiralOverDiameter}
+                    onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
+                    className="fill-input"
+                    style={{ width: '80px' }}
+                  />
+                  <span className="control-value">× radius</span>
+                </div>
+              </div>
             )}
 
             {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb') && (

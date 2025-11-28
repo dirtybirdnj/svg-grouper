@@ -97,6 +97,10 @@ interface AppContextType {
   // Order mode state
   orderData: OrderData | null
   setOrderData: (data: OrderData | null) => void
+
+  // Processing state (for spinning gear indicator)
+  isProcessing: boolean
+  setIsProcessing: (processing: boolean) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -169,11 +173,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const childContent = node.children.map(buildNodeContent).join('\n')
         const el = node.element
         const attrs: string[] = []
+        let existingStyle = ''
         for (const attr of Array.from(el.attributes)) {
-          attrs.push(`${attr.name}="${attr.value}"`)
+          if (attr.name === 'style') {
+            // Handle style attribute separately to manage display:none
+            existingStyle = attr.value
+          } else {
+            attrs.push(`${attr.name}="${attr.value}"`)
+          }
         }
-        const style = node.isHidden ? ' style="display:none"' : ''
-        return `<${el.tagName} ${attrs.join(' ')}${style}>\n${childContent}\n</${el.tagName}>`
+
+        // Manage visibility in style
+        let finalStyle = existingStyle
+        if (node.isHidden) {
+          // Add display:none
+          if (finalStyle && !finalStyle.includes('display:none')) {
+            finalStyle = `display:none;${finalStyle}`
+          } else if (!finalStyle) {
+            finalStyle = 'display:none'
+          }
+        } else {
+          // Remove display:none if present
+          finalStyle = finalStyle.replace(/display:\s*none;?\s*/g, '').trim()
+        }
+
+        const styleAttr = finalStyle ? ` style="${finalStyle}"` : ''
+        return `<${el.tagName} ${attrs.join(' ')}${styleAttr}>\n${childContent}\n</${el.tagName}>`
       }
 
       // For leaf nodes, use the element's outer HTML
@@ -194,6 +219,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } else {
           markup = markup.replace(/^<(\w+)(\s|>)/, '<$1 style="display:none"$2')
         }
+      } else {
+        // Remove display:none if present (element may have been hidden previously)
+        markup = markup.replace(/display:\s*none;?\s*/g, '')
+        // Clean up empty style attributes
+        markup = markup.replace(/\s*style=""\s*/g, ' ')
       }
 
       return markup
@@ -290,6 +320,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Order mode state
   const [orderData, setOrderData] = useState<OrderData | null>(null)
 
+  // Processing state (for spinning gear indicator)
+  const [isProcessing, setIsProcessing] = useState(false)
+
   const handleLoadStart = useCallback(() => {
     setLoadingState({
       isLoading: true,
@@ -359,6 +392,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFillTargetNodeId,
     orderData,
     setOrderData,
+    isProcessing,
+    setIsProcessing,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

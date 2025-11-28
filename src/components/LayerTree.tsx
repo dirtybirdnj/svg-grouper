@@ -131,7 +131,7 @@ function LayerNode({ node, level, selectedNodeIds, onNodeSelect, processingState
   return (
     <div className="layer-node">
       <div
-        className={`layer-node-content ${isSelected ? 'selected' : ''} ${node.isHidden ? 'hidden' : ''} ${processingState ? `processing-${processingState}` : ''}`}
+        className={`layer-node-content ${isSelected ? 'selected' : ''} ${node.isHidden ? 'hidden' : ''} ${processingState ? `processing-${processingState}` : ''} ${groupType === 'mixed' ? 'mixed-group' : ''}`}
         style={{ paddingLeft: `${level * 1.5}rem` }}
         onClick={handleClick}
       >
