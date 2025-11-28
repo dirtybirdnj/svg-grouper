@@ -1,137 +1,105 @@
 # Last Session Context
 
-## Session Date: 2025-11-27
+## Session Date: 2025-11-27 (Updated)
 
-## What Was Accomplished
+## What Was Accomplished This Session
 
-### 1. TSP Path Optimization for Pen Plotters
-- Implemented multi-pass optimization algorithm for fill patterns
-- Shapes are ordered by proximity starting from top-left (0,0)
-- Lines within each shape are optimized using nearest-neighbor algorithm
-- Lines can be reversed if it reduces travel distance
-- All shapes are completed before moving to the next (no jumping between shapes)
+### 1. Fixed Concentric Fill Bug
+The concentric pattern was causing the app to become unresponsive due to:
+- Infinite/excessive loop iterations on complex concave shapes
+- Simple area check not catching self-intersecting polygons
 
-### 2. Order Visualization
-- Added red→blue gradient visualization to show plotting order
-- Added animated playback to preview the plotting sequence
-- Statistics display shows: shape count, line count, original/optimized travel distance, % improvement
-- Dashed lines show pen travel between segments
+**Fixes applied:**
+- Added `polygonSignedArea()` for proper area calculation
+- Added `isValidConcentricPolygon()` with multiple termination checks
+- Changed from while loop to for loop with calculated max iterations (max 50)
+- Reduced miter scale limit from 3 to 2 for stability
+- Early termination if polygon vertex count drops below 3
 
-### 3. Multiple Fill Pattern Types
-Added 4 fill patterns inspired by 3D printer slicer infill algorithms:
+### 2. Added Honeycomb Fill Pattern
+New hexagonal fill pattern:
+- Generates regular hexagons in a grid (flat-top orientation)
+- Clips hexagon edges to polygon boundary
+- Handles partial hexagons with line intersection clipping
+- Removes duplicate edges shared between adjacent hexagons
+- UI updated to 3-column layout for 5 pattern buttons
+
+---
+
+## Current Fill Patterns
 
 | Pattern | Status | Description |
 |---------|--------|-------------|
 | **Lines** | ✅ Working | Parallel line hatching with optional cross-hatch |
-| **Wiggle** | ✅ Working | Sine wave pattern with adjustable amplitude/frequency |
+| **Concentric** | ✅ Fixed | Snake pattern from outside-in |
+| **Wiggle** | ✅ Working | Sine wave with adjustable amplitude/frequency |
 | **Spiral** | ✅ Working | Archimedean spiral from center outward |
-| **Concentric** | ❌ BUG | Causes app to become unresponsive |
+| **Honeycomb** | ✅ New | Hexagonal grid pattern |
 
 ---
 
-## BUGS TO FIX
+## Future Patterns to Investigate
 
-### Concentric Fill Pattern - App Becomes Unresponsive
+From 3D printer slicers (OrcaSlicer, PrusaSlicer, Cura):
 
-**Location:** `src/components/tabs/FillTab.tsx`
+| Pattern | Description | Difficulty | Notes |
+|---------|-------------|------------|-------|
+| **Gyroid** | Triply periodic minimal surface | Hard | `sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0` |
+| **Triangular** | Lines at 0°, 60°, 120° | Easy | Three-pass line generation |
+| **Hilbert Curve** | Space-filling fractal | Medium | Recursive generation |
+| **Cubic/Octet** | 3D-inspired patterns | Medium | Multiple line passes with offsets |
+| **Lightning** | Tree-based branching | Hard | Top-down algorithm |
 
-**Functions involved:**
-- `offsetPolygon()` - Line ~331
-- `isValidPolygon()` - Line ~392
-- `generateConcentricLines()` - Line ~408
-
-**Suspected cause:**
-The concentric pattern generates inward polygon offsets in a while loop until the polygon becomes invalid. Possible issues:
-
-1. **Infinite loop** - The `isValidPolygon()` check may not be catching degenerate polygons, causing the loop to never terminate
-2. **Self-intersecting polygons** - The simple vertex-normal offset algorithm can create self-intersecting polygons on concave shapes, which may cause issues
-3. **Too many iterations** - Even with the safety limit of 1000 loops, if each loop generates many lines, it could overwhelm the browser
-
-**How to debug:**
-1. Add console.log in the while loop to see iteration count
-2. Test with a simple convex shape (rectangle) first
-3. Check if polygon area is actually decreasing each iteration
-4. Consider using a more robust polygon offset library like Clipper2
-
-**Potential fixes:**
-1. Use Clipper2 library (used by PrusaSlicer, Cura) for robust polygon offsetting
-2. Add better termination conditions (check for self-intersection, minimum vertex count)
-3. Limit total line count, not just loop count
-4. Process in web worker to avoid blocking UI
+### Gyroid Implementation Notes
+For 2D cross-sections of gyroid at height z:
+1. Compute `z_sin = sin(z)`, `z_cos = cos(z)`
+2. If `|z_sin| ≤ |z_cos|`: generate vertical lines
+3. Otherwise: generate horizontal lines
+4. Use adaptive refinement for smooth curves
+5. PrusaSlicer source: `src/libslic3r/Fill/FillGyroid.cpp`
 
 ---
 
-## FUTURE ENHANCEMENTS
-
-### Additional Fill Patterns to Investigate
-
-Research these patterns from 3D printer slicers (OrcaSlicer, PrusaSlicer, Cura):
-
-| Pattern | Description | Algorithm |
-|---------|-------------|-----------|
-| **Honeycomb** | Hexagonal grid pattern | Generate hex grid, clip to polygon |
-| **Gyroid** | Triply periodic minimal surface | `sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0` |
-| **Grid** | Perpendicular lines (like cross-hatch) | Already have as cross-hatch option |
-| **Triangular** | Lines at 0°, 60°, 120° | Three-pass line generation |
-| **Cubic** | 3D-inspired pattern | Line-based with Z-dependent shifting |
-| **Hilbert Curve** | Space-filling fractal | Recursive fractal generation |
-| **Lightning** | Tree-based support structure | Top-down branching algorithm |
-
-### Key Resources Found During Research
+## Key Resources
 
 - **Clipper2 Library**: https://github.com/AngusJohnson/Clipper2
   - Robust polygon clipping and offsetting
-  - Used by all major slicers
-  - Has JavaScript port available
+  - JavaScript port available for future use
 
-- **PrusaSlicer Fill Source Code**:
-  - `src/libslic3r/Fill/FillGyroid.cpp`
-  - `src/libslic3r/Fill/FillConcentric.cpp`
-  - `src/libslic3r/Fill/FillHoneycomb.cpp`
-
-- **CuraEngine Source**:
-  - `src/infill.cpp`
-  - `src/infill/GyroidInfill.cpp`
-
-- **Gyroid Math**:
-  - Implicit surface: `sin(x)·cos(y) + sin(y)·cos(z) + sin(z)·cos(x) = 0`
-  - For 2D slice at height z, solve for x,y pairs
-  - Use adaptive refinement for smooth curves
+- **Slicer Source Code**:
+  - PrusaSlicer: `src/libslic3r/Fill/`
+  - CuraEngine: `src/infill/`
 
 ---
 
-## Code Structure Overview
+## Code Structure
 
 ### Fill Tab (`src/components/tabs/FillTab.tsx`)
 
-**Pattern Generation Functions:**
-- `generateGlobalHatchLines()` - Creates parallel lines at angle
-- `clipLinesToPolygon()` - Clips lines to polygon boundary
-- `generateConcentricLines()` - ❌ BUG - Outside-in loops
+**Pattern Generators:**
+- `generateGlobalHatchLines()` - Parallel lines at angle
+- `clipLinesToPolygon()` - Clips lines to polygon
+- `generateConcentricLines()` - Outside-in loops (fixed)
 - `generateWiggleLines()` - Sine wave pattern
 - `generateSpiralLines()` - Archimedean spiral
+- `generateHoneycombLines()` - Hexagonal grid (new)
 
-**Optimization Functions:**
+**Optimization:**
 - `optimizeLinesWithinShape()` - TSP within single shape
 - `optimizeLineOrderMultiPass()` - Orders shapes, then optimizes within each
-- `calculateTravelDistance()` - Measures total pen travel
 
-**Helper Functions:**
-- `getPolygonPoints()` - Extracts points from SVG elements
-- `offsetPolygon()` - Vertex-normal based offset (simple, potentially buggy)
-- `isValidPolygon()` - Checks polygon area
-- `pointInPolygon()` - Ray casting point-in-polygon test
-
-### CSS (`src/components/tabs/FillTab.css`)
-- Pattern selector: `.pattern-selector`, `.pattern-btn`
-- Order visualization: `.order-stats`, `.animate-btn`
-- Preview label gradient: `.preview-label.order`
+**Helpers:**
+- `offsetPolygon()` - Vertex-normal based offset
+- `polygonSignedArea()` - Shoelace formula
+- `isValidConcentricPolygon()` - Multiple validation checks
+- `pointInPolygon()` - Ray casting test
+- `linePolygonIntersections()` - Line-polygon intersection
 
 ---
 
 ## Testing Notes
 
-- Spiral pattern generates beautiful results on the pac-man style shapes
-- Wiggle pattern works well with amplitude 3, frequency 2
-- TSP optimization shows significant travel reduction (check stats panel)
-- Test concentric fix with simple shapes first (rectangles, circles)
+- All patterns now work on the pac-man shapes (120 paths)
+- Spiral looks particularly good
+- Honeycomb may need spacing adjustment for best results
+- TSP optimization shows significant travel reduction in stats panel
