@@ -329,33 +329,21 @@ function distance(p1: Point, p2: Point): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
-// Get the start and end points of a line
-function lineEndpoints(line: HatchLine): { start: Point; end: Point } {
-  return {
-    start: { x: line.x1, y: line.y1 },
-    end: { x: line.x2, y: line.y2 }
-  }
-}
-
-// Optimize line order using nearest-neighbor algorithm (greedy TSP approximation)
-// Also considers reversing lines to minimize travel distance
-function optimizeLineOrder(
-  lines: { line: HatchLine; pathId: string; color: string; originalIndex: number }[]
-): OrderedLine[] {
-  if (lines.length === 0) return []
-  if (lines.length === 1) {
-    const { line, pathId, color, originalIndex } = lines[0]
-    return [{ ...line, pathId, color, originalIndex, reversed: false }]
-  }
+// Optimize lines within a single shape using nearest-neighbor algorithm
+// Returns optimized lines and the final endpoint for chaining to next shape
+function optimizeLinesWithinShape(
+  lines: HatchLine[],
+  pathId: string,
+  color: string,
+  startingPoint: Point,
+  startingIndex: number
+): { orderedLines: OrderedLine[]; endPoint: Point } {
+  if (lines.length === 0) return { orderedLines: [], endPoint: startingPoint }
 
   const result: OrderedLine[] = []
   const remaining = [...lines]
-
-  // Start with the first line (could also start from top-left corner)
-  const first = remaining.shift()!
-  result.push({ ...first.line, pathId: first.pathId, color: first.color, originalIndex: first.originalIndex, reversed: false })
-
-  let currentEnd = lineEndpoints(first.line).end
+  let currentPoint = startingPoint
+  let globalIndex = startingIndex
 
   while (remaining.length > 0) {
     let bestIndex = 0
@@ -364,18 +352,18 @@ function optimizeLineOrder(
 
     // Find the nearest line (considering both orientations)
     for (let i = 0; i < remaining.length; i++) {
-      const { start, end } = lineEndpoints(remaining[i].line)
+      const line = remaining[i]
+      const start = { x: line.x1, y: line.y1 }
+      const end = { x: line.x2, y: line.y2 }
 
-      // Distance to start of line (normal orientation)
-      const distToStart = distance(currentEnd, start)
+      const distToStart = distance(currentPoint, start)
       if (distToStart < bestDistance) {
         bestDistance = distToStart
         bestIndex = i
         shouldReverse = false
       }
 
-      // Distance to end of line (reversed orientation)
-      const distToEnd = distance(currentEnd, end)
+      const distToEnd = distance(currentPoint, end)
       if (distToEnd < bestDistance) {
         bestDistance = distToEnd
         bestIndex = i
@@ -383,26 +371,130 @@ function optimizeLineOrder(
       }
     }
 
-    const chosen = remaining.splice(bestIndex, 1)[0]
-    const { line, pathId, color, originalIndex } = chosen
+    const chosenLine = remaining.splice(bestIndex, 1)[0]
 
     if (shouldReverse) {
-      // Reverse the line direction
       result.push({
-        x1: line.x2,
-        y1: line.y2,
-        x2: line.x1,
-        y2: line.y1,
+        x1: chosenLine.x2,
+        y1: chosenLine.y2,
+        x2: chosenLine.x1,
+        y2: chosenLine.y1,
         pathId,
         color,
-        originalIndex,
+        originalIndex: globalIndex++,
         reversed: true
       })
-      currentEnd = { x: line.x1, y: line.y1 }
+      currentPoint = { x: chosenLine.x1, y: chosenLine.y1 }
     } else {
-      result.push({ ...line, pathId, color, originalIndex, reversed: false })
-      currentEnd = { x: line.x2, y: line.y2 }
+      result.push({
+        ...chosenLine,
+        pathId,
+        color,
+        originalIndex: globalIndex++,
+        reversed: false
+      })
+      currentPoint = { x: chosenLine.x2, y: chosenLine.y2 }
     }
+  }
+
+  return { orderedLines: result, endPoint: currentPoint }
+}
+
+// Calculate the centroid (center point) of a set of lines
+function calculateShapeCentroid(lines: HatchLine[]): Point {
+  if (lines.length === 0) return { x: 0, y: 0 }
+
+  let sumX = 0
+  let sumY = 0
+  let count = 0
+
+  for (const line of lines) {
+    sumX += line.x1 + line.x2
+    sumY += line.y1 + line.y2
+    count += 2
+  }
+
+  return { x: sumX / count, y: sumY / count }
+}
+
+// Get the top-left-most point of a shape (for starting point selection)
+function getShapeTopLeft(lines: HatchLine[]): Point {
+  if (lines.length === 0) return { x: Infinity, y: Infinity }
+
+  let minX = Infinity
+  let minY = Infinity
+
+  for (const line of lines) {
+    minX = Math.min(minX, line.x1, line.x2)
+    minY = Math.min(minY, line.y1, line.y2)
+  }
+
+  return { x: minX, y: minY }
+}
+
+// Multi-pass optimization:
+// 1. Order shapes by proximity (nearest-neighbor starting from top-left)
+// 2. Within each shape, optimize line order
+// 3. Chain shapes together so end of one shape connects to start of next
+function optimizeLineOrderMultiPass(
+  hatchedPaths: { pathInfo: { id: string; color: string }; lines: HatchLine[] }[]
+): OrderedLine[] {
+  if (hatchedPaths.length === 0) return []
+
+  // Build shape data with centroids for ordering
+  const shapes = hatchedPaths.map(({ pathInfo, lines }) => ({
+    pathId: pathInfo.id,
+    color: pathInfo.color,
+    lines: [...lines],
+    centroid: calculateShapeCentroid(lines),
+    topLeft: getShapeTopLeft(lines)
+  }))
+
+  // Order shapes using nearest-neighbor starting from origin (0,0)
+  const orderedShapes: typeof shapes = []
+  const remainingShapes = [...shapes]
+  let currentPoint: Point = { x: 0, y: 0 }
+
+  while (remainingShapes.length > 0) {
+    let bestIndex = 0
+    let bestDistance = Infinity
+
+    // Find nearest shape (by top-left corner for consistent ordering)
+    for (let i = 0; i < remainingShapes.length; i++) {
+      const dist = distance(currentPoint, remainingShapes[i].topLeft)
+      if (dist < bestDistance) {
+        bestDistance = dist
+        bestIndex = i
+      }
+    }
+
+    const chosen = remainingShapes.splice(bestIndex, 1)[0]
+    orderedShapes.push(chosen)
+    // Update current point to this shape's centroid for next shape selection
+    currentPoint = chosen.centroid
+  }
+
+  // Now optimize lines within each shape, chaining them together
+  const result: OrderedLine[] = []
+  let penPosition: Point = { x: 0, y: 0 }
+  let globalIndex = 0
+
+  for (const shape of orderedShapes) {
+    const { orderedLines, endPoint } = optimizeLinesWithinShape(
+      shape.lines,
+      shape.pathId,
+      shape.color,
+      penPosition,
+      globalIndex
+    )
+
+    // Update indices to be globally sequential
+    for (const line of orderedLines) {
+      line.originalIndex = globalIndex++
+    }
+
+    result.push(...orderedLines)
+    penPosition = endPoint
   }
 
   return result
@@ -716,39 +808,33 @@ export default function FillTab() {
     return results
   }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset])
 
-  // Compute ordered lines - both unoptimized (original order) and optimized (TSP)
+  // Compute ordered lines using multi-pass optimization:
+  // 1. Order shapes by proximity (starting from top-left)
+  // 2. Optimize lines within each shape
+  // 3. Chain shapes together
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats } = useMemo(() => {
     if (hatchedPaths.length === 0) {
-      return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0 } }
+      return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0, shapeCount: 0 } }
     }
 
-    // Flatten all hatch lines into a single array with metadata
-    const allLines: { line: HatchLine; pathId: string; color: string; originalIndex: number }[] = []
+    // Unoptimized: flatten lines in original order
+    const unoptimized: OrderedLine[] = []
     let globalIndex = 0
-
     hatchedPaths.forEach(({ pathInfo, lines }) => {
       lines.forEach(line => {
-        allLines.push({
-          line,
+        unoptimized.push({
+          ...line,
           pathId: pathInfo.id,
           color: pathInfo.color,
-          originalIndex: globalIndex++
+          originalIndex: globalIndex++,
+          reversed: false
         })
       })
     })
 
-    // Unoptimized: just use original order
-    const unoptimized: OrderedLine[] = allLines.map(({ line, pathId, color, originalIndex }) => ({
-      ...line,
-      pathId,
-      color,
-      originalIndex,
-      reversed: false
-    }))
-
-    // Optimized: use nearest-neighbor TSP
-    const optimized = optimizeLineOrder(allLines)
+    // Optimized: use multi-pass algorithm (shape ordering + line optimization within shapes)
+    const optimized = optimizeLineOrderMultiPass(hatchedPaths)
 
     // Calculate statistics
     const unoptimizedDistance = calculateTravelDistance(unoptimized)
@@ -760,7 +846,7 @@ export default function FillTab() {
     return {
       unoptimizedLines: unoptimized,
       optimizedLines: optimized,
-      stats: { unoptimizedDistance, optimizedDistance, improvement }
+      stats: { unoptimizedDistance, optimizedDistance, improvement, shapeCount: hatchedPaths.length }
     }
   }, [hatchedPaths])
 
@@ -1196,6 +1282,10 @@ export default function FillTab() {
 
           {showOrderVisualization && stats.unoptimizedDistance > 0 && (
             <div className="order-stats">
+              <div className="stat-row">
+                <span className="stat-label">Shapes:</span>
+                <span className="stat-value">{stats.shapeCount}</span>
+              </div>
               <div className="stat-row">
                 <span className="stat-label">Lines:</span>
                 <span className="stat-value">{optimizedLines.length}</span>
