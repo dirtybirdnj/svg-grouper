@@ -1,7 +1,48 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
+import defaultPaperSizes from '../../config/paperSizes.json'
 import './ExportTab.css'
+
+// Paper size type
+interface PaperSize {
+  id: string
+  label: string
+  width: number
+  height: number
+  unit: string
+}
+
+// Convert mm to pixels (assuming 96 DPI, 1 inch = 25.4mm)
+const MM_TO_PX = 96 / 25.4
+
+// Local storage key for custom paper sizes
+const PAPER_SIZES_STORAGE_KEY = 'svg-grouper-paper-sizes'
+
+// Load paper sizes from localStorage or use defaults
+function loadPaperSizes(): PaperSize[] {
+  try {
+    const stored = localStorage.getItem(PAPER_SIZES_STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load paper sizes from localStorage:', e)
+  }
+  return defaultPaperSizes.paperSizes as PaperSize[]
+}
+
+// Save paper sizes to localStorage
+function savePaperSizes(sizes: PaperSize[]): void {
+  try {
+    localStorage.setItem(PAPER_SIZES_STORAGE_KEY, JSON.stringify(sizes))
+  } catch (e) {
+    console.error('Failed to save paper sizes to localStorage:', e)
+  }
+}
 
 interface SVGStatistics {
   totalNodes: number
@@ -175,10 +216,196 @@ const COMMAND_NAMES: Record<string, string> = {
 
 export default function ExportTab() {
   const { svgContent, svgDimensions, layerNodes, fileName, svgElementRef } = useAppContext()
-  const [paperSize, setPaperSize] = useState('original')
+
+  // Paper sizes state
+  const [paperSizes, setPaperSizes] = useState<PaperSize[]>(loadPaperSizes)
+  const [showPaperSizeSettings, setShowPaperSizeSettings] = useState(false)
+  const [editingPaperSizes, setEditingPaperSizes] = useState<string>('')
+
+  // Page setup state
+  const [paperSize, setPaperSize] = useState<string>('a4')
+  const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait')
+  const [marginUniform, setMarginUniform] = useState(true)
+  const [margins, setMargins] = useState({ top: 10, right: 10, bottom: 10, left: 10 })
+  const [scaleToFit, setScaleToFit] = useState(true)
+  const [clipToPage, setClipToPage] = useState(false)
+  const [centerContent, setCenterContent] = useState(true)
+  const [designInset, setDesignInset] = useState(0) // mm to crop into the design from each edge
+
+  // Export options
   const [includeBackground, setIncludeBackground] = useState(false)
   const [normalizeStrokes, setNormalizeStrokes] = useState(false)
   const [strokeWidth, setStrokeWidth] = useState(1)
+  const [convertFillsToStrokes, setConvertFillsToStrokes] = useState(false)
+
+  // Preview canvas ref
+  const previewRef = useRef<HTMLDivElement>(null)
+  const [baseScale, setBaseScale] = useState(1) // Auto-calculated to fit
+  const [userZoom, setUserZoom] = useState(1) // User-controlled zoom on top
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+
+  // Combined preview scale
+  const previewScale = baseScale * userZoom
+
+  // Open paper size settings
+  const handleOpenPaperSettings = () => {
+    setEditingPaperSizes(JSON.stringify(paperSizes, null, 2))
+    setShowPaperSizeSettings(true)
+  }
+
+  // Save paper size settings
+  const handleSavePaperSettings = () => {
+    try {
+      const parsed = JSON.parse(editingPaperSizes)
+      if (!Array.isArray(parsed)) {
+        alert('Invalid format: must be an array of paper sizes')
+        return
+      }
+      // Validate each entry
+      for (const size of parsed) {
+        if (!size.id || !size.label || typeof size.width !== 'number' || typeof size.height !== 'number') {
+          alert('Invalid paper size entry. Each entry must have id, label, width, and height.')
+          return
+        }
+      }
+      setPaperSizes(parsed)
+      savePaperSizes(parsed)
+      setShowPaperSizeSettings(false)
+    } catch (e) {
+      alert('Invalid JSON format')
+    }
+  }
+
+  // Reset to defaults
+  const handleResetPaperSizes = () => {
+    const defaults = defaultPaperSizes.paperSizes as PaperSize[]
+    setEditingPaperSizes(JSON.stringify(defaults, null, 2))
+  }
+
+  // Calculate page dimensions based on paper size and orientation
+  const pageDimensions = useMemo(() => {
+    const size = paperSizes.find(s => s.id === paperSize)
+    if (!size) return null
+
+    const width = orientation === 'portrait' ? size.width : size.height
+    const height = orientation === 'portrait' ? size.height : size.width
+
+    return { width, height, widthPx: width * MM_TO_PX, heightPx: height * MM_TO_PX }
+  }, [paperSize, orientation, paperSizes])
+
+  // Calculate printable area and content transform
+  const pageLayout = useMemo(() => {
+    if (!pageDimensions || !svgDimensions) return null
+
+    const printableWidth = pageDimensions.width - margins.left - margins.right
+    const printableHeight = pageDimensions.height - margins.top - margins.bottom
+
+    if (printableWidth <= 0 || printableHeight <= 0) return null
+
+    // Apply design inset - this crops into the design from each edge
+    // The inset is in mm, need to convert to content's coordinate space
+    const insetPx = designInset * MM_TO_PX
+    const croppedWidth = Math.max(1, svgDimensions.width - insetPx * 2)
+    const croppedHeight = Math.max(1, svgDimensions.height - insetPx * 2)
+    const croppedWidthMm = croppedWidth / MM_TO_PX
+    const croppedHeightMm = croppedHeight / MM_TO_PX
+
+    // Calculate scale to fit cropped content in printable area
+    let scale = 1
+    if (scaleToFit) {
+      const scaleX = printableWidth / croppedWidthMm
+      const scaleY = printableHeight / croppedHeightMm
+      scale = Math.min(scaleX, scaleY) // Fit to printable area (can scale up or down)
+    }
+
+    const scaledWidth = croppedWidthMm * scale
+    const scaledHeight = croppedHeightMm * scale
+
+    // Calculate offset to center content in printable area
+    let offsetX = margins.left
+    let offsetY = margins.top
+
+    if (centerContent) {
+      offsetX = margins.left + (printableWidth - scaledWidth) / 2
+      offsetY = margins.top + (printableHeight - scaledHeight) / 2
+    }
+
+    return {
+      printableWidth,
+      printableHeight,
+      scale,
+      scaledWidth,
+      scaledHeight,
+      offsetX,
+      offsetY,
+      // Store inset in px for transform calculation
+      insetPx,
+      croppedWidthMm,
+      croppedHeightMm,
+    }
+  }, [pageDimensions, svgDimensions, margins, scaleToFit, centerContent, designInset])
+
+  // Calculate base preview scale to fit the page in the preview area
+  useEffect(() => {
+    if (!previewRef.current || !pageDimensions) return
+
+    const rect = previewRef.current.getBoundingClientRect()
+    const padding = 40
+    const availableWidth = rect.width - padding
+    const availableHeight = rect.height - padding
+
+    const scaleX = availableWidth / pageDimensions.widthPx
+    const scaleY = availableHeight / pageDimensions.heightPx
+    setBaseScale(Math.min(scaleX, scaleY, 1))
+  }, [pageDimensions])
+
+  // Zoom handlers
+  const handleZoomIn = useCallback(() => {
+    setUserZoom(prev => Math.min(10, prev * 1.2))
+  }, [])
+
+  const handleZoomOut = useCallback(() => {
+    setUserZoom(prev => Math.max(0.1, prev / 1.2))
+  }, [])
+
+  const handleFitToView = useCallback(() => {
+    setUserZoom(1)
+    setPanOffset({ x: 0, y: 0 })
+  }, [])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    setUserZoom(prev => Math.max(0.1, Math.min(10, prev * delta)))
+  }, [])
+
+  // Pan handlers
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) {
+      setIsDragging(true)
+      setDragStart({ x: e.clientX - panOffset.x, y: e.clientY - panOffset.y })
+    }
+  }, [panOffset])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      setPanOffset({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      })
+    }
+  }, [isDragging, dragStart])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
+
+  // Handle uniform margin change
+  const handleUniformMarginChange = (value: number) => {
+    setMargins({ top: value, right: value, bottom: value, left: value })
+  }
 
   const stats = useMemo(() => {
     if (!layerNodes.length) return null
@@ -189,6 +416,65 @@ export default function ExportTab() {
     if (!svgContent) return 0
     return new Blob([svgContent]).size
   }, [svgContent])
+
+  // Create preview SVG with export options applied
+  const previewSvgContent = useMemo(() => {
+    if (!svgContent) return ''
+    if (!convertFillsToStrokes && !normalizeStrokes) return svgContent
+
+    // Parse the SVG
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgContent, 'image/svg+xml')
+    const svg = doc.documentElement
+
+    // Convert fills to strokes
+    if (convertFillsToStrokes) {
+      const elements = svg.querySelectorAll('path, polygon, rect, circle, ellipse')
+      elements.forEach(el => {
+        let fillColor = el.getAttribute('fill')
+        const style = el.getAttribute('style') || ''
+
+        const styleFillMatch = style.match(/fill:\s*([^;]+)/)
+        if (styleFillMatch) {
+          fillColor = styleFillMatch[1].trim()
+        }
+
+        if (fillColor && fillColor !== 'none' && fillColor !== 'transparent') {
+          el.setAttribute('stroke', fillColor)
+          el.setAttribute('fill', 'none')
+
+          if (!el.getAttribute('stroke-width') && !style.includes('stroke-width')) {
+            el.setAttribute('stroke-width', '1')
+          }
+
+          if (style.includes('fill:')) {
+            const newStyle = style
+              .replace(/fill:\s*[^;]+;?/g, 'fill:none;')
+              .replace(/stroke:\s*[^;]+;?/g, '') + `stroke:${fillColor};`
+            el.setAttribute('style', newStyle)
+          }
+        }
+      })
+    }
+
+    // Normalize stroke widths
+    if (normalizeStrokes) {
+      const elements = svg.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
+      elements.forEach(el => {
+        const currentStroke = el.getAttribute('stroke')
+        if (currentStroke && currentStroke !== 'none') {
+          el.setAttribute('stroke-width', String(strokeWidth))
+        }
+        const style = el.getAttribute('style')
+        if (style && style.includes('stroke:') && !style.includes('stroke:none')) {
+          const newStyle = style.replace(/stroke-width:\s*[^;]+;?/g, '') + `stroke-width:${strokeWidth}px;`
+          el.setAttribute('style', newStyle)
+        }
+      })
+    }
+
+    return new XMLSerializer().serializeToString(svg)
+  }, [svgContent, convertFillsToStrokes, normalizeStrokes, strokeWidth])
 
   if (!svgContent) {
     return (
@@ -203,44 +489,113 @@ export default function ExportTab() {
 
   const handleExport = () => {
     // Use the live SVG element from the DOM (includes all modifications like hatching)
-    if (!svgElementRef.current) return
+    if (!svgElementRef.current || !pageDimensions || !pageLayout) return
 
     // Clone the SVG element to avoid modifying the original
-    const svgElement = svgElementRef.current.cloneNode(true) as SVGSVGElement
+    const originalSvg = svgElementRef.current.cloneNode(true) as SVGSVGElement
+    if (!originalSvg) return
 
-    if (!svgElement) return
+    // Create a new SVG with the page dimensions
+    const svgNS = 'http://www.w3.org/2000/svg'
+    const newSvg = document.createElementNS(svgNS, 'svg')
 
-    // Apply paper size if not original
-    if (paperSize !== 'original' && svgDimensions) {
-      const paperSizes: Record<string, { width: number; height: number; unit: string }> = {
-        'letter': { width: 8.5, height: 11, unit: 'in' },
-        'legal': { width: 8.5, height: 14, unit: 'in' },
-        'tabloid': { width: 11, height: 17, unit: 'in' },
-        'a4': { width: 210, height: 297, unit: 'mm' },
-        'a3': { width: 297, height: 420, unit: 'mm' },
-        'a2': { width: 420, height: 594, unit: 'mm' },
-        'a1': { width: 594, height: 841, unit: 'mm' },
-      }
-
-      const size = paperSizes[paperSize]
-      if (size) {
-        svgElement.setAttribute('width', `${size.width}${size.unit}`)
-        svgElement.setAttribute('height', `${size.height}${size.unit}`)
-      }
-    }
+    // Set page dimensions in mm
+    newSvg.setAttribute('width', `${pageDimensions.width}mm`)
+    newSvg.setAttribute('height', `${pageDimensions.height}mm`)
+    newSvg.setAttribute('viewBox', `0 0 ${pageDimensions.width} ${pageDimensions.height}`)
+    newSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
 
     // Add white background if requested
     if (includeBackground) {
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect')
-      rect.setAttribute('width', '100%')
-      rect.setAttribute('height', '100%')
-      rect.setAttribute('fill', 'white')
-      svgElement.insertBefore(rect, svgElement.firstChild)
+      const bgRect = document.createElementNS(svgNS, 'rect')
+      bgRect.setAttribute('width', '100%')
+      bgRect.setAttribute('height', '100%')
+      bgRect.setAttribute('fill', 'white')
+      newSvg.appendChild(bgRect)
+    }
+
+    // Add clipping path if clipping is enabled
+    if (clipToPage) {
+      const defs = document.createElementNS(svgNS, 'defs')
+      const clipPath = document.createElementNS(svgNS, 'clipPath')
+      clipPath.setAttribute('id', 'page-clip')
+      const clipRect = document.createElementNS(svgNS, 'rect')
+      clipRect.setAttribute('x', String(margins.left))
+      clipRect.setAttribute('y', String(margins.top))
+      clipRect.setAttribute('width', String(pageLayout.printableWidth))
+      clipRect.setAttribute('height', String(pageLayout.printableHeight))
+      clipPath.appendChild(clipRect)
+      defs.appendChild(clipPath)
+      newSvg.appendChild(defs)
+    }
+
+    // Create a group to hold the transformed content
+    const contentGroup = document.createElementNS(svgNS, 'g')
+
+    // Apply clipping if enabled
+    if (clipToPage) {
+      contentGroup.setAttribute('clip-path', 'url(#page-clip)')
+    }
+
+    // Create inner group for transform
+    const transformGroup = document.createElementNS(svgNS, 'g')
+
+    // The transform needs to:
+    // 1. Offset by the inset (crop into design) - in original SVG px coordinates
+    // 2. Scale from px to mm, applying the fit scale
+    // 3. Translate to the correct position on the page
+
+    // Combined scale: px to mm conversion * fit scale
+    const combinedScale = (1 / MM_TO_PX) * pageLayout.scale
+
+    // The inset shifts the content origin (in px, before scaling)
+    // After scaling, we translate to page position (in mm)
+    transformGroup.setAttribute(
+      'transform',
+      `translate(${pageLayout.offsetX}, ${pageLayout.offsetY}) scale(${combinedScale}) translate(${-pageLayout.insetPx}, ${-pageLayout.insetPx})`
+    )
+
+    // Convert fills to strokes if requested (for pen plotters)
+    if (convertFillsToStrokes) {
+      const elements = originalSvg.querySelectorAll('path, polygon, rect, circle, ellipse')
+      elements.forEach(el => {
+        // Get fill color from attribute or style
+        let fillColor = el.getAttribute('fill')
+        const style = el.getAttribute('style') || ''
+
+        // Check style for fill
+        const styleFillMatch = style.match(/fill:\s*([^;]+)/)
+        if (styleFillMatch) {
+          fillColor = styleFillMatch[1].trim()
+        }
+
+        // If there's a valid fill color (not none/transparent), convert to stroke
+        if (fillColor && fillColor !== 'none' && fillColor !== 'transparent') {
+          // Set stroke to the fill color
+          el.setAttribute('stroke', fillColor)
+
+          // Set fill to none
+          el.setAttribute('fill', 'none')
+
+          // If no stroke-width set, use a default
+          if (!el.getAttribute('stroke-width') && !style.includes('stroke-width')) {
+            el.setAttribute('stroke-width', '1')
+          }
+
+          // Update style attribute if it has fill
+          if (style.includes('fill:')) {
+            const newStyle = style
+              .replace(/fill:\s*[^;]+;?/g, 'fill:none;')
+              .replace(/stroke:\s*[^;]+;?/g, '') + `stroke:${fillColor};`
+            el.setAttribute('style', newStyle)
+          }
+        }
+      })
     }
 
     // Normalize stroke widths if requested
     if (normalizeStrokes) {
-      const elements = svgElement.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
+      const elements = originalSvg.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
       elements.forEach(el => {
         const currentStroke = el.getAttribute('stroke')
         if (currentStroke && currentStroke !== 'none') {
@@ -255,8 +610,16 @@ export default function ExportTab() {
       })
     }
 
+    // Move all children from original SVG to transform group
+    while (originalSvg.firstChild) {
+      transformGroup.appendChild(originalSvg.firstChild)
+    }
+
+    contentGroup.appendChild(transformGroup)
+    newSvg.appendChild(contentGroup)
+
     const serializer = new XMLSerializer()
-    const svgString = serializer.serializeToString(svgElement)
+    const svgString = serializer.serializeToString(newSvg)
 
     const blob = new Blob([svgString], { type: 'image/svg+xml' })
     const url = URL.createObjectURL(blob)
@@ -273,29 +636,220 @@ export default function ExportTab() {
     <div className="export-tab">
       <aside className="export-sidebar">
         <div className="sidebar-header">
-          <h2>Export Options</h2>
+          <h2>Page Setup</h2>
         </div>
         <div className="sidebar-content">
+          {/* Page Size Section */}
           <div className="export-section">
-            <h3>Output Settings</h3>
+            <h3 className="section-header-with-action">
+              <span>Page Size</span>
+              <button
+                className="settings-icon-btn"
+                onClick={handleOpenPaperSettings}
+                title="Edit paper sizes"
+              >
+                ⚙
+              </button>
+            </h3>
 
             <div className="export-control">
-              <label>Paper Size</label>
+              <label>Paper</label>
               <select
                 value={paperSize}
                 onChange={(e) => setPaperSize(e.target.value)}
                 className="export-select"
               >
-                <option value="original">Original Size</option>
-                <option value="letter">Letter (8.5" × 11")</option>
-                <option value="legal">Legal (8.5" × 14")</option>
-                <option value="tabloid">Tabloid (11" × 17")</option>
-                <option value="a4">A4 (210mm × 297mm)</option>
-                <option value="a3">A3 (297mm × 420mm)</option>
-                <option value="a2">A2 (420mm × 594mm)</option>
-                <option value="a1">A1 (594mm × 841mm)</option>
+                {paperSizes.map((size) => (
+                  <option key={size.id} value={size.id}>{size.label}</option>
+                ))}
               </select>
             </div>
+
+            <div className="export-control">
+              <label>Orientation</label>
+              <div className="orientation-toggle">
+                <button
+                  className={`orientation-btn ${orientation === 'portrait' ? 'active' : ''}`}
+                  onClick={() => setOrientation('portrait')}
+                  title="Portrait"
+                >
+                  <span className="orientation-icon portrait">▯</span>
+                  Portrait
+                </button>
+                <button
+                  className={`orientation-btn ${orientation === 'landscape' ? 'active' : ''}`}
+                  onClick={() => setOrientation('landscape')}
+                  title="Landscape"
+                >
+                  <span className="orientation-icon landscape">▭</span>
+                  Landscape
+                </button>
+              </div>
+            </div>
+
+            {pageDimensions && (
+              <div className="page-dimensions-info">
+                {pageDimensions.width.toFixed(0)} × {pageDimensions.height.toFixed(0)} mm
+              </div>
+            )}
+          </div>
+
+          {/* Margins Section */}
+          <div className="export-section">
+            <h3>Margins</h3>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={marginUniform}
+                  onChange={(e) => setMarginUniform(e.target.checked)}
+                />
+                Uniform margins
+              </label>
+            </div>
+
+            {marginUniform ? (
+              <div className="export-control">
+                <label>All sides (mm)</label>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="50"
+                    step="1"
+                    value={margins.top}
+                    onChange={(e) => handleUniformMarginChange(Number(e.target.value))}
+                    className="export-slider"
+                  />
+                  <span className="control-value">{margins.top}mm</span>
+                </div>
+              </div>
+            ) : (
+              <div className="margin-controls">
+                <div className="export-control compact">
+                  <label>Top</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={margins.top}
+                    onChange={(e) => setMargins({ ...margins, top: Number(e.target.value) })}
+                    className="margin-input"
+                  />
+                  <span className="unit">mm</span>
+                </div>
+                <div className="export-control compact">
+                  <label>Right</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={margins.right}
+                    onChange={(e) => setMargins({ ...margins, right: Number(e.target.value) })}
+                    className="margin-input"
+                  />
+                  <span className="unit">mm</span>
+                </div>
+                <div className="export-control compact">
+                  <label>Bottom</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={margins.bottom}
+                    onChange={(e) => setMargins({ ...margins, bottom: Number(e.target.value) })}
+                    className="margin-input"
+                  />
+                  <span className="unit">mm</span>
+                </div>
+                <div className="export-control compact">
+                  <label>Left</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={margins.left}
+                    onChange={(e) => setMargins({ ...margins, left: Number(e.target.value) })}
+                    className="margin-input"
+                  />
+                  <span className="unit">mm</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Layout Options Section */}
+          <div className="export-section">
+            <h3>Layout</h3>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={scaleToFit}
+                  onChange={(e) => setScaleToFit(e.target.checked)}
+                />
+                Scale to fit page
+              </label>
+            </div>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={centerContent}
+                  onChange={(e) => setCenterContent(e.target.checked)}
+                />
+                Center content
+              </label>
+            </div>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={clipToPage}
+                  onChange={(e) => setClipToPage(e.target.checked)}
+                />
+                Clip to margins
+              </label>
+            </div>
+
+            <div className="export-control">
+              <label>Design Inset (mm)</label>
+              <div className="control-row">
+                <input
+                  type="range"
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={designInset}
+                  onChange={(e) => setDesignInset(Number(e.target.value))}
+                  className="export-slider"
+                />
+                <span className="control-value">{designInset}mm</span>
+              </div>
+              <p className="control-hint">Crops into the design from each edge</p>
+            </div>
+
+            {pageLayout && (
+              <div className="layout-info">
+                <div className="info-item small">
+                  <span>Scale:</span>
+                  <span>{(pageLayout.scale * 100).toFixed(1)}%</span>
+                </div>
+                <div className="info-item small">
+                  <span>Output size:</span>
+                  <span>{pageLayout.scaledWidth.toFixed(1)} × {pageLayout.scaledHeight.toFixed(1)} mm</span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Other Options Section */}
+          <div className="export-section">
+            <h3>Other Options</h3>
 
             <div className="export-control checkbox">
               <label>
@@ -305,6 +859,17 @@ export default function ExportTab() {
                   onChange={(e) => setIncludeBackground(e.target.checked)}
                 />
                 Include white background
+              </label>
+            </div>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={convertFillsToStrokes}
+                  onChange={(e) => setConvertFillsToStrokes(e.target.checked)}
+                />
+                Convert fills to strokes
               </label>
             </div>
 
@@ -340,13 +905,89 @@ export default function ExportTab() {
 
           <div className="export-actions">
             <button className="export-btn primary" onClick={handleExport}>
-              💾 Export SVG
+              Export SVG
             </button>
           </div>
         </div>
       </aside>
 
-      <main className="export-main">
+      {/* Preview Area */}
+      <div
+        className="export-preview"
+        ref={previewRef}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <div className="preview-header">
+          <h2>Page Preview</h2>
+          <div className="preview-zoom-controls">
+            <button onClick={handleZoomIn} title="Zoom In">+</button>
+            <button onClick={handleZoomOut} title="Zoom Out">-</button>
+            <button onClick={handleFitToView} title="Fit to View">Fit</button>
+            <span className="zoom-level">{Math.round(userZoom * 100)}%</span>
+          </div>
+        </div>
+        <div className="preview-content" style={{ cursor: isDragging ? 'grabbing' : 'grab' }}>
+          {pageDimensions && pageLayout && svgContent && (
+            <div
+              className="page-preview"
+              style={{
+                width: pageDimensions.widthPx * previewScale,
+                height: pageDimensions.heightPx * previewScale,
+                transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
+              }}
+            >
+              {/* Page background */}
+              <div className="page-paper" />
+
+              {/* Margin indicators */}
+              <div
+                className="margin-area"
+                style={{
+                  top: margins.top * MM_TO_PX * previewScale,
+                  right: margins.right * MM_TO_PX * previewScale,
+                  bottom: margins.bottom * MM_TO_PX * previewScale,
+                  left: margins.left * MM_TO_PX * previewScale,
+                }}
+              />
+
+              {/* Content preview - with clipping if enabled */}
+              <div
+                className={`content-preview ${clipToPage ? 'clipped' : ''}`}
+                style={{
+                  left: pageLayout.offsetX * MM_TO_PX * previewScale,
+                  top: pageLayout.offsetY * MM_TO_PX * previewScale,
+                  width: pageLayout.scaledWidth * MM_TO_PX * previewScale,
+                  height: pageLayout.scaledHeight * MM_TO_PX * previewScale,
+                  overflow: clipToPage ? 'hidden' : 'visible',
+                }}
+              >
+                <div
+                  className="content-inner"
+                  dangerouslySetInnerHTML={{ __html: previewSvgContent }}
+                  style={{
+                    // Apply inset by shifting the content, then scale
+                    transform: `scale(${pageLayout.scale * previewScale}) translate(${-pageLayout.insetPx}px, ${-pageLayout.insetPx}px)`,
+                    transformOrigin: 'top left',
+                  }}
+                />
+              </div>
+            </div>
+          )}
+
+          {!svgContent && (
+            <div className="preview-empty">
+              <p>Load an SVG to see preview</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Analysis Panel */}
+      <aside className="export-analysis">
         <div className="analysis-container">
           <h2>SVG Analysis</h2>
 
@@ -513,7 +1154,58 @@ export default function ExportTab() {
             </>
           )}
         </div>
-      </main>
+      </aside>
+
+      {/* Paper Size Settings Modal */}
+      {showPaperSizeSettings && (
+        <div className="modal-overlay" onClick={() => setShowPaperSizeSettings(false)}>
+          <div className="modal-content paper-settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Edit Paper Sizes</h2>
+              <button
+                className="modal-close"
+                onClick={() => setShowPaperSizeSettings(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="modal-hint">
+                Edit the JSON below to add, remove, or modify paper sizes.
+                Each size needs: <code>id</code>, <code>label</code>, <code>width</code>, <code>height</code> (in mm).
+              </p>
+              <textarea
+                className="paper-sizes-editor"
+                value={editingPaperSizes}
+                onChange={(e) => setEditingPaperSizes(e.target.value)}
+                spellCheck={false}
+              />
+            </div>
+            <div className="modal-footer">
+              <button
+                className="modal-btn secondary"
+                onClick={handleResetPaperSizes}
+              >
+                Reset to Defaults
+              </button>
+              <div className="modal-footer-right">
+                <button
+                  className="modal-btn"
+                  onClick={() => setShowPaperSizeSettings(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="modal-btn primary"
+                  onClick={handleSavePaperSettings}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
