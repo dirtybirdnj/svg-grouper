@@ -464,10 +464,19 @@ export default function ExportTab() {
     setPanOffset({ x: 0, y: 0 })
   }, [])
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? 0.9 : 1.1
-    setUserZoom(prev => Math.max(0.1, Math.min(10, prev * delta)))
+  // Wheel zoom - use native event listener for passive: false
+  useEffect(() => {
+    const element = previewRef.current
+    if (!element) return
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? 0.9 : 1.1
+      setUserZoom(prev => Math.max(0.1, Math.min(10, prev * delta)))
+    }
+
+    element.addEventListener('wheel', handleWheel, { passive: false })
+    return () => element.removeEventListener('wheel', handleWheel)
   }, [])
 
   // Pan handlers
@@ -1083,7 +1092,6 @@ export default function ExportTab() {
       <div
         className="export-preview"
         ref={previewRef}
-        onWheel={handleWheel}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
