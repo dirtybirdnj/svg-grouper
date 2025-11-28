@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import './App.css'
 import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
 import TabNavigation from './components/TabNavigation'
@@ -10,6 +11,8 @@ function AppContent() {
     activeTab,
     setActiveTab,
     svgContent,
+    setSvgContent,
+    setFileName,
     scale,
     setScale,
     setOffset,
@@ -355,6 +358,60 @@ function AppContent() {
     setActiveTab('order')
     setStatusMessage('')
   }
+
+  // Handle menu commands from Electron
+  useEffect(() => {
+    if (!window.electron) return
+
+    // Handle menu commands
+    window.electron.onMenuCommand((command: string) => {
+      switch (command) {
+        case 'flatten':
+          handleFlattenAll()
+          break
+        case 'fill':
+          handleFill()
+          break
+        case 'order':
+          handleOrder()
+          break
+        case 'crop':
+          handleToggleCrop()
+          break
+        case 'export':
+          setActiveTab('export')
+          break
+        case 'tab-sort':
+          setActiveTab('sort')
+          break
+        case 'tab-fill':
+          setActiveTab('fill')
+          break
+        case 'tab-order':
+          setActiveTab('order')
+          break
+        case 'tab-export':
+          setActiveTab('export')
+          break
+        case 'zoom-in':
+          handleZoomIn()
+          break
+        case 'zoom-out':
+          handleZoomOut()
+          break
+        case 'zoom-fit':
+          handleFitToScreen()
+          break
+      }
+    })
+
+    // Handle file opened from menu
+    window.electron.onFileOpened((data) => {
+      setSvgContent(data.content)
+      setFileName(data.fileName)
+      setActiveTab('sort')
+    })
+  }, []) // Empty deps - these are one-time listeners
 
   return (
     <div className="app">

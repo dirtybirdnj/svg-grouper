@@ -75,6 +75,16 @@ export default function SortTab() {
       const nodes = await parseSVGProgressively(svg, handleProgress)
       setLayerNodes(nodes)
 
+      // Auto-select if there's only one top-level group
+      if (nodes.length === 1 && nodes[0].isGroup) {
+        setSelectedNodeIds(new Set([nodes[0].id]))
+        setLastSelectedNodeId(nodes[0].id)
+      } else {
+        // Clear any previous selection
+        setSelectedNodeIds(new Set())
+        setLastSelectedNodeId(null)
+      }
+
       const viewBox = svg.getAttribute('viewBox')
       let width = parseFloat(svg.getAttribute('width') || '0')
       let height = parseFloat(svg.getAttribute('height') || '0')
@@ -104,7 +114,7 @@ export default function SortTab() {
         status: 'Error parsing SVG',
       })
     }
-  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse])
+  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse, setSelectedNodeIds, setLastSelectedNodeId])
 
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)

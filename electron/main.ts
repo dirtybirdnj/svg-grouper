@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, dialog, MenuItemConstructorOptions } from 'electron'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import fs from 'node:fs'
 
 process.env.DIST = path.join(__dirname, '../dist')
 process.env.VITE_PUBLIC = app.isPackaged
@@ -206,4 +207,191 @@ ipcMain.handle('crop-svg', async (_event, args: { svg: string; x: number; y: num
   })
 })
 
-app.whenReady().then(createWindow)
+// Send menu command to renderer
+function sendMenuCommand(command: string) {
+  if (win) {
+    win.webContents.send('menu-command', command)
+  }
+}
+
+// Create application menu
+function createMenu() {
+  const isMac = process.platform === 'darwin'
+
+  const template: MenuItemConstructorOptions[] = [
+    // App menu (macOS only)
+    ...(isMac ? [{
+      label: app.name,
+      submenu: [
+        { role: 'about' as const },
+        { type: 'separator' as const },
+        { role: 'services' as const },
+        { type: 'separator' as const },
+        { role: 'hide' as const },
+        { role: 'hideOthers' as const },
+        { role: 'unhide' as const },
+        { type: 'separator' as const },
+        { role: 'quit' as const }
+      ]
+    }] : []),
+
+    // File menu
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Open SVG...',
+          accelerator: 'CmdOrCtrl+O',
+          click: async () => {
+            const result = await dialog.showOpenDialog(win!, {
+              properties: ['openFile'],
+              filters: [{ name: 'SVG Files', extensions: ['svg'] }]
+            })
+            if (!result.canceled && result.filePaths.length > 0) {
+              const filePath = result.filePaths[0]
+              const content = fs.readFileSync(filePath, 'utf-8')
+              const fileName = path.basename(filePath)
+              win?.webContents.send('file-opened', { content, fileName, filePath })
+            }
+          }
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Export SVG...',
+          accelerator: 'CmdOrCtrl+E',
+          click: () => sendMenuCommand('export')
+        },
+        { type: 'separator' as const },
+        isMac ? { role: 'close' as const } : { role: 'quit' as const }
+      ]
+    },
+
+    // Edit menu
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' as const },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        { role: 'selectAll' as const }
+      ]
+    },
+
+    // Tools menu
+    {
+      label: 'Tools',
+      submenu: [
+        {
+          label: 'Flatten Layers',
+          accelerator: 'CmdOrCtrl+Shift+F',
+          click: () => sendMenuCommand('flatten')
+        },
+        {
+          label: 'Fill Selected',
+          accelerator: 'CmdOrCtrl+Shift+H',
+          click: () => sendMenuCommand('fill')
+        },
+        {
+          label: 'Optimize Order',
+          accelerator: 'CmdOrCtrl+Shift+O',
+          click: () => sendMenuCommand('order')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Toggle Crop Overlay',
+          accelerator: 'CmdOrCtrl+Shift+C',
+          click: () => sendMenuCommand('crop')
+        }
+      ]
+    },
+
+    // View menu
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Sort Tab',
+          accelerator: 'CmdOrCtrl+1',
+          click: () => sendMenuCommand('tab-sort')
+        },
+        {
+          label: 'Fill Tab',
+          accelerator: 'CmdOrCtrl+2',
+          click: () => sendMenuCommand('tab-fill')
+        },
+        {
+          label: 'Order Tab',
+          accelerator: 'CmdOrCtrl+3',
+          click: () => sendMenuCommand('tab-order')
+        },
+        {
+          label: 'Export Tab',
+          accelerator: 'CmdOrCtrl+4',
+          click: () => sendMenuCommand('tab-export')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Zoom In',
+          accelerator: 'CmdOrCtrl+Plus',
+          click: () => sendMenuCommand('zoom-in')
+        },
+        {
+          label: 'Zoom Out',
+          accelerator: 'CmdOrCtrl+-',
+          click: () => sendMenuCommand('zoom-out')
+        },
+        {
+          label: 'Fit to Screen',
+          accelerator: 'CmdOrCtrl+0',
+          click: () => sendMenuCommand('zoom-fit')
+        },
+        { type: 'separator' as const },
+        { role: 'reload' as const },
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const }
+      ]
+    },
+
+    // Window menu
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' as const },
+        { role: 'zoom' as const },
+        ...(isMac ? [
+          { type: 'separator' as const },
+          { role: 'front' as const }
+        ] : [
+          { role: 'close' as const }
+        ])
+      ] as MenuItemConstructorOptions[]
+    },
+
+    // Help menu
+    {
+      role: 'help' as const,
+      submenu: [
+        {
+          label: 'SVG Grouper on GitHub',
+          click: async () => {
+            const { shell } = require('electron')
+            await shell.openExternal('https://github.com/dirtybirdnj/svg-grouper')
+          }
+        }
+      ]
+    }
+  ]
+
+  const menu = Menu.buildFromTemplate(template)
+  Menu.setApplicationMenu(menu)
+}
+
+app.whenReady().then(() => {
+  createMenu()
+  createWindow()
+})

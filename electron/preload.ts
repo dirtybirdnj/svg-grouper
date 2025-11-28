@@ -10,4 +10,12 @@ contextBridge.exposeInMainWorld('electron', {
   flattenShapes: (args: { svg: string; color: string }) => {
     return ipcRenderer.invoke('flatten-shapes', args)
   },
+  // Menu command listener
+  onMenuCommand: (callback: (command: string) => void) => {
+    ipcRenderer.on('menu-command', (_event, command) => callback(command))
+  },
+  // File opened from menu
+  onFileOpened: (callback: (data: { content: string; fileName: string; filePath: string }) => void) => {
+    ipcRenderer.on('file-opened', (_event, data) => callback(data))
+  },
 })
