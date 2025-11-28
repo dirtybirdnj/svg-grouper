@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppContext, OrderLine } from '../../context/AppContext'
 import './OrderTab.css'
 
@@ -98,17 +98,16 @@ function getGradientColor(position: number): string {
 }
 
 export default function OrderTab() {
-  const { orderData, setOrderData, setActiveTab } = useAppContext()
+  const { orderData, setOrderData, setActiveTab, scale, setScale, offset, setOffset } = useAppContext()
 
   const [isAnimating, setIsAnimating] = useState(false)
   const [animationProgress, setAnimationProgress] = useState(0)
   const animationRef = useRef<number | null>(null)
 
-  // Local zoom state
-  const [scale, setScale] = useState(1)
-  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  // Drag state for pan
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const previewRef = useRef<HTMLDivElement>(null)
 
   // Optimize lines
   const { optimizedLines, stats } = useMemo(() => {
@@ -226,25 +225,20 @@ export default function OrderTab() {
     }
   }, [isAnimating])
 
-  // Zoom handlers
-  const handleZoomIn = useCallback(() => {
-    setScale(prev => Math.min(10, prev * 1.2))
-  }, [])
+  // Wheel zoom handler - use native event listener to support passive: false
+  useEffect(() => {
+    const element = previewRef.current
+    if (!element) return
 
-  const handleZoomOut = useCallback(() => {
-    setScale(prev => Math.max(0.1, prev / 1.2))
-  }, [])
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const delta = e.deltaY > 0 ? 0.9 : 1.1
+      setScale(Math.max(0.1, Math.min(10, scale * delta)))
+    }
 
-  const handleFitToView = useCallback(() => {
-    setScale(1)
-    setOffset({ x: 0, y: 0 })
-  }, [])
-
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault()
-    const delta = e.deltaY > 0 ? 0.9 : 1.1
-    setScale(prev => Math.max(0.1, Math.min(10, prev * delta)))
-  }, [])
+    element.addEventListener('wheel', handleWheel, { passive: false })
+    return () => element.removeEventListener('wheel', handleWheel)
+  }, [scale, setScale])
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 0) {
@@ -260,7 +254,7 @@ export default function OrderTab() {
         y: e.clientY - dragStart.y
       })
     }
-  }, [isDragging, dragStart])
+  }, [isDragging, dragStart, setOffset])
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false)
@@ -361,18 +355,12 @@ export default function OrderTab() {
 
       <main
         className="order-main"
-        onWheel={handleWheel}
+        ref={previewRef}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        <div className="order-zoom-controls">
-          <button onClick={handleZoomIn} title="Zoom In">+</button>
-          <button onClick={handleZoomOut} title="Zoom Out">-</button>
-          <button onClick={handleFitToView} title="Fit to View">Fit</button>
-          <span className="zoom-level">{Math.round(scale * 100)}%</span>
-        </div>
         {previewSvg ? (
           <div
             className="order-preview-container"

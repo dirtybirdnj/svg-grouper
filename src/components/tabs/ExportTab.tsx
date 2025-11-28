@@ -214,8 +214,97 @@ const COMMAND_NAMES: Record<string, string> = {
   'Z': 'ClosePath',
 }
 
+// Check if a node has fills (not strokes) that would need conversion
+function nodeHasFills(node: SVGNode): boolean {
+  const el = node.element
+  const tagName = el.tagName.toLowerCase()
+
+  // Check for fill attribute or style
+  const fill = el.getAttribute('fill')
+  const style = el.getAttribute('style') || ''
+  const styleFillMatch = style.match(/fill:\s*([^;]+)/)
+
+  let hasFill = false
+  if (fill && fill !== 'none' && fill !== 'transparent') {
+    hasFill = true
+  }
+  if (styleFillMatch && styleFillMatch[1] !== 'none' && styleFillMatch[1] !== 'transparent') {
+    hasFill = true
+  }
+
+  // Check if it's a shape element with a fill
+  if (hasFill && ['path', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+    // Check if this is a hatch fill (custom markup) - these are already strokes
+    if (node.customMarkup) {
+      return false
+    }
+    return true
+  }
+
+  // Recursively check children
+  for (const child of node.children) {
+    if (nodeHasFills(child)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+// Extract all path data for progressive drawing
+function extractDrawablePaths(svgElement: SVGSVGElement): { element: SVGElement; length: number }[] {
+  const paths: { element: SVGElement; length: number }[] = []
+
+  const collectPaths = (el: Element) => {
+    const tagName = el.tagName.toLowerCase()
+
+    if (tagName === 'path' || tagName === 'line' || tagName === 'polyline' || tagName === 'polygon') {
+      // Check if it has a stroke (drawable)
+      const stroke = el.getAttribute('stroke')
+      const style = el.getAttribute('style') || ''
+      const hasStroke = (stroke && stroke !== 'none') || (style.includes('stroke:') && !style.includes('stroke:none'))
+
+      if (hasStroke) {
+        let length = 0
+        if (tagName === 'path' && el instanceof SVGPathElement) {
+          try {
+            length = el.getTotalLength()
+          } catch {
+            length = 100 // fallback
+          }
+        } else if (tagName === 'line') {
+          const x1 = parseFloat(el.getAttribute('x1') || '0')
+          const y1 = parseFloat(el.getAttribute('y1') || '0')
+          const x2 = parseFloat(el.getAttribute('x2') || '0')
+          const y2 = parseFloat(el.getAttribute('y2') || '0')
+          length = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2))
+        } else {
+          length = 100 // fallback for polyline/polygon
+        }
+
+        paths.push({ element: el as SVGElement, length })
+      }
+    }
+
+    // Recurse into children
+    for (const child of Array.from(el.children)) {
+      collectPaths(child)
+    }
+  }
+
+  collectPaths(svgElement)
+  return paths
+}
+
 export default function ExportTab() {
   const { svgContent, svgDimensions, layerNodes, fileName, svgElementRef } = useAppContext()
+
+  // Playback state
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playbackProgress, setPlaybackProgress] = useState(0)
+  const playbackRef = useRef<number | null>(null)
+  const [drawablePaths, setDrawablePaths] = useState<{ element: SVGElement; length: number }[]>([])
+  const [hasFillsWarning, setHasFillsWarning] = useState(false)
 
   // Paper sizes state
   const [paperSizes, setPaperSizes] = useState<PaperSize[]>(loadPaperSizes)
@@ -406,6 +495,85 @@ export default function ExportTab() {
   const handleUniformMarginChange = (value: number) => {
     setMargins({ top: value, right: value, bottom: value, left: value })
   }
+
+  // Check for fills and extract drawable paths when SVG changes
+  useEffect(() => {
+    // Check if any layer has fills
+    const hasFills = layerNodes.some(node => nodeHasFills(node))
+    setHasFillsWarning(hasFills)
+
+    // Extract paths for playback
+    if (svgElementRef.current) {
+      const paths = extractDrawablePaths(svgElementRef.current)
+      setDrawablePaths(paths)
+    }
+  }, [layerNodes, svgElementRef, svgContent])
+
+  // Playback control functions
+  const handlePlay = useCallback(() => {
+    if (hasFillsWarning) {
+      alert('Warning: This SVG contains fill layers that won\'t be drawn by a pen plotter.\n\nPlease convert fills to strokes using the "Convert fills to strokes" option, or use the Fill tab to apply line fill patterns to shapes.')
+      return
+    }
+
+    if (drawablePaths.length === 0) {
+      alert('No drawable paths found. The SVG may not contain any stroked paths.')
+      return
+    }
+
+    setIsPlaying(true)
+    const startTime = performance.now()
+    const duration = 10000 // 10 seconds for full playback
+    const startProgress = playbackProgress
+
+    const animate = (currentTime: number) => {
+      const elapsed = currentTime - startTime
+      const progress = Math.min(startProgress + (elapsed / duration) * (100 - startProgress), 100)
+      setPlaybackProgress(progress)
+
+      if (progress < 100) {
+        playbackRef.current = requestAnimationFrame(animate)
+      } else {
+        setIsPlaying(false)
+        playbackRef.current = null
+      }
+    }
+
+    playbackRef.current = requestAnimationFrame(animate)
+  }, [hasFillsWarning, drawablePaths, playbackProgress])
+
+  const handlePause = useCallback(() => {
+    setIsPlaying(false)
+    if (playbackRef.current) {
+      cancelAnimationFrame(playbackRef.current)
+      playbackRef.current = null
+    }
+  }, [])
+
+  const handleRestart = useCallback(() => {
+    handlePause()
+    setPlaybackProgress(0)
+  }, [handlePause])
+
+  const handleProgressChange = useCallback((value: number) => {
+    handlePause()
+    setPlaybackProgress(value)
+  }, [handlePause])
+
+  // Cleanup animation on unmount
+  useEffect(() => {
+    return () => {
+      if (playbackRef.current) {
+        cancelAnimationFrame(playbackRef.current)
+      }
+    }
+  }, [])
+
+  // Calculate which paths should be visible based on progress
+  const visiblePathCount = useMemo(() => {
+    if (drawablePaths.length === 0) return 0
+    return Math.floor((playbackProgress / 100) * drawablePaths.length)
+  }, [playbackProgress, drawablePaths])
 
   const stats = useMemo(() => {
     if (!layerNodes.length) return null
@@ -923,6 +1091,41 @@ export default function ExportTab() {
       >
         <div className="preview-header">
           <h2>Page Preview</h2>
+          <div className="playback-controls">
+            <button
+              className="playback-btn"
+              onClick={handleRestart}
+              title="Restart"
+              disabled={playbackProgress === 0}
+            >
+              ⏮
+            </button>
+            <button
+              className={`playback-btn ${isPlaying ? 'active' : ''}`}
+              onClick={isPlaying ? handlePause : handlePlay}
+              title={isPlaying ? 'Pause' : 'Play'}
+            >
+              {isPlaying ? '⏸' : '▶'}
+            </button>
+            <input
+              type="range"
+              className="playback-slider"
+              min="0"
+              max="100"
+              step="0.1"
+              value={playbackProgress}
+              onChange={(e) => handleProgressChange(Number(e.target.value))}
+              title={`${playbackProgress.toFixed(0)}% - ${visiblePathCount} of ${drawablePaths.length} paths`}
+            />
+            <span className="playback-info">
+              {visiblePathCount}/{drawablePaths.length}
+            </span>
+            {hasFillsWarning && (
+              <span className="fills-warning" title="SVG contains fills that need to be converted to strokes">
+                ⚠
+              </span>
+            )}
+          </div>
           <div className="preview-zoom-controls">
             <button onClick={handleZoomIn} title="Zoom In">+</button>
             <button onClick={handleZoomOut} title="Zoom Out">-</button>

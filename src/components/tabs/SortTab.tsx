@@ -214,11 +214,25 @@ export default function SortTab() {
   }
 
   const handleToggleVisibility = () => {
-    const toggleNodeVisibility = (nodes: SVGNode[]): SVGNode[] => {
+    // Find the first selected node to determine target visibility state
+    const findFirstSelectedNode = (nodes: SVGNode[]): SVGNode | null => {
+      for (const node of nodes) {
+        if (selectedNodeIds.has(node.id)) return node
+        const found = findFirstSelectedNode(node.children)
+        if (found) return found
+      }
+      return null
+    }
+
+    const firstSelected = findFirstSelectedNode(layerNodes)
+    if (!firstSelected) return
+
+    // All selected nodes will be set to the opposite of the first node's state
+    const targetHiddenState = !firstSelected.isHidden
+
+    const setNodeVisibility = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
         if (selectedNodeIds.has(node.id)) {
-          const newHiddenState = !node.isHidden
-
           const updateVisibility = (n: SVGNode, hidden: boolean): SVGNode => {
             return {
               ...n,
@@ -227,16 +241,16 @@ export default function SortTab() {
             }
           }
 
-          return updateVisibility(node, newHiddenState)
+          return updateVisibility(node, targetHiddenState)
         }
         if (node.children.length > 0) {
-          return { ...node, children: toggleNodeVisibility(node.children) }
+          return { ...node, children: setNodeVisibility(node.children) }
         }
         return node
       })
     }
 
-    const updatedNodes = toggleNodeVisibility(layerNodes)
+    const updatedNodes = setNodeVisibility(layerNodes)
     setLayerNodes(updatedNodes)
     rebuildSvgFromLayers(updatedNodes)
   }
@@ -1068,26 +1082,17 @@ export default function SortTab() {
       {(statusMessage || fileName) && (
         <div className="status-bar">
           <div className="status-bar-left">
-            {fileName && (
-              <>
-                <span className="status-filename">{fileName}</span>
-                {svgDimensions && (
-                  <span className="status-dimensions">
-                    {' • '}
-                    {svgDimensions.width} × {svgDimensions.height} px
-                    {' • '}
-                    {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in
-                    {' • '}
-                    {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-          <div className="status-bar-center">
+            {fileName && <span className="status-filename">{fileName}</span>}
             {statusMessage && (
               <span className={`status-message ${statusMessage.startsWith('error:') ? 'error' : ''}`}>
                 {statusMessage.startsWith('error:') ? statusMessage.slice(6) : statusMessage}
+              </span>
+            )}
+          </div>
+          <div className="status-bar-center">
+            {svgDimensions && (
+              <span className="status-dimensions">
+                {svgDimensions.width} × {svgDimensions.height} px • {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in • {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
               </span>
             )}
           </div>

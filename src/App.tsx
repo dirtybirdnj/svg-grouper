@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import './App.css'
 import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
 import TabNavigation from './components/TabNavigation'
@@ -28,8 +28,17 @@ function AppContent() {
     setSelectedNodeIds,
     setFillTargetNodeId,
     syncSvgContent,
+    rebuildSvgFromLayers,
     setOrderData,
+    isProcessing,
   } = useAppContext()
+
+  // Stroke panel state
+  const [showStrokePanel, setShowStrokePanel] = useState(false)
+  const [strokeColor, setStrokeColor] = useState('#000000')
+  const [strokeWidth, setStrokeWidth] = useState(1)
+  const strokePanelRef = useRef<HTMLDivElement>(null)
+  const strokeButtonRef = useRef<HTMLButtonElement>(null)
 
   const handleZoomIn = () => {
     setScale(Math.min(10, scale * 1.2))
@@ -359,6 +368,124 @@ function AppContent() {
     setStatusMessage('')
   }
 
+  // Handle stroke button click
+  const handleStrokeClick = () => {
+    disarmActions()
+
+    if (selectedNodeIds.size === 0) {
+      setStatusMessage('error:Select one or more layers to modify stroke')
+      return
+    }
+
+    // Get current stroke color from first selected element
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedNode = findNode(layerNodes, selectedId)
+    if (selectedNode) {
+      const el = selectedNode.element
+      let color = el.getAttribute('stroke') || '#000000'
+      const style = el.getAttribute('style') || ''
+      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+      if (strokeMatch) color = strokeMatch[1].trim()
+
+      // Normalize to hex if possible
+      if (color.startsWith('rgb')) {
+        const rgb = color.match(/\d+/g)
+        if (rgb && rgb.length >= 3) {
+          color = '#' + rgb.slice(0, 3).map(x => parseInt(x).toString(16).padStart(2, '0')).join('')
+        }
+      }
+      setStrokeColor(color)
+
+      // Get stroke width
+      let width = parseFloat(el.getAttribute('stroke-width') || '1')
+      const widthMatch = style.match(/stroke-width:\s*([^;]+)/)
+      if (widthMatch) width = parseFloat(widthMatch[1])
+      setStrokeWidth(isNaN(width) ? 1 : width)
+    }
+
+    setShowStrokePanel(!showStrokePanel)
+    setStatusMessage('')
+  }
+
+  // Apply stroke to selected elements
+  const applyStroke = () => {
+    if (selectedNodeIds.size === 0) return
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    // Apply stroke to all selected nodes and their children
+    const applyStrokeToNode = (node: SVGNode) => {
+      const el = node.element
+      const tagName = el.tagName.toLowerCase()
+
+      // Only apply stroke to drawable elements
+      if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+        el.setAttribute('stroke', strokeColor)
+        el.setAttribute('stroke-width', String(strokeWidth))
+
+        // Update style attribute if it exists
+        const style = el.getAttribute('style')
+        if (style) {
+          let newStyle = style
+            .replace(/stroke:\s*[^;]+;?/g, '')
+            .replace(/stroke-width:\s*[^;]+;?/g, '')
+          newStyle = `stroke:${strokeColor};stroke-width:${strokeWidth}px;${newStyle}`
+          el.setAttribute('style', newStyle)
+        }
+      }
+
+      // Apply to children
+      for (const child of node.children) {
+        applyStrokeToNode(child)
+      }
+    }
+
+    for (const id of selectedNodeIds) {
+      const node = findNode(layerNodes, id)
+      if (node) {
+        applyStrokeToNode(node)
+      }
+    }
+
+    rebuildSvgFromLayers(layerNodes)
+    setShowStrokePanel(false)
+    setStatusMessage(`Applied stroke: ${strokeColor}, ${strokeWidth}px`)
+  }
+
+  // Close stroke panel when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        showStrokePanel &&
+        strokePanelRef.current &&
+        strokeButtonRef.current &&
+        !strokePanelRef.current.contains(e.target as Node) &&
+        !strokeButtonRef.current.contains(e.target as Node)
+      ) {
+        setShowStrokePanel(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [showStrokePanel])
+
   // Handle menu commands from Electron
   useEffect(() => {
     if (!window.electron) return
@@ -419,11 +546,95 @@ function AppContent() {
         <div className="app-title">
           <span className="app-icon">📐</span>
           <h1>SVG Grouper</h1>
+          <span className={`processing-gear ${isProcessing ? 'spinning' : ''}`} title={isProcessing ? 'Processing...' : ''}>⚙</span>
         </div>
         <TabNavigation />
         {svgContent && (
           <div className="header-right-controls">
             <div className="header-function-buttons">
+              <div className="stroke-button-container">
+                <button
+                  ref={strokeButtonRef}
+                  onClick={handleStrokeClick}
+                  className="function-button"
+                  title={selectedNodeIds.size > 0 ? "Modify stroke color and width" : "Select one or more layers first"}
+                  style={{
+                    background: showStrokePanel ? '#27ae60' : (selectedNodeIds.size > 0 ? '#27ae60' : '#bdc3c7'),
+                    opacity: selectedNodeIds.size > 0 ? 1 : 0.7,
+                  }}
+                >
+                  ✏ Stroke
+                </button>
+                {showStrokePanel && (
+                  <div ref={strokePanelRef} className="stroke-panel">
+                    <div className="stroke-panel-header">
+                      <h4>Stroke Settings</h4>
+                    </div>
+                    <div className="stroke-panel-content">
+                      <div className="stroke-control">
+                        <label>Color</label>
+                        <div className="stroke-color-row">
+                          <div
+                            className="stroke-color-swatch"
+                            style={{ backgroundColor: strokeColor }}
+                          />
+                          <input
+                            type="color"
+                            value={strokeColor}
+                            onChange={(e) => setStrokeColor(e.target.value)}
+                            className="stroke-color-picker"
+                          />
+                          <input
+                            type="text"
+                            value={strokeColor}
+                            onChange={(e) => setStrokeColor(e.target.value)}
+                            className="stroke-color-hex"
+                            placeholder="#000000"
+                          />
+                        </div>
+                      </div>
+                      <div className="stroke-control">
+                        <label>Width</label>
+                        <div className="stroke-width-row">
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="10"
+                            step="0.1"
+                            value={strokeWidth}
+                            onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                            className="stroke-width-slider"
+                          />
+                          <input
+                            type="number"
+                            min="0.1"
+                            max="100"
+                            step="0.1"
+                            value={strokeWidth}
+                            onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                            className="stroke-width-input"
+                          />
+                          <span className="stroke-width-unit">px</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="stroke-panel-actions">
+                      <button
+                        className="stroke-apply-btn"
+                        onClick={applyStroke}
+                      >
+                        Apply
+                      </button>
+                      <button
+                        className="stroke-cancel-btn"
+                        onClick={() => setShowStrokePanel(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={handleFill}
                 className="function-button"

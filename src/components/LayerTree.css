@@ -27,6 +27,19 @@
   background: #f0f0f0;
 }
 
+.layer-node-content.mixed-group {
+  background: rgba(231, 76, 60, 0.1);
+}
+
+.layer-node-content.mixed-group:hover {
+  background: rgba(231, 76, 60, 0.18);
+}
+
+.layer-node-content.mixed-group.selected {
+  background: rgba(231, 76, 60, 0.2);
+  border-color: #e74c3c;
+}
+
 .layer-node-content.selected {
   background: #e3f2ff;
   border: 1px solid #4a90e2;
