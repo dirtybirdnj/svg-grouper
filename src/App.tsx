@@ -390,11 +390,38 @@ function AppContent() {
 
     const selectedNode = findNode(layerNodes, selectedId)
     if (selectedNode) {
-      const el = selectedNode.element
-      let color = el.getAttribute('stroke') || '#000000'
-      const style = el.getAttribute('style') || ''
-      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-      if (strokeMatch) color = strokeMatch[1].trim()
+      // Helper to extract color from an element (checks fill first, then stroke)
+      const extractColor = (el: Element): string | null => {
+        const style = el.getAttribute('style') || ''
+
+        // Check fill first (most shapes have fill)
+        let fill = el.getAttribute('fill')
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        if (fillMatch) fill = fillMatch[1].trim()
+        if (fill && fill !== 'none' && fill !== 'transparent') return fill
+
+        // Fall back to stroke
+        let stroke = el.getAttribute('stroke')
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (strokeMatch) stroke = strokeMatch[1].trim()
+        if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
+
+        return null
+      }
+
+      // Recursively find color from element or its children
+      const findColorInTree = (node: SVGNode): string | null => {
+        const color = extractColor(node.element)
+        if (color) return color
+
+        for (const child of node.children) {
+          const childColor = findColorInTree(child)
+          if (childColor) return childColor
+        }
+        return null
+      }
+
+      let color = findColorInTree(selectedNode) || '#000000'
 
       // Normalize to hex if possible
       if (color.startsWith('rgb')) {
@@ -405,7 +432,9 @@ function AppContent() {
       }
       setStrokeColor(color)
 
-      // Get stroke width
+      // Get stroke width (default to 1 for fill shapes)
+      const el = selectedNode.element
+      const style = el.getAttribute('style') || ''
       let width = parseFloat(el.getAttribute('stroke-width') || '1')
       const widthMatch = style.match(/stroke-width:\s*([^;]+)/)
       if (widthMatch) width = parseFloat(widthMatch[1])
