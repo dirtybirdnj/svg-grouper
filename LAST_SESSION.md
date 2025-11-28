@@ -1,105 +1,167 @@
 # Last Session Context
 
-## Session Date: 2025-11-27 (Updated)
+## Session Date: 2025-11-28
 
 ## What Was Accomplished This Session
 
-### 1. Fixed Concentric Fill Bug
-The concentric pattern was causing the app to become unresponsive due to:
-- Infinite/excessive loop iterations on complex concave shapes
-- Simple area check not catching self-intersecting polygons
+### 1. Fixed Fill Tab getBBox Issue
+The fill preview was showing empty because `getBBox()` was failing on disconnected DOM elements:
+- Changed `boundingBox` calculation to use `getPolygonPoints()` instead of `getBBox()`
+- `getPolygonPoints()` parses element attributes directly, works on disconnected elements
+- Removed complex `getFreshElement()` logic that was trying to find live DOM references
+- Simplified `fillPaths` useMemo back to original working pattern using `targetNode` directly
 
-**Fixes applied:**
-- Added `polygonSignedArea()` for proper area calculation
-- Added `isValidConcentricPolygon()` with multiple termination checks
-- Changed from while loop to for loop with calculated max iterations (max 50)
-- Reduced miter scale limit from 3 to 2 for stability
-- Early termination if polygon vertex count drops below 3
+### 2. Fill Tab UI Improvements
+- Removed "Hatch Preview" label from preview area
+- Added independent zoom/pan for Fill tab (separate from Sort tab zoom)
+- Added local zoom controls (+, -, Fit, percentage) in top-right of Fill preview
+- Added mouse wheel zoom and drag-to-pan functionality
+- Restructured to three-column layout (left sidebar, center preview, right sidebar)
 
-### 2. Added Honeycomb Fill Pattern
-New hexagonal fill pattern:
-- Generates regular hexagons in a grid (flat-top orientation)
-- Clips hexagon edges to polygon boundary
-- Handles partial hexagons with line intersection clipping
-- Removes duplicate edges shared between adjacent hexagons
-- UI updated to 3-column layout for 5 pattern buttons
+### 3. Created Dedicated Order Tab
+Extracted the order visualization into its own tab for better usability:
 
----
+**New Files:**
+- `/src/components/tabs/OrderTab.tsx` - Full order visualization interface
+- `/src/components/tabs/OrderTab.css` - Styling for Order tab
 
-## Current Fill Patterns
+**Features:**
+- Statistics panel showing line count, travel distances, and optimization savings
+- Animation playback (Play/Stop) to visualize drawing order
+- Legend showing gradient colors (red→blue) and travel paths
+- Independent zoom/pan controls
+- Apply/Cancel buttons
 
-| Pattern | Status | Description |
-|---------|--------|-------------|
-| **Lines** | ✅ Working | Parallel line hatching with optional cross-hatch |
-| **Concentric** | ✅ Fixed | Snake pattern from outside-in |
-| **Wiggle** | ✅ Working | Sine wave with adjustable amplitude/frequency |
-| **Spiral** | ✅ Working | Archimedean spiral from center outward |
-| **Honeycomb** | ✅ New | Hexagonal grid pattern |
+### 4. Order Tab Integration
+**From Sort Tab:**
+- Added "Order" button in header (orange, next to Fill button)
+- Extracts line elements (`<line>`, `<path>` with M/L commands, `<polyline>`)
+- Navigates to Order tab to visualize and animate the drawing order
 
----
+**From Fill Tab:**
+- Order button now navigates to Order tab instead of inline visualization
+- Removed inline order controls (animation, stats) from Fill tab
+- Order tab receives `onApply` callback to apply fill when user confirms
 
-## Future Patterns to Investigate
-
-From 3D printer slicers (OrcaSlicer, PrusaSlicer, Cura):
-
-| Pattern | Description | Difficulty | Notes |
-|---------|-------------|------------|-------|
-| **Gyroid** | Triply periodic minimal surface | Hard | `sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0` |
-| **Triangular** | Lines at 0°, 60°, 120° | Easy | Three-pass line generation |
-| **Hilbert Curve** | Space-filling fractal | Medium | Recursive generation |
-| **Cubic/Octet** | 3D-inspired patterns | Medium | Multiple line passes with offsets |
-| **Lightning** | Tree-based branching | Hard | Top-down algorithm |
-
-### Gyroid Implementation Notes
-For 2D cross-sections of gyroid at height z:
-1. Compute `z_sin = sin(z)`, `z_cos = cos(z)`
-2. If `|z_sin| ≤ |z_cos|`: generate vertical lines
-3. Otherwise: generate horizontal lines
-4. Use adaptive refinement for smooth curves
-5. PrusaSlicer source: `src/libslic3r/Fill/FillGyroid.cpp`
+### 5. Context Updates
+- Added `'order'` to `TabKey` type in `/src/types/tabs.ts`
+- Added `OrderLine` and `OrderData` interfaces to AppContext
+- Added `orderData` and `setOrderData` state to context
+- Updated App.tsx to render OrderTab and handle Order button click
 
 ---
 
-## Key Resources
+## Current Tab Flow
 
-- **Clipper2 Library**: https://github.com/AngusJohnson/Clipper2
-  - Robust polygon clipping and offsetting
-  - JavaScript port available for future use
-
-- **Slicer Source Code**:
-  - PrusaSlicer: `src/libslic3r/Fill/`
-  - CuraEngine: `src/infill/`
+```
+Sort Tab
+  ├── Fill button → Fill Tab → Preview → Order button → Order Tab → Apply → Sort Tab
+  └── Order button → Order Tab (for existing line elements) → Cancel → Sort Tab
+```
 
 ---
 
 ## Code Structure
 
-### Fill Tab (`src/components/tabs/FillTab.tsx`)
+### Order Tab (`src/components/tabs/OrderTab.tsx`)
+- `optimizeLines()` - Nearest-neighbor line ordering algorithm
+- `calculateTravelDistance()` - Total pen-up travel distance
+- `getGradientColor()` - Red→blue gradient based on position
+- Independent zoom/pan state and handlers
+- Animation with requestAnimationFrame
 
-**Pattern Generators:**
-- `generateGlobalHatchLines()` - Parallel lines at angle
-- `clipLinesToPolygon()` - Clips lines to polygon
-- `generateConcentricLines()` - Outside-in loops (fixed)
-- `generateWiggleLines()` - Sine wave pattern
-- `generateSpiralLines()` - Archimedean spiral
-- `generateHoneycombLines()` - Hexagonal grid (new)
+### Context (`src/context/AppContext.tsx`)
+```typescript
+interface OrderLine {
+  x1: number; y1: number; x2: number; y2: number
+  color: string
+  pathId: string
+}
 
-**Optimization:**
-- `optimizeLinesWithinShape()` - TSP within single shape
-- `optimizeLineOrderMultiPass()` - Orders shapes, then optimizes within each
+interface OrderData {
+  lines: OrderLine[]
+  boundingBox: { x: number; y: number; width: number; height: number }
+  source: 'fill' | 'sort'
+  onApply?: (orderedLines: OrderLine[]) => void
+}
+```
 
-**Helpers:**
-- `offsetPolygon()` - Vertex-normal based offset
-- `polygonSignedArea()` - Shoelace formula
-- `isValidConcentricPolygon()` - Multiple validation checks
-- `pointInPolygon()` - Ray casting test
-- `linePolygonIntersections()` - Line-polygon intersection
+---
+
+## Tomorrow's Task: Cropping/Page Setup
+
+### Requirements
+1. **Page Size Selection**
+   - Common paper sizes (A4, A3, Letter, etc.)
+   - Custom dimensions
+   - Units (mm, inches)
+
+2. **Margins**
+   - Top, right, bottom, left margins
+   - Or uniform margin setting
+
+3. **Scaling Behavior**
+   - Scale vectors to fit within printable area (page - margins)
+   - Maintain aspect ratio
+   - Option for fit vs fill
+
+4. **Crop to Page**
+   - Clip any vectors outside the page bounds
+   - Handle partial shapes at edges
+
+5. **SVG Export**
+   - Exported SVG dimensions match the defined page size
+   - Vectors positioned correctly within margins
+   - Ready for direct import to plotter without manipulation
+
+### Implementation Ideas
+
+**UI Location:**
+- Could be in Export tab (makes sense as final step before export)
+- Or a dedicated "Page Setup" section
+
+**Key Calculations:**
+```
+printableWidth = pageWidth - marginLeft - marginRight
+printableHeight = pageHeight - marginTop - marginBottom
+
+scale = min(printableWidth / contentWidth, printableHeight / contentHeight)
+
+offsetX = marginLeft + (printableWidth - contentWidth * scale) / 2
+offsetY = marginTop + (printableHeight - contentHeight * scale) / 2
+```
+
+**SVG Output:**
+```svg
+<svg width="210mm" height="297mm" viewBox="0 0 210 297">
+  <g transform="translate(offsetX, offsetY) scale(scale)">
+    <!-- content here -->
+  </g>
+</svg>
+```
+
+### Relevant Existing Code
+- Export tab already has SVG generation logic
+- `svgDimensions` in context tracks current SVG size
+- Current crop functionality exists but may need rethinking
 
 ---
 
 ## Testing Notes
 
-- All patterns now work on the pac-man shapes (120 paths)
-- Spiral looks particularly good
-- Honeycomb may need spacing adjustment for best results
-- TSP optimization shows significant travel reduction in stats panel
+- Order tab animation works smoothly
+- Fill → Order → Apply flow properly applies hatching
+- Sort → Order correctly extracts line elements from selected groups
+- Zoom controls work independently on Fill and Order tabs
+
+---
+
+## Files Modified This Session
+
+- `/src/types/tabs.ts` - Added 'order' to TabKey
+- `/src/context/AppContext.tsx` - Added OrderLine, OrderData, orderData state
+- `/src/App.tsx` - Added Order button, handleOrder function, OrderTab rendering
+- `/src/components/tabs/FillTab.tsx` - Simplified, removed inline order viz, added zoom
+- `/src/components/tabs/FillTab.css` - Added zoom controls styling
+- `/src/components/tabs/OrderTab.tsx` - NEW
+- `/src/components/tabs/OrderTab.css` - NEW

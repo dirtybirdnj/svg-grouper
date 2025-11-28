@@ -32,6 +32,8 @@ function checkElementType(elem: Element): { hasFill: boolean; hasStroke: boolean
 // Helper to determine if a path element is fill-based or stroke-based
 function getPathType(node: SVGNode): 'fill' | 'stroke' {
   if (node.isGroup) return 'stroke'
+  // If node has customMarkup (line fill applied), it's a fill type
+  if (node.customMarkup) return 'fill'
   const { hasFill } = checkElementType(node.element)
   // If has fill (and possibly stroke), consider it a fill path
   if (hasFill) return 'fill'
@@ -46,9 +48,14 @@ function getGroupType(node: SVGNode): 'fill' | 'stroke' | 'mixed' | null {
   let hasAnyStrokes = false
 
   const checkNode = (n: SVGNode) => {
-    const result = checkElementType(n.element)
-    if (result.hasFill) hasAnyFills = true
-    if (result.hasStroke && !result.hasFill) hasAnyStrokes = true
+    // customMarkup indicates line fill was applied - count as fill
+    if (n.customMarkup) {
+      hasAnyFills = true
+    } else {
+      const result = checkElementType(n.element)
+      if (result.hasFill) hasAnyFills = true
+      if (result.hasStroke && !result.hasFill) hasAnyStrokes = true
+    }
     n.children.forEach(checkNode)
   }
 

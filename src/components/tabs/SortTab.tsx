@@ -131,6 +131,10 @@ export default function SortTab() {
     }
 
     const traverse = (node: SVGNode) => {
+      // Check for fillColor from line fill (customMarkup nodes)
+      if (node.fillColor) {
+        colors.add(node.fillColor)
+      }
       extractFromElement(node.element)
       node.children.forEach(traverse)
     }

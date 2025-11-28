@@ -26,6 +26,10 @@ export function extractColors(node: SVGNode): string[] {
   }
 
   const traverse = (n: SVGNode) => {
+    // Check for fillColor from line fill (customMarkup nodes)
+    if (n.fillColor) {
+      colors.add(n.fillColor)
+    }
     extractFromElement(n.element)
     n.children.forEach(traverse)
   }

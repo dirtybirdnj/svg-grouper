@@ -1,7 +1,8 @@
 import './App.css'
-import { AppProvider, useAppContext } from './context/AppContext'
+import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
 import TabNavigation from './components/TabNavigation'
 import { SortTab, FillTab, ExportTab } from './components/tabs'
+import OrderTab from './components/tabs/OrderTab'
 import { SVGNode } from './types/svg'
 
 function AppContent() {
@@ -24,6 +25,7 @@ function AppContent() {
     setSelectedNodeIds,
     setFillTargetNodeId,
     syncSvgContent,
+    setOrderData,
   } = useAppContext()
 
   const handleZoomIn = () => {
@@ -240,6 +242,120 @@ function AppContent() {
     setStatusMessage('')
   }
 
+  const handleOrder = () => {
+    disarmActions()
+
+    // Check if a layer is selected
+    if (selectedNodeIds.size !== 1) {
+      setStatusMessage('error:Select a single layer or group to use Order')
+      return
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+
+    // Find the selected node
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedNode = findNode(layerNodes, selectedId)
+    if (!selectedNode) {
+      setStatusMessage('error:Could not find selected layer')
+      return
+    }
+
+    // Extract line elements from the selected node
+    const lines: OrderLine[] = []
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+
+    const extractLines = (node: SVGNode) => {
+      const element = node.element
+      const tagName = element.tagName.toLowerCase()
+
+      if (tagName === 'line') {
+        const x1 = parseFloat(element.getAttribute('x1') || '0')
+        const y1 = parseFloat(element.getAttribute('y1') || '0')
+        const x2 = parseFloat(element.getAttribute('x2') || '0')
+        const y2 = parseFloat(element.getAttribute('y2') || '0')
+        const stroke = element.getAttribute('stroke') || '#000'
+
+        lines.push({ x1, y1, x2, y2, color: stroke, pathId: node.id })
+
+        minX = Math.min(minX, x1, x2)
+        minY = Math.min(minY, y1, y2)
+        maxX = Math.max(maxX, x1, x2)
+        maxY = Math.max(maxY, y1, y2)
+      } else if (tagName === 'path') {
+        // Try to extract lines from simple path elements (M x y L x y format)
+        const d = element.getAttribute('d') || ''
+        const stroke = element.getAttribute('stroke') || '#000'
+
+        // Simple regex for M x,y L x,y or M x y L x y patterns
+        const lineMatch = d.match(/M\s*([\d.-]+)[,\s]+([\d.-]+)\s*L\s*([\d.-]+)[,\s]+([\d.-]+)/i)
+        if (lineMatch) {
+          const x1 = parseFloat(lineMatch[1])
+          const y1 = parseFloat(lineMatch[2])
+          const x2 = parseFloat(lineMatch[3])
+          const y2 = parseFloat(lineMatch[4])
+
+          lines.push({ x1, y1, x2, y2, color: stroke, pathId: node.id })
+
+          minX = Math.min(minX, x1, x2)
+          minY = Math.min(minY, y1, y2)
+          maxX = Math.max(maxX, x1, x2)
+          maxY = Math.max(maxY, y1, y2)
+        }
+      } else if (tagName === 'polyline') {
+        // Extract lines from polyline points
+        const pointsAttr = element.getAttribute('points') || ''
+        const stroke = element.getAttribute('stroke') || '#000'
+        const points = pointsAttr.trim().split(/[\s,]+/).map(Number)
+
+        for (let i = 0; i < points.length - 3; i += 2) {
+          const x1 = points[i]
+          const y1 = points[i + 1]
+          const x2 = points[i + 2]
+          const y2 = points[i + 3]
+
+          if (!isNaN(x1) && !isNaN(y1) && !isNaN(x2) && !isNaN(y2)) {
+            lines.push({ x1, y1, x2, y2, color: stroke, pathId: node.id })
+
+            minX = Math.min(minX, x1, x2)
+            minY = Math.min(minY, y1, y2)
+            maxX = Math.max(maxX, x1, x2)
+            maxY = Math.max(maxY, y1, y2)
+          }
+        }
+      }
+
+      // Process children
+      for (const child of node.children) {
+        extractLines(child)
+      }
+    }
+
+    extractLines(selectedNode)
+
+    if (lines.length === 0) {
+      setStatusMessage('error:No line elements found in selection')
+      return
+    }
+
+    // Create OrderData and navigate to Order tab
+    setOrderData({
+      lines,
+      boundingBox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
+      source: 'sort',
+    })
+    setActiveTab('order')
+    setStatusMessage('')
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -261,6 +377,17 @@ function AppContent() {
                 }}
               >
                 ▤ Fill
+              </button>
+              <button
+                onClick={handleOrder}
+                className="function-button"
+                title={selectedNodeIds.size === 1 ? "Optimize line drawing order for pen plotters" : "Select a layer first"}
+                style={{
+                  background: selectedNodeIds.size === 1 ? '#e67e22' : '#bdc3c7',
+                  opacity: selectedNodeIds.size === 1 ? 1 : 0.7,
+                }}
+              >
+                🔀 Order
               </button>
               <button
                 onClick={handleFlattenAll}
@@ -296,6 +423,7 @@ function AppContent() {
       <div className="app-content">
         {activeTab === 'sort' && <SortTab />}
         {activeTab === 'fill' && <FillTab />}
+        {activeTab === 'order' && <OrderTab />}
         {activeTab === 'export' && <ExportTab />}
       </div>
     </div>

@@ -10,6 +10,24 @@ interface LoadingState {
   estimatedTimeLeft?: number
 }
 
+// Data structure for the Order tab
+export interface OrderLine {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  color: string
+  pathId: string
+}
+
+export interface OrderData {
+  lines: OrderLine[]
+  boundingBox: { x: number; y: number; width: number; height: number }
+  source: 'fill' | 'sort'
+  // For fill source, store the callback to apply the fill
+  onApply?: (orderedLines: OrderLine[]) => void
+}
+
 interface AppContextType {
   // Tab state
   activeTab: TabKey
@@ -75,6 +93,10 @@ interface AppContextType {
   // Fill mode state
   fillTargetNodeId: string | null
   setFillTargetNodeId: (id: string | null) => void
+
+  // Order mode state
+  orderData: OrderData | null
+  setOrderData: (data: OrderData | null) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -265,6 +287,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Fill mode state
   const [fillTargetNodeId, setFillTargetNodeId] = useState<string | null>(null)
 
+  // Order mode state
+  const [orderData, setOrderData] = useState<OrderData | null>(null)
+
   const handleLoadStart = useCallback(() => {
     setLoadingState({
       isLoading: true,
@@ -332,6 +357,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setStatusMessage,
     fillTargetNodeId,
     setFillTargetNodeId,
+    orderData,
+    setOrderData,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
