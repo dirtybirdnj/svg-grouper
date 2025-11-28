@@ -8,4 +8,6 @@ export interface SVGNode {
   isHidden?: boolean
   // Custom SVG markup to render instead of the original element (used for line fill)
   customMarkup?: string
+  // Color of fill lines when customMarkup is used (for color swatch display)
+  fillColor?: string
 }

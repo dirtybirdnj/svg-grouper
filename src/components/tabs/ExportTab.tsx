@@ -78,6 +78,11 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
       stats.totalShapes++
     }
 
+    // Check for fillColor from line fill (customMarkup nodes)
+    if (node.fillColor) {
+      colors.add(node.fillColor)
+    }
+
     extractColors(node.element)
 
     node.children.forEach(child => traverse(child, depth + 1))
@@ -92,6 +97,11 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
       const tagName = n.element.tagName.toLowerCase()
       if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) {
         pathCount++
+      }
+
+      // Check for fillColor from line fill (customMarkup nodes)
+      if (n.fillColor) {
+        layerColors.add(n.fillColor)
       }
 
       // Extract colors from this element

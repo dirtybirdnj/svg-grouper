@@ -326,10 +326,28 @@ function clipLinesToPolygon(
 // CONCENTRIC (SNAKE) FILL PATTERN
 // ============================================================================
 
+// Calculate signed area of polygon (positive = CCW, negative = CW in screen coords)
+function polygonSignedArea(polygon: Point[]): number {
+  if (polygon.length < 3) return 0
+  let area = 0
+  for (let i = 0; i < polygon.length; i++) {
+    const j = (i + 1) % polygon.length
+    area += polygon[i].x * polygon[j].y
+    area -= polygon[j].x * polygon[i].y
+  }
+  return area / 2
+}
+
 // Offset a polygon inward by a given distance using vertex normals
-// This is a simplified polygon offset that works well for convex and mildly concave shapes
-function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
+// Automatically determines correct inward direction based on polygon winding
+function offsetPolygonInward(polygon: Point[], offsetDistance: number): Point[] {
   if (polygon.length < 3) return []
+
+  // Determine winding direction from signed area
+  const signedArea = polygonSignedArea(polygon)
+  // In screen coordinates (Y down), positive area = clockwise
+  // We want inward offset, so we need to flip normal direction based on winding
+  const windingSign = signedArea > 0 ? 1 : -1
 
   const result: Point[] = []
   const n = polygon.length
@@ -351,10 +369,12 @@ function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
 
     if (len1 < 0.0001 || len2 < 0.0001) continue
 
-    const n1x = -e1y / len1
-    const n1y = e1x / len1
-    const n2x = -e2y / len2
-    const n2y = e2x / len2
+    // Perpendicular normals (rotate 90 degrees)
+    // For inward offset, direction depends on winding
+    const n1x = -e1y / len1 * windingSign
+    const n1y = e1x / len1 * windingSign
+    const n2x = -e2y / len2 * windingSign
+    const n2y = e2x / len2 * windingSign
 
     // Average normal (bisector direction)
     let nx = n1x + n2x
@@ -371,10 +391,10 @@ function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
 
       // Calculate miter length to maintain offset distance
       const dot = n1x * nx + n1y * ny
-      if (dot > 0.1) {
-        const miterScale = 1 / dot
+      if (Math.abs(dot) > 0.1) {
+        const miterScale = 1 / Math.abs(dot)
         // Limit miter to avoid spikes at sharp angles
-        const limitedScale = Math.min(miterScale, 2)
+        const limitedScale = Math.min(miterScale, 2.5)
         nx *= limitedScale
         ny *= limitedScale
       }
@@ -389,40 +409,14 @@ function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
   return result
 }
 
-// Calculate signed area of polygon (positive = CCW, negative = CW)
-function polygonSignedArea(polygon: Point[]): number {
-  if (polygon.length < 3) return 0
-  let area = 0
-  for (let i = 0; i < polygon.length; i++) {
-    const j = (i + 1) % polygon.length
-    area += polygon[i].x * polygon[j].y
-    area -= polygon[j].x * polygon[i].y
+// Legacy function for compatibility
+function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
+  // Negative offset = inward
+  if (offsetDistance < 0) {
+    return offsetPolygonInward(polygon, -offsetDistance)
   }
-  return area / 2
-}
-
-// Check if a polygon is valid for concentric fill
-function isValidConcentricPolygon(polygon: Point[], minArea: number, originalArea: number): boolean {
-  if (polygon.length < 3) return false
-
-  const area = Math.abs(polygonSignedArea(polygon))
-
-  // Must have minimum area
-  if (area < minArea) return false
-
-  // Area should be smaller than original (sanity check for self-intersection)
-  if (area > originalArea * 1.1) return false
-
-  // Check for degenerate edges (very short edges indicate collapse)
-  for (let i = 0; i < polygon.length; i++) {
-    const j = (i + 1) % polygon.length
-    const dx = polygon[j].x - polygon[i].x
-    const dy = polygon[j].y - polygon[i].y
-    const len = Math.sqrt(dx * dx + dy * dy)
-    if (len < 0.1) return false
-  }
-
-  return true
+  // For outward offset, just flip the sign in the inward function
+  return offsetPolygonInward(polygon, -offsetDistance)
 }
 
 // Generate concentric fill lines (snake pattern from outside in)
@@ -434,32 +428,42 @@ function generateConcentricLines(
   const lines: HatchLine[] = []
   if (polygon.length < 3) return lines
 
-  const originalArea = Math.abs(polygonSignedArea(polygon))
-  const minArea = spacing * spacing * 2 // Minimum area threshold
+  const minArea = spacing * spacing // Minimum area threshold
 
-  // Safety: limit based on expected max loops
-  const maxDimension = Math.max(
-    ...polygon.map(p => Math.abs(p.x)),
-    ...polygon.map(p => Math.abs(p.y))
-  ) * 2
-  const maxLoops = Math.min(50, Math.ceil(maxDimension / spacing))
+  // Calculate bounding box for max loops estimate
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of polygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+  const maxDimension = Math.max(maxX - minX, maxY - minY)
+  const maxLoops = Math.min(100, Math.ceil(maxDimension / spacing) + 2)
 
   const loops: Point[][] = []
   let currentPolygon = [...polygon]
-  let prevArea = originalArea
 
   // Generate inward offset polygons until we can't anymore
   for (let loopCount = 0; loopCount < maxLoops; loopCount++) {
-    if (!isValidConcentricPolygon(currentPolygon, minArea, prevArea)) {
+    const area = Math.abs(polygonSignedArea(currentPolygon))
+
+    // Stop if polygon is too small or invalid
+    if (currentPolygon.length < 3 || area < minArea) {
       break
     }
 
     loops.push([...currentPolygon])
-    prevArea = Math.abs(polygonSignedArea(currentPolygon))
-    currentPolygon = offsetPolygon(currentPolygon, -spacing)
 
-    // Early termination if polygon collapsed
+    // Offset inward
+    currentPolygon = offsetPolygonInward(currentPolygon, spacing)
+
+    // Check for collapsed polygon
     if (currentPolygon.length < 3) break
+
+    // Check for self-intersection (area should decrease)
+    const newArea = Math.abs(polygonSignedArea(currentPolygon))
+    if (newArea >= area) break
   }
 
   // Convert polygon loops to lines
@@ -517,7 +521,8 @@ function generateConcentricLines(
 function generateHoneycombLines(
   polygon: Point[],
   spacing: number,
-  inset: number = 0
+  inset: number = 0,
+  angleDegrees: number = 0
 ): HatchLine[] {
   if (polygon.length < 3) return []
 
@@ -537,6 +542,21 @@ function generateHoneycombLines(
     maxY = Math.max(maxY, p.y)
   }
 
+  // Calculate center for rotation
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const angleRad = (angleDegrees * Math.PI) / 180
+
+  // Helper to rotate a point around the center
+  const rotatePoint = (p: Point): Point => {
+    const dx = p.x - centerX
+    const dy = p.y - centerY
+    return {
+      x: centerX + dx * Math.cos(angleRad) - dy * Math.sin(angleRad),
+      y: centerY + dx * Math.sin(angleRad) + dy * Math.cos(angleRad)
+    }
+  }
+
   // Hexagon geometry
   // For a regular hexagon with "flat top" orientation:
   // - Width = 2 * size
@@ -550,7 +570,8 @@ function generateHoneycombLines(
   const vertSpacing = hexHeight // Vertical distance between rows
 
   const lines: HatchLine[] = []
-  const padding = hexSize * 2
+  // Increase padding for rotated grid coverage
+  const padding = hexSize * 3
 
   // Generate hexagon centers in a grid
   let row = 0
@@ -559,19 +580,23 @@ function generateHoneycombLines(
     const xOffset = isOddRow ? horizSpacing / 2 : 0
 
     for (let x = minX - padding + xOffset; x <= maxX + padding; x += horizSpacing) {
-      // Generate hexagon vertices (flat-top orientation)
+      // Generate hexagon vertices (flat-top orientation) then rotate
       const hexPoints: Point[] = []
       for (let i = 0; i < 6; i++) {
-        const angle = (Math.PI / 3) * i // 60 degrees apart
-        hexPoints.push({
-          x: x + hexSize * Math.cos(angle),
-          y: y + hexSize * Math.sin(angle)
-        })
+        const hexAngle = (Math.PI / 3) * i // 60 degrees apart
+        const unrotated = {
+          x: x + hexSize * Math.cos(hexAngle),
+          y: y + hexSize * Math.sin(hexAngle)
+        }
+        hexPoints.push(rotatePoint(unrotated))
       }
+
+      // Rotate center point too for point-in-polygon check
+      const rotatedCenter = rotatePoint({ x, y })
 
       // Create lines for this hexagon, but only if at least one vertex is inside polygon
       const anyVertexInside = hexPoints.some(p => pointInPolygon(p, workingPolygon))
-      const centerInside = pointInPolygon({ x, y }, workingPolygon)
+      const centerInside = pointInPolygon(rotatedCenter, workingPolygon)
 
       if (anyVertexInside || centerInside) {
         // Add hexagon edges, clipping to polygon
@@ -722,7 +747,8 @@ function generateWiggleLines(
 function generateSpiralLines(
   polygon: Point[],
   spacing: number,
-  inset: number = 0
+  inset: number = 0,
+  angleDegrees: number = 0
 ): HatchLine[] {
   if (polygon.length < 3) return []
 
@@ -749,6 +775,9 @@ function generateSpiralLines(
     Math.pow((maxY - minY) / 2, 2)
   ) * 1.5
 
+  // Convert angle offset to radians
+  const angleOffset = (angleDegrees * Math.PI) / 180
+
   // Generate spiral points
   const spiralPoints: Point[] = []
   const angleStep = 0.1 // radians per step
@@ -759,9 +788,11 @@ function generateSpiralLines(
     const radius = (angle / (2 * Math.PI)) * radiusPerTurn
     if (radius > maxRadius) break
 
+    // Apply angle offset to rotate the entire spiral
+    const rotatedAngle = angle + angleOffset
     spiralPoints.push({
-      x: centerX + radius * Math.cos(angle),
-      y: centerY + radius * Math.sin(angle)
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
     })
 
     angle += angleStep
@@ -779,6 +810,170 @@ function generateSpiralLines(
     // Simple point-in-polygon test for both endpoints
     if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
       lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+    }
+  }
+
+  return lines
+}
+
+// ============================================================================
+// GYROID FILL PATTERN
+// ============================================================================
+
+// Generate gyroid infill pattern
+// The gyroid is a triply periodic minimal surface: sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x) = 0
+// For 2D, we trace level curves of the gyroid function at different "z slices"
+function generateGyroidLines(
+  polygon: Point[],
+  spacing: number,
+  inset: number = 0,
+  angleDegrees: number = 0
+): HatchLine[] {
+  if (polygon.length < 3) return []
+
+  // Apply inset first
+  let workingPolygon = polygon
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(polygon, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const angleRad = (angleDegrees * Math.PI) / 180
+
+  // Helper to rotate a point around the center
+  const rotatePoint = (p: Point): Point => {
+    const dx = p.x - centerX
+    const dy = p.y - centerY
+    return {
+      x: centerX + dx * Math.cos(angleRad) - dy * Math.sin(angleRad),
+      y: centerY + dx * Math.sin(angleRad) + dy * Math.cos(angleRad)
+    }
+  }
+
+  const lines: HatchLine[] = []
+
+  // Scale factor to control pattern density
+  // Spacing is the period of the gyroid pattern
+  const scale = (2 * Math.PI) / spacing
+
+  // Grid resolution for marching - smaller = smoother curves
+  const gridStep = spacing / 8 // 8 samples per period
+  const padding = spacing * 2
+
+  // The gyroid function for 2D: we slice at different z values
+  // g(x, y, z) = sin(x)cos(y) + sin(y)cos(z) + sin(z)cos(x)
+  // We'll use multiple z-slices to create the pattern (two interleaved patterns)
+  const zValues = [0, Math.PI / 2] // Phase offsets for variety
+
+  for (const zVal of zValues) {
+    const sinZ = Math.sin(zVal)
+    const cosZ = Math.cos(zVal)
+
+    // Evaluate gyroid function at a point
+    const gyroidFunc = (x: number, y: number): number => {
+      const sx = Math.sin(x * scale)
+      const cx = Math.cos(x * scale)
+      const sy = Math.sin(y * scale)
+      const cy = Math.cos(y * scale)
+      return sx * cy + sy * cosZ + sinZ * cx
+    }
+
+    // March through the grid and find zero crossings
+    // This is a simplified marching squares algorithm
+    for (let gridY = minY - padding; gridY < maxY + padding; gridY += gridStep) {
+      for (let gridX = minX - padding; gridX < maxX + padding; gridX += gridStep) {
+        // Evaluate at corners of this grid cell
+        const v00 = gyroidFunc(gridX, gridY)
+        const v10 = gyroidFunc(gridX + gridStep, gridY)
+        const v01 = gyroidFunc(gridX, gridY + gridStep)
+        const v11 = gyroidFunc(gridX + gridStep, gridY + gridStep)
+
+        // Check for zero crossings on each edge and create line segments
+        const crossings: Point[] = []
+
+        // Bottom edge (v00 to v10)
+        if ((v00 > 0) !== (v10 > 0)) {
+          const t = v00 / (v00 - v10)
+          crossings.push({ x: gridX + t * gridStep, y: gridY })
+        }
+        // Right edge (v10 to v11)
+        if ((v10 > 0) !== (v11 > 0)) {
+          const t = v10 / (v10 - v11)
+          crossings.push({ x: gridX + gridStep, y: gridY + t * gridStep })
+        }
+        // Top edge (v01 to v11)
+        if ((v01 > 0) !== (v11 > 0)) {
+          const t = v01 / (v01 - v11)
+          crossings.push({ x: gridX + t * gridStep, y: gridY + gridStep })
+        }
+        // Left edge (v00 to v01)
+        if ((v00 > 0) !== (v01 > 0)) {
+          const t = v00 / (v00 - v01)
+          crossings.push({ x: gridX, y: gridY + t * gridStep })
+        }
+
+        // Connect crossing points to form line segments
+        if (crossings.length >= 2) {
+          // For 2 crossings, simple line
+          // For 4 crossings (saddle point), we need to disambiguate
+          if (crossings.length === 2) {
+            const p1 = rotatePoint(crossings[0])
+            const p2 = rotatePoint(crossings[1])
+            // Only add if at least one point is inside the polygon
+            const p1In = pointInPolygon(p1, workingPolygon)
+            const p2In = pointInPolygon(p2, workingPolygon)
+            if (p1In && p2In) {
+              lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+            } else if (p1In || p2In) {
+              // Clip to polygon
+              const intersections = linePolygonIntersections(
+                { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
+                workingPolygon
+              )
+              if (intersections.length > 0) {
+                const inside = p1In ? p1 : p2
+                const closest = intersections[0]
+                lines.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
+              }
+            }
+          } else if (crossings.length === 4) {
+            // Saddle point - connect based on center value
+            const centerVal = gyroidFunc(gridX + gridStep / 2, gridY + gridStep / 2)
+            // Sort crossings by angle from center
+            const cellCenterX = gridX + gridStep / 2
+            const cellCenterY = gridY + gridStep / 2
+            crossings.sort((a, b) => {
+              const angleA = Math.atan2(a.y - cellCenterY, a.x - cellCenterX)
+              const angleB = Math.atan2(b.y - cellCenterY, b.x - cellCenterX)
+              return angleA - angleB
+            })
+            // Connect 0-1 and 2-3 or 0-3 and 1-2 based on center sign
+            const pairs = centerVal > 0
+              ? [[0, 1], [2, 3]]
+              : [[0, 3], [1, 2]]
+            for (const [i1, i2] of pairs) {
+              const p1 = rotatePoint(crossings[i1])
+              const p2 = rotatePoint(crossings[i2])
+              const p1In = pointInPolygon(p1, workingPolygon)
+              const p2In = pointInPolygon(p2, workingPolygon)
+              if (p1In && p2In) {
+                lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -804,7 +999,7 @@ function pointInPolygon(point: Point, polygon: Point[]): boolean {
 }
 
 // Fill pattern type
-type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb'
+type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid'
 
 // Calculate distance between two points
 function distance(p1: Point, p2: Point): number {
@@ -997,15 +1192,6 @@ function calculateTravelDistance(lines: OrderedLine[]): number {
   return totalDistance
 }
 
-// Interpolate between red and blue based on position (0 = red, 1 = blue)
-function getGradientColor(position: number): string {
-  // Red to blue gradient
-  const r = Math.round(255 * (1 - position))
-  const g = 0
-  const b = Math.round(255 * position)
-  return `rgb(${r}, ${g}, ${b})`
-}
-
 export default function FillTab() {
   const {
     svgContent,
@@ -1015,7 +1201,7 @@ export default function FillTab() {
     setFillTargetNodeId,
     setActiveTab,
     rebuildSvgFromLayers,
-    svgElementRef,
+    setOrderData,
   } = useAppContext()
 
   const [lineSpacing, setLineSpacing] = useState(5)
@@ -1028,10 +1214,12 @@ export default function FillTab() {
   const [fillPattern, setFillPattern] = useState<FillPatternType>('lines')
   const [wiggleAmplitude, setWiggleAmplitude] = useState(3)
   const [wiggleFrequency, setWiggleFrequency] = useState(2)
-  const [showOrderVisualization, setShowOrderVisualization] = useState(false)
-  const [isAnimating, setIsAnimating] = useState(false)
-  const [animationProgress, setAnimationProgress] = useState(0)
-  const animationRef = useRef<number | null>(null)
+
+  // Local zoom state (independent from Sort tab)
+  const [fillScale, setFillScale] = useState(1)
+  const [fillOffset, setFillOffset] = useState({ x: 0, y: 0 })
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
 
   const previewRef = useRef<HTMLDivElement>(null)
 
@@ -1051,68 +1239,9 @@ export default function FillTab() {
     return findNode(layerNodes, fillTargetNodeId)
   }, [layerNodes, fillTargetNodeId])
 
-  // Helper to get a fresh element reference from the live DOM
-  const getFreshElement = useCallback((nodeId: string, originalElement: Element): Element => {
-    if (!svgElementRef.current) {
-      console.log(`getFreshElement: No svgElementRef for ${nodeId}`)
-      return originalElement
-    }
-
-    // If original element is still connected to DOM, use it directly
-    if (originalElement.isConnected) {
-      console.log(`getFreshElement: Using connected original element for ${nodeId}`)
-      return originalElement
-    }
-
-    // Try to find the element by ID in the live DOM
-    try {
-      const freshElement = svgElementRef.current.querySelector(`#${CSS.escape(nodeId)}`)
-      if (freshElement) {
-        console.log(`getFreshElement: Found fresh element by ID for ${nodeId}`)
-        return freshElement
-      }
-    } catch (e) {
-      console.log(`getFreshElement: querySelector failed for ${nodeId}:`, e)
-    }
-
-    // Try to find by matching tag and attributes from original element
-    const origD = originalElement.getAttribute('d')
-    const origPoints = originalElement.getAttribute('points')
-
-    if (origD) {
-      // For paths, try to find by d attribute
-      const allPaths = svgElementRef.current.querySelectorAll('path')
-      for (const path of allPaths) {
-        if (path.getAttribute('d') === origD) {
-          console.log(`getFreshElement: Found fresh path by d attribute for ${nodeId}`)
-          return path
-        }
-      }
-    } else if (origPoints) {
-      // For polygons, try to find by points attribute
-      const allPolygons = svgElementRef.current.querySelectorAll('polygon')
-      for (const poly of allPolygons) {
-        if (poly.getAttribute('points') === origPoints) {
-          console.log(`getFreshElement: Found fresh polygon by points for ${nodeId}`)
-          return poly
-        }
-      }
-    }
-
-    console.log(`getFreshElement: Could not find fresh element for ${nodeId}, using disconnected original`)
-    return originalElement
-  }, [svgElementRef])
-
-  // Extract all fill paths from the target node (including nested children)
+  // Extract all fill paths from target node (including nested children)
   const fillPaths = useMemo(() => {
-    console.log('=== fillPaths useMemo running ===')
-    console.log('targetNode:', targetNode?.id, targetNode?.name)
-    console.log('svgElementRef.current:', svgElementRef.current ? 'exists' : 'null')
-
-    if (!targetNode) {
-      console.log('No targetNode, returning empty array')
-      return []
-    }
+    if (!targetNode) return []
 
     const paths: FillPathInfo[] = []
 
@@ -1136,16 +1265,10 @@ export default function FillTab() {
 
     const extractFillPaths = (node: SVGNode) => {
       // Skip nodes that already have customMarkup (already filled)
-      if (node.customMarkup) {
-        console.log(`Skipping node ${node.id} - has customMarkup`)
-        return
-      }
+      if (node.customMarkup) return
 
-      // Get fresh element reference from the live DOM
-      const element = getFreshElement(node.id, node.element)
+      const element = node.element
       const fill = getElementFill(element)
-
-      console.log(`Processing node ${node.id}: isGroup=${node.isGroup}, fill=${fill}, tagName=${element.tagName}, isConnected=${element.isConnected}`)
 
       // Only include actual shape elements with fills (not groups)
       if (fill && !node.isGroup) {
@@ -1176,7 +1299,6 @@ export default function FillTab() {
           pathData = element.getAttribute('points') || ''
         }
 
-        console.log(`  -> Adding path: ${node.id}, type=${tagName}, pathData length=${pathData.length}`)
         paths.push({
           id: node.id,
           type: tagName,
@@ -1193,69 +1315,40 @@ export default function FillTab() {
     }
 
     extractFillPaths(targetNode)
-    console.log(`fillPaths result: ${paths.length} paths`)
     return paths
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetNode, getFreshElement, svgContent]) // svgContent dependency ensures we get fresh elements after rebuild
+  }, [targetNode])
 
-  // Calculate bounding box of all fill paths
+  // Calculate bounding box of all fill paths using polygon points (works on disconnected elements)
   const boundingBox = useMemo(() => {
-    console.log('=== boundingBox useMemo running ===')
-    console.log(`fillPaths.length: ${fillPaths.length}`)
-
-    if (fillPaths.length === 0) {
-      console.log('No fill paths, returning null')
-      return null
-    }
+    if (fillPaths.length === 0) return null
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    let successfulBBoxCount = 0
 
-    fillPaths.forEach((path, index) => {
-      try {
-        const element = path.element as SVGGraphicsElement
-        console.log(`  Path ${index} (${path.id}): isConnected=${element.isConnected}, tagName=${element.tagName}`)
-
-        const bbox = element.getBBox?.()
-        if (bbox) {
-          console.log(`    -> getBBox success: x=${bbox.x}, y=${bbox.y}, w=${bbox.width}, h=${bbox.height}`)
-          minX = Math.min(minX, bbox.x)
-          minY = Math.min(minY, bbox.y)
-          maxX = Math.max(maxX, bbox.x + bbox.width)
-          maxY = Math.max(maxY, bbox.y + bbox.height)
-          successfulBBoxCount++
-        } else {
-          console.log(`    -> getBBox returned null/undefined`)
-        }
-      } catch (e) {
-        console.log(`    -> getBBox FAILED:`, e)
+    fillPaths.forEach(path => {
+      // Use getPolygonPoints which parses element attributes directly
+      // This works even if the element isn't in the live DOM
+      const points = getPolygonPoints(path.element)
+      for (const p of points) {
+        minX = Math.min(minX, p.x)
+        minY = Math.min(minY, p.y)
+        maxX = Math.max(maxX, p.x)
+        maxY = Math.max(maxY, p.y)
       }
     })
 
-    console.log(`Successful getBBox calls: ${successfulBBoxCount}/${fillPaths.length}`)
+    if (minX === Infinity) return null
 
-    if (minX === Infinity) {
-      console.log('No valid bboxes found, returning null')
-      return null
-    }
-
-    const result = {
+    return {
       x: minX,
       y: minY,
       width: maxX - minX,
       height: maxY - minY,
     }
-    console.log('boundingBox result:', result)
-    return result
   }, [fillPaths])
 
   // Generate hatch lines for each path
   const hatchedPaths = useMemo(() => {
-    console.log('=== hatchedPaths useMemo running ===')
-    console.log(`showHatchPreview=${showHatchPreview}, fillPaths.length=${fillPaths.length}, boundingBox=`, boundingBox)
-
     if (!showHatchPreview || fillPaths.length === 0 || !boundingBox) {
-      console.log('Early return from hatchedPaths')
       return []
     }
 
@@ -1265,11 +1358,9 @@ export default function FillTab() {
 
     const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
 
-    fillPaths.forEach((path, index) => {
+    fillPaths.forEach(path => {
       try {
-        console.log(`Generating ${fillPattern} fill for path ${index} (${path.id}): element connected=${path.element.isConnected}`)
         const polygon = getPolygonPoints(path.element)
-        console.log(`  -> polygon points: ${polygon.length}`)
 
         if (polygon.length >= 3) {
           let lines: HatchLine[] = []
@@ -1287,12 +1378,17 @@ export default function FillTab() {
 
             case 'spiral':
               // Generate spiral pattern
-              lines = generateSpiralLines(polygon, lineSpacing, inset)
+              lines = generateSpiralLines(polygon, lineSpacing, inset, angle)
               break
 
             case 'honeycomb':
               // Generate honeycomb/hexagonal pattern
-              lines = generateHoneycombLines(polygon, lineSpacing, inset)
+              lines = generateHoneycombLines(polygon, lineSpacing, inset, angle)
+              break
+
+            case 'gyroid':
+              // Generate gyroid infill pattern
+              lines = generateGyroidLines(polygon, lineSpacing, inset, angle)
               break
 
             case 'lines':
@@ -1307,17 +1403,13 @@ export default function FillTab() {
               break
           }
 
-          console.log(`  -> generated ${lines.length} lines`)
           results.push({ pathInfo: path, lines, polygon })
-        } else {
-          console.log(`  -> skipping, not enough polygon points`)
         }
-      } catch (e) {
-        console.log(`  -> FAILED:`, e)
+      } catch {
+        // Failed to generate hatch for this path
       }
     })
 
-    console.log(`hatchedPaths result: ${results.length} paths with ${fillPattern} fill`)
     return results
   }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency])
 
@@ -1326,7 +1418,7 @@ export default function FillTab() {
   // 2. Optimize lines within each shape
   // 3. Chain shapes together
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats } = useMemo(() => {
+  const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats: _stats } = useMemo(() => {
     if (hatchedPaths.length === 0) {
       return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0, shapeCount: 0 } }
     }
@@ -1368,67 +1460,16 @@ export default function FillTab() {
 
   // Generate preview SVG content
   const previewSvg = useMemo(() => {
-    console.log('=== previewSvg useMemo running ===')
-    console.log(`fillPaths.length=${fillPaths.length}, boundingBox=`, boundingBox)
-
     if (fillPaths.length === 0 || !boundingBox) {
-      console.log('previewSvg: early return, no fillPaths or boundingBox')
       return null
     }
 
     const padding = 20
     const viewBox = `${boundingBox.x - padding} ${boundingBox.y - padding} ${boundingBox.width + padding * 2} ${boundingBox.height + padding * 2}`
-    console.log(`previewSvg viewBox: ${viewBox}`)
 
     const pathElements: string[] = []
 
-    if (showHatchPreview && showOrderVisualization) {
-      // Show ordered lines with gradient visualization
-      const linesToShow = optimizedLines
-      const totalLines = linesToShow.length
-
-      // For animation, only show lines up to the current progress
-      const visibleCount = isAnimating
-        ? Math.floor((animationProgress / 100) * totalLines)
-        : totalLines
-
-      // Draw the hatch lines with gradient colors
-      const linesHtml = linesToShow.slice(0, visibleCount).map((line, index) => {
-        const position = totalLines > 1 ? index / (totalLines - 1) : 0
-        const color = getGradientColor(position)
-        return `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
-      }).join('\n')
-
-      pathElements.push(`<g class="order-visualization">${linesHtml}</g>`)
-
-      // Draw travel paths (connections between line ends and next line starts)
-      if (!isAnimating || visibleCount > 1) {
-        const travelLines: string[] = []
-        const lineCount = isAnimating ? visibleCount : linesToShow.length
-        for (let i = 1; i < lineCount; i++) {
-          const prevEnd = { x: linesToShow[i - 1].x2, y: linesToShow[i - 1].y2 }
-          const currStart = { x: linesToShow[i].x1, y: linesToShow[i].y1 }
-          travelLines.push(
-            `<line x1="${prevEnd.x.toFixed(2)}" y1="${prevEnd.y.toFixed(2)}" x2="${currStart.x.toFixed(2)}" y2="${currStart.y.toFixed(2)}" stroke="#999" stroke-width="0.5" stroke-dasharray="2,2" opacity="0.5" />`
-          )
-        }
-        if (travelLines.length > 0) {
-          pathElements.push(`<g class="travel-paths">${travelLines.join('\n')}</g>`)
-        }
-      }
-
-      // Add outline strokes if retaining strokes
-      if (retainStrokes) {
-        fillPaths.forEach((path) => {
-          const outlineEl = path.element.cloneNode(true) as Element
-          outlineEl.setAttribute('fill', 'none')
-          outlineEl.setAttribute('stroke', '#ccc')
-          outlineEl.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
-          outlineEl.removeAttribute('style')
-          pathElements.push(outlineEl.outerHTML)
-        })
-      }
-    } else if (showHatchPreview) {
+    if (showHatchPreview) {
       // Normal hatch preview (original color, no ordering)
       fillPaths.forEach((path) => {
         const hatchData = hatchedPaths.find(h => h.pathInfo.id === path.id)
@@ -1463,7 +1504,7 @@ export default function FillTab() {
     }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, retainStrokes, penWidthPx, showOrderVisualization, optimizedLines, isAnimating, animationProgress])
+  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, retainStrokes, penWidthPx])
 
   const handleBack = () => {
     setFillTargetNodeId(null)
@@ -1472,70 +1513,13 @@ export default function FillTab() {
 
   const handlePreview = useCallback(() => {
     setShowHatchPreview(!showHatchPreview)
-    // Reset order visualization when toggling preview
-    if (showHatchPreview) {
-      setShowOrderVisualization(false)
-      setIsAnimating(false)
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-    }
   }, [showHatchPreview])
-
-  const handleToggleOrder = useCallback(() => {
-    if (!showOrderVisualization) {
-      // Turning on order visualization
-      setShowOrderVisualization(true)
-    } else {
-      // Turning off - also stop animation
-      setShowOrderVisualization(false)
-      setIsAnimating(false)
-      setAnimationProgress(0)
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-    }
-  }, [showOrderVisualization])
-
-  const handleToggleAnimation = useCallback(() => {
-    if (isAnimating) {
-      // Stop animation
-      setIsAnimating(false)
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
-        animationRef.current = null
-      }
-    } else {
-      // Start animation
-      setIsAnimating(true)
-      setAnimationProgress(0)
-      const startTime = performance.now()
-      const duration = 5000 // 5 seconds for full animation
-
-      const animate = (currentTime: number) => {
-        const elapsed = currentTime - startTime
-        const progress = Math.min((elapsed / duration) * 100, 100)
-        setAnimationProgress(progress)
-
-        if (progress < 100) {
-          animationRef.current = requestAnimationFrame(animate)
-        } else {
-          setIsAnimating(false)
-          animationRef.current = null
-        }
-      }
-
-      animationRef.current = requestAnimationFrame(animate)
-    }
-  }, [isAnimating])
 
   const handleApplyFill = useCallback(() => {
     if (!targetNode || hatchedPaths.length === 0) return
 
-    // Build a map of node ID to custom markup
-    const customMarkupMap = new Map<string, string>()
+    // Build a map of node ID to custom markup and color
+    const customMarkupMap = new Map<string, { markup: string; color: string }>()
 
     // Group optimized lines by their original path ID to maintain per-path grouping
     // but use the optimized order within each path
@@ -1567,20 +1551,20 @@ export default function FillTab() {
       }
 
       const groupMarkup = `<g id="hatch-${pathInfo.id}">\n${linesMarkup}\n${outlineMarkup}\n</g>`
-      customMarkupMap.set(pathInfo.id, groupMarkup)
+      customMarkupMap.set(pathInfo.id, { markup: groupMarkup, color: pathInfo.color })
     })
 
     // Update layer nodes with custom markup
+    // Keep the original type/name/isGroup to preserve layer tree appearance
     const updateNodeMarkup = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
-        const customMarkup = customMarkupMap.get(node.id)
-        if (customMarkup) {
+        const data = customMarkupMap.get(node.id)
+        if (data) {
           return {
             ...node,
-            customMarkup,
-            type: 'g',
-            isGroup: true,
-            name: `hatch-${node.name || node.id}`,
+            customMarkup: data.markup,
+            fillColor: data.color,
+            // Keep original type, name, and isGroup - don't change to 'g'
           }
         }
         if (node.children.length > 0) {
@@ -1599,6 +1583,72 @@ export default function FillTab() {
     setFillTargetNodeId(null)
     setActiveTab('sort')
   }, [targetNode, hatchedPaths, optimizedLines, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers])
+
+  const handleNavigateToOrder = useCallback(() => {
+    if (!boundingBox || optimizedLines.length === 0) return
+
+    // Convert optimized lines to OrderLine format
+    const orderLines = optimizedLines.map(line => ({
+      x1: line.x1,
+      y1: line.y1,
+      x2: line.x2,
+      y2: line.y2,
+      color: line.color,
+      pathId: line.pathId,
+    }))
+
+    // Set order data and navigate to Order tab
+    setOrderData({
+      lines: orderLines,
+      boundingBox,
+      source: 'fill',
+      onApply: () => {
+        // When apply is clicked in Order tab, apply the fill
+        handleApplyFill()
+      },
+    })
+    setActiveTab('order')
+  }, [boundingBox, optimizedLines, setOrderData, setActiveTab, handleApplyFill])
+
+  // Zoom handlers
+  const handleZoomIn = useCallback(() => {
+    setFillScale(prev => Math.min(10, prev * 1.2))
+  }, [])
+
+  const handleZoomOut = useCallback(() => {
+    setFillScale(prev => Math.max(0.1, prev / 1.2))
+  }, [])
+
+  const handleFitToView = useCallback(() => {
+    setFillScale(1)
+    setFillOffset({ x: 0, y: 0 })
+  }, [])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault()
+    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    setFillScale(prev => Math.max(0.1, Math.min(10, prev * delta)))
+  }, [])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (e.button === 0) {
+      setIsDragging(true)
+      setDragStart({ x: e.clientX - fillOffset.x, y: e.clientY - fillOffset.y })
+    }
+  }, [fillOffset])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (isDragging) {
+      setFillOffset({
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      })
+    }
+  }, [isDragging, dragStart])
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false)
+  }, [])
 
   if (!svgContent) {
     return (
@@ -1626,48 +1676,79 @@ export default function FillTab() {
   }
 
   return (
-    <div className="fill-tab">
-      <aside className="fill-sidebar">
+    <div className="fill-tab three-column">
+      <aside className="fill-sidebar left">
         <div className="sidebar-header">
           <button className="back-link" onClick={handleBack}>
             ← Back
           </button>
-          <h2>Line Fill</h2>
+          <h2>Fill Paths ({fillPaths.length})</h2>
+        </div>
+        <div className="sidebar-content fill-paths-full">
+          <div className="fill-paths-list expanded">
+            {fillPaths.map((path, index) => (
+              <div key={path.id} className="fill-path-item">
+                <span
+                  className="path-color-swatch"
+                  style={{ backgroundColor: path.color }}
+                />
+                <span className="path-info">
+                  <span className="path-type">{path.type}</span>
+                  <span className="path-id">{path.id || `path-${index + 1}`}</span>
+                </span>
+              </div>
+            ))}
+            {fillPaths.length === 0 && (
+              <div className="no-paths-message">
+                No fill paths found in selection
+              </div>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      <main
+        className="fill-main"
+        ref={previewRef}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
+        <div className="fill-zoom-controls">
+          <button onClick={handleZoomIn} title="Zoom In">+</button>
+          <button onClick={handleZoomOut} title="Zoom Out">-</button>
+          <button onClick={handleFitToView} title="Fit to View">Fit</button>
+          <span className="zoom-level">{Math.round(fillScale * 100)}%</span>
+        </div>
+        {previewSvg ? (
+          <div
+            className="fill-preview-container"
+            style={{
+              transform: `translate(${fillOffset.x}px, ${fillOffset.y}px) scale(${fillScale})`,
+              cursor: isDragging ? 'grabbing' : 'grab'
+            }}
+          >
+            <svg
+              className="fill-preview-svg"
+              viewBox={previewSvg.viewBox}
+              preserveAspectRatio="xMidYMid meet"
+              dangerouslySetInnerHTML={{ __html: previewSvg.content }}
+            />
+          </div>
+        ) : (
+          <div className="fill-preview-empty">
+            <p>No geometry to preview</p>
+          </div>
+        )}
+      </main>
+
+      <aside className="fill-sidebar right">
+        <div className="sidebar-header">
+          <h2>Settings</h2>
         </div>
         <div className="sidebar-content">
-          <div className="fill-section">
-            <h3>Target Layer</h3>
-            <div className="target-layer-info">
-              <span className="target-layer-name">{targetNode.name || targetNode.id}</span>
-              {targetNode.isGroup && (
-                <span className="target-layer-type">Group</span>
-              )}
-            </div>
-          </div>
-
-          <div className="fill-section">
-            <h3>Fill Paths ({fillPaths.length})</h3>
-            <div className="fill-paths-list">
-              {fillPaths.map((path, index) => (
-                <div key={path.id} className="fill-path-item">
-                  <span
-                    className="path-color-swatch"
-                    style={{ backgroundColor: path.color }}
-                  />
-                  <span className="path-info">
-                    <span className="path-type">{path.type}</span>
-                    <span className="path-id">{path.id || `path-${index + 1}`}</span>
-                  </span>
-                </div>
-              ))}
-              {fillPaths.length === 0 && (
-                <div className="no-paths-message">
-                  No fill paths found in selection
-                </div>
-              )}
-            </div>
-          </div>
-
           <div className="fill-section">
             <h3>Pattern Type</h3>
             <div className="pattern-selector">
@@ -1705,6 +1786,13 @@ export default function FillTab() {
                 title="Hexagonal honeycomb pattern"
               >
                 Honeycomb
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'gyroid' ? 'active' : ''}`}
+                onClick={() => setFillPattern('gyroid')}
+                title="Gyroid minimal surface pattern"
+              >
+                Gyroid
               </button>
             </div>
           </div>
@@ -1843,59 +1931,14 @@ export default function FillTab() {
               {showHatchPreview ? 'Hide Preview' : 'Preview'}
             </button>
             <button
-              className={`fill-order-btn ${showOrderVisualization ? 'active' : ''}`}
+              className="fill-order-btn"
               disabled={fillPaths.length === 0 || !showHatchPreview}
-              onClick={handleToggleOrder}
-              title="Visualize path order with red→blue gradient"
+              onClick={handleNavigateToOrder}
+              title="View and optimize path order for pen plotters"
             >
-              {showOrderVisualization ? 'Hide Order' : 'Order'}
+              Order
             </button>
           </div>
-
-          {showOrderVisualization && (
-            <div className="order-controls">
-              <button
-                className={`animate-btn ${isAnimating ? 'active' : ''}`}
-                onClick={handleToggleAnimation}
-                disabled={optimizedLines.length === 0}
-              >
-                {isAnimating ? 'Stop' : 'Play'}
-              </button>
-              {isAnimating && (
-                <div className="animation-progress">
-                  <div
-                    className="animation-progress-bar"
-                    style={{ width: `${animationProgress}%` }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {showOrderVisualization && stats.unoptimizedDistance > 0 && (
-            <div className="order-stats">
-              <div className="stat-row">
-                <span className="stat-label">Shapes:</span>
-                <span className="stat-value">{stats.shapeCount}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Lines:</span>
-                <span className="stat-value">{optimizedLines.length}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Travel (orig):</span>
-                <span className="stat-value">{stats.unoptimizedDistance.toFixed(1)}px</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Travel (opt):</span>
-                <span className="stat-value">{stats.optimizedDistance.toFixed(1)}px</span>
-              </div>
-              <div className="stat-row highlight">
-                <span className="stat-label">Saved:</span>
-                <span className="stat-value">{stats.improvement.toFixed(1)}%</span>
-              </div>
-            </div>
-          )}
 
           <div className="fill-actions secondary">
             <button
@@ -1909,36 +1952,6 @@ export default function FillTab() {
           </div>
         </div>
       </aside>
-
-      <main className="fill-main" ref={previewRef}>
-        {previewSvg ? (
-          <div className="fill-preview-container">
-            <svg
-              className="fill-preview-svg"
-              viewBox={previewSvg.viewBox}
-              preserveAspectRatio="xMidYMid meet"
-              dangerouslySetInnerHTML={{ __html: previewSvg.content }}
-            />
-            {showHatchPreview && !showOrderVisualization && (
-              <div className="preview-label">Hatch Preview</div>
-            )}
-            {showOrderVisualization && (
-              <div className="preview-label order">
-                Order View
-                <span className="gradient-legend">
-                  <span className="start">Start</span>
-                  <span className="gradient-bar" />
-                  <span className="end">End</span>
-                </span>
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="fill-preview-empty">
-            <p>No geometry to preview</p>
-          </div>
-        )}
-      </main>
     </div>
   )
 }
