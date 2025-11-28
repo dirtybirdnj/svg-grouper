@@ -510,6 +510,124 @@ function generateConcentricLines(
 }
 
 // ============================================================================
+// HONEYCOMB FILL PATTERN
+// ============================================================================
+
+// Generate a honeycomb/hexagonal grid pattern
+function generateHoneycombLines(
+  polygon: Point[],
+  spacing: number,
+  inset: number = 0
+): HatchLine[] {
+  if (polygon.length < 3) return []
+
+  // Apply inset first
+  let workingPolygon = polygon
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(polygon, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  // Hexagon geometry
+  // For a regular hexagon with "flat top" orientation:
+  // - Width = 2 * size
+  // - Height = sqrt(3) * size
+  // - Horizontal spacing = 1.5 * width = 3 * size
+  // - Vertical spacing = height = sqrt(3) * size
+  const hexSize = spacing * 1.5 // Size from center to vertex
+  const hexWidth = hexSize * 2
+  const hexHeight = hexSize * Math.sqrt(3)
+  const horizSpacing = hexWidth * 0.75 // Horizontal distance between hex centers
+  const vertSpacing = hexHeight // Vertical distance between rows
+
+  const lines: HatchLine[] = []
+  const padding = hexSize * 2
+
+  // Generate hexagon centers in a grid
+  let row = 0
+  for (let y = minY - padding; y <= maxY + padding; y += vertSpacing / 2) {
+    const isOddRow = row % 2 === 1
+    const xOffset = isOddRow ? horizSpacing / 2 : 0
+
+    for (let x = minX - padding + xOffset; x <= maxX + padding; x += horizSpacing) {
+      // Generate hexagon vertices (flat-top orientation)
+      const hexPoints: Point[] = []
+      for (let i = 0; i < 6; i++) {
+        const angle = (Math.PI / 3) * i // 60 degrees apart
+        hexPoints.push({
+          x: x + hexSize * Math.cos(angle),
+          y: y + hexSize * Math.sin(angle)
+        })
+      }
+
+      // Create lines for this hexagon, but only if at least one vertex is inside polygon
+      const anyVertexInside = hexPoints.some(p => pointInPolygon(p, workingPolygon))
+      const centerInside = pointInPolygon({ x, y }, workingPolygon)
+
+      if (anyVertexInside || centerInside) {
+        // Add hexagon edges, clipping to polygon
+        for (let i = 0; i < 6; i++) {
+          const p1 = hexPoints[i]
+          const p2 = hexPoints[(i + 1) % 6]
+
+          // Simple clipping: only include line if both endpoints are inside
+          // or if the line intersects the polygon boundary
+          const p1Inside = pointInPolygon(p1, workingPolygon)
+          const p2Inside = pointInPolygon(p2, workingPolygon)
+
+          if (p1Inside && p2Inside) {
+            lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+          } else if (p1Inside || p2Inside) {
+            // One endpoint inside - clip the line
+            const intersections = linePolygonIntersections(
+              { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
+              workingPolygon
+            )
+            if (intersections.length > 0) {
+              const inside = p1Inside ? p1 : p2
+              // Find closest intersection to the outside point
+              const closest = intersections.reduce((a, b) => {
+                const distA = Math.sqrt(Math.pow(a.x - inside.x, 2) + Math.pow(a.y - inside.y, 2))
+                const distB = Math.sqrt(Math.pow(b.x - inside.x, 2) + Math.pow(b.y - inside.y, 2))
+                return distA > distB ? a : b
+              })
+              lines.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
+            }
+          }
+        }
+      }
+    }
+    row++
+  }
+
+  // Remove duplicate lines (hexagons share edges)
+  const uniqueLines: HatchLine[] = []
+  const seen = new Set<string>()
+
+  for (const line of lines) {
+    // Create a canonical key for the line (smaller coords first)
+    const key1 = `${line.x1.toFixed(2)},${line.y1.toFixed(2)}-${line.x2.toFixed(2)},${line.y2.toFixed(2)}`
+    const key2 = `${line.x2.toFixed(2)},${line.y2.toFixed(2)}-${line.x1.toFixed(2)},${line.y1.toFixed(2)}`
+
+    if (!seen.has(key1) && !seen.has(key2)) {
+      seen.add(key1)
+      uniqueLines.push(line)
+    }
+  }
+
+  return uniqueLines
+}
+
+// ============================================================================
 // WIGGLE/WAVE FILL PATTERN
 // ============================================================================
 
@@ -686,7 +804,7 @@ function pointInPolygon(point: Point, polygon: Point[]): boolean {
 }
 
 // Fill pattern type
-type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral'
+type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb'
 
 // Calculate distance between two points
 function distance(p1: Point, p2: Point): number {
@@ -1172,6 +1290,11 @@ export default function FillTab() {
               lines = generateSpiralLines(polygon, lineSpacing, inset)
               break
 
+            case 'honeycomb':
+              // Generate honeycomb/hexagonal pattern
+              lines = generateHoneycombLines(polygon, lineSpacing, inset)
+              break
+
             case 'lines':
             default:
               // Standard line hatching
@@ -1576,6 +1699,13 @@ export default function FillTab() {
               >
                 Spiral
               </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'honeycomb' ? 'active' : ''}`}
+                onClick={() => setFillPattern('honeycomb')}
+                title="Hexagonal honeycomb pattern"
+              >
+                Honeycomb
+              </button>
             </div>
           </div>
 
@@ -1659,7 +1789,7 @@ export default function FillTab() {
               </>
             )}
 
-            {(fillPattern === 'lines' || fillPattern === 'wiggle') && (
+            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb') && (
               <div className="fill-control">
                 <label>Inset</label>
               <div className="control-row">
