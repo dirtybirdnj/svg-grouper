@@ -1,24 +1,87 @@
-Create an electron app.
+# SVG Grouper
 
-Use the gellyscape and gellyscope for some UI inspiration.
+A desktop application for preparing SVG files for pen plotters like the AxiDraw. Manage layers, convert fills to stroke patterns, optimize drawing paths, and export production-ready files.
 
-Allow the user to upload an SVG file.
+## Features
 
-Show the list of groups or elements on the left side, and the vector art on the right side / main panel.
+### Layer Management
+- **Drag & drop** SVG import
+- **Layer tree** with visibility toggles and color previews
+- **Group/ungroup** elements by color
+- **Flatten** to reorganize complex layer structures
 
-Allow the user to modify the stroke, stroke width, linecap style of all the layers in a group, or inidividual layers.
+### Fill Pattern Hatching
+Convert solid fills to plotter-friendly stroke patterns:
+- **Lines** - Parallel hatching with adjustable angle and spacing
+- **Cross-hatch** - Dual-direction line patterns
+- **Wiggle** - Wavy parallel lines
+- **Concentric** - Spiral inward from edges
+- **Honeycomb** - Hexagonal grid pattern
+- **Spiral** - Archimedean spiral from center
+- **Gyroid** - Organic minimal surface pattern
 
-Allow the user to specify a line width in mm, ex: 1.0mm or 0.25mm
+All patterns properly handle **paths with holes** (like the letter 'O').
 
-Allow the user to switch between strokes or fills for layers.
+### Path Optimization
+- **TSP-based** path ordering to minimize pen travel
+- **Multi-pass optimization** across multiple shapes
+- **Visual preview** with drawing order gradient
 
-Workflow:
+### Export Tools
+- **Page setup** with paper sizes (Letter, A4, custom)
+- **Margin controls** for print positioning
+- **Playback simulation** to preview pen plotter drawing
+- **Crop tool** with aspect ratio presets
 
-First the user will upload the file
-Next they will re-order the layers as necessary, and optionally modify any color or stroke data that needs fixing.
-After setting the order and colors, the user can either export the SVG or generate fills
-For each group of elements that has fills, we need to generate a pattern of lines dictated by the line widths of the elements of that group.
-After generating linefills (an optional step) the user can then export the data on the last step
-The export process allows the user to specify the paper size (in or mm) as well as margins required on top, right, bottom, left
+## Installation
 
-Good luck happy coding claude!
+```bash
+# Clone the repository
+git clone https://github.com/dirtybirdnj/svg-grouper.git
+cd svg-grouper
+
+# Install dependencies
+npm install
+
+# Run in development mode
+npm run dev
+
+# Build for production
+npm run build
+
+# Package as desktop app
+npm run package        # macOS
+npm run package:win    # Windows
+npm run package:linux  # Linux
+```
+
+## Tech Stack
+
+- **Electron** - Cross-platform desktop app
+- **React 19** - UI framework
+- **TypeScript** - Type safety
+- **Vite** - Fast builds and HMR
+
+## Usage
+
+1. **Import** - Drag an SVG file onto the app or use File > Open
+2. **Organize** - Reorder layers, adjust visibility, group by color
+3. **Fill** - Select layers with fills and convert to stroke patterns
+4. **Optimize** - Order paths to minimize pen travel
+5. **Export** - Set page size and margins, preview, then export
+
+## License
+
+GPL-3.0 - This software is free and open source. Any derivative works must also be open source.
+
+## Contributing
+
+Issues and pull requests welcome! This is a passion project built for the pen plotter community.
+
+## Credits
+
+Built by Mat Gilbert with assistance from Claude (Anthropic).
+
+---
+
+*Made with love for the pen plotter community*

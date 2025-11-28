@@ -1,7 +1,7 @@
 {
   "name": "svg-grouper",
   "version": "1.0.0",
-  "description": "SVG layer grouping and organization tool",
+  "description": "Desktop app for preparing SVG files for pen plotters - layer management, fill pattern hatching, path optimization, and export tools",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -64,9 +64,19 @@
     "type": "git",
     "url": "git+https://github.com/dirtybirdnj/svg-grouper.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "svg",
+    "pen-plotter",
+    "axidraw",
+    "electron",
+    "react",
+    "vector-graphics",
+    "hatching",
+    "fill-patterns",
+    "layer-management"
+  ],
+  "author": "Mat Gilbert",
+  "license": "GPL-3.0",
   "bugs": {
     "url": "https://github.com/dirtybirdnj/svg-grouper/issues"
   },

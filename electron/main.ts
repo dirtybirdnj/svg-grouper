@@ -382,6 +382,19 @@ function createMenu() {
             const { shell } = require('electron')
             await shell.openExternal('https://github.com/dirtybirdnj/svg-grouper')
           }
+        },
+        { type: 'separator' as const },
+        {
+          label: 'About SVG Grouper',
+          click: () => {
+            dialog.showMessageBox(win!, {
+              type: 'info',
+              title: 'About SVG Grouper',
+              message: 'SVG Grouper v1.0.0',
+              detail: 'A desktop app for preparing SVG files for pen plotters.\n\nFeatures:\n• Layer management & organization\n• Fill pattern hatching (lines, wiggle, honeycomb, spiral, gyroid)\n• Path optimization for minimal pen travel\n• Export with page setup and margins\n\nBuilt by Mat Gilbert\nLicense: GPL-3.0\n\nhttps://github.com/dirtybirdnj/svg-grouper',
+              buttons: ['OK']
+            })
+          }
         }
       ]
     }
