@@ -322,6 +322,336 @@ function clipLinesToPolygon(
   return clippedLines
 }
 
+// ============================================================================
+// CONCENTRIC (SNAKE) FILL PATTERN
+// ============================================================================
+
+// Offset a polygon inward by a given distance using vertex normals
+// This is a simplified polygon offset that works well for convex and mildly concave shapes
+function offsetPolygon(polygon: Point[], offsetDistance: number): Point[] {
+  if (polygon.length < 3) return []
+
+  const result: Point[] = []
+  const n = polygon.length
+
+  for (let i = 0; i < n; i++) {
+    const prev = polygon[(i - 1 + n) % n]
+    const curr = polygon[i]
+    const next = polygon[(i + 1) % n]
+
+    // Calculate edge vectors
+    const e1x = curr.x - prev.x
+    const e1y = curr.y - prev.y
+    const e2x = next.x - curr.x
+    const e2y = next.y - curr.y
+
+    // Normalize edge vectors
+    const len1 = Math.sqrt(e1x * e1x + e1y * e1y)
+    const len2 = Math.sqrt(e2x * e2x + e2y * e2y)
+
+    if (len1 < 0.0001 || len2 < 0.0001) continue
+
+    const n1x = -e1y / len1
+    const n1y = e1x / len1
+    const n2x = -e2y / len2
+    const n2y = e2x / len2
+
+    // Average normal (bisector direction)
+    let nx = n1x + n2x
+    let ny = n1y + n2y
+    const nlen = Math.sqrt(nx * nx + ny * ny)
+
+    if (nlen < 0.0001) {
+      // Edges are parallel, use single normal
+      nx = n1x
+      ny = n1y
+    } else {
+      nx /= nlen
+      ny /= nlen
+
+      // Calculate miter length to maintain offset distance
+      const dot = n1x * nx + n1y * ny
+      if (dot > 0.1) {
+        const miterScale = 1 / dot
+        // Limit miter to avoid spikes at sharp angles
+        const limitedScale = Math.min(miterScale, 3)
+        nx *= limitedScale
+        ny *= limitedScale
+      }
+    }
+
+    result.push({
+      x: curr.x + nx * offsetDistance,
+      y: curr.y + ny * offsetDistance
+    })
+  }
+
+  return result
+}
+
+// Check if a polygon is valid (has area and reasonable shape)
+function isValidPolygon(polygon: Point[], minArea: number = 1): boolean {
+  if (polygon.length < 3) return false
+
+  // Calculate signed area using shoelace formula
+  let area = 0
+  for (let i = 0; i < polygon.length; i++) {
+    const j = (i + 1) % polygon.length
+    area += polygon[i].x * polygon[j].y
+    area -= polygon[j].x * polygon[i].y
+  }
+  area = Math.abs(area) / 2
+
+  return area >= minArea
+}
+
+// Generate concentric fill lines (snake pattern from outside in)
+function generateConcentricLines(
+  polygon: Point[],
+  spacing: number,
+  connectLoops: boolean = true
+): HatchLine[] {
+  const lines: HatchLine[] = []
+  if (polygon.length < 3) return lines
+
+  const loops: Point[][] = []
+  let currentPolygon = [...polygon]
+
+  // Generate inward offset polygons until we can't anymore
+  while (isValidPolygon(currentPolygon, spacing * spacing)) {
+    loops.push([...currentPolygon])
+    currentPolygon = offsetPolygon(currentPolygon, -spacing)
+
+    // Safety limit
+    if (loops.length > 1000) break
+  }
+
+  // Convert polygon loops to lines
+  for (let loopIdx = 0; loopIdx < loops.length; loopIdx++) {
+    const loop = loops[loopIdx]
+
+    // Create lines for this loop
+    for (let i = 0; i < loop.length; i++) {
+      const j = (i + 1) % loop.length
+      lines.push({
+        x1: loop[i].x,
+        y1: loop[i].y,
+        x2: loop[j].x,
+        y2: loop[j].y
+      })
+    }
+
+    // Connect to next inner loop if enabled
+    if (connectLoops && loopIdx < loops.length - 1) {
+      const nextLoop = loops[loopIdx + 1]
+      // Find closest point on next loop to current loop's last point
+      const lastPoint = loop[loop.length - 1]
+      let closestIdx = 0
+      let closestDist = Infinity
+
+      for (let i = 0; i < nextLoop.length; i++) {
+        const d = Math.sqrt(
+          Math.pow(nextLoop[i].x - lastPoint.x, 2) +
+          Math.pow(nextLoop[i].y - lastPoint.y, 2)
+        )
+        if (d < closestDist) {
+          closestDist = d
+          closestIdx = i
+        }
+      }
+
+      // Add connecting line
+      lines.push({
+        x1: lastPoint.x,
+        y1: lastPoint.y,
+        x2: nextLoop[closestIdx].x,
+        y2: nextLoop[closestIdx].y
+      })
+    }
+  }
+
+  return lines
+}
+
+// ============================================================================
+// WIGGLE/WAVE FILL PATTERN
+// ============================================================================
+
+// Generate a single wiggle/wave line
+function generateWiggleLine(
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  amplitude: number,
+  frequency: number
+): Point[] {
+  const points: Point[] = []
+  const dx = endX - startX
+  const dy = endY - startY
+  const length = Math.sqrt(dx * dx + dy * dy)
+
+  if (length < 0.1) return [{ x: startX, y: startY }]
+
+  // Direction along the line
+  const dirX = dx / length
+  const dirY = dy / length
+
+  // Perpendicular direction (for wave displacement)
+  const perpX = -dirY
+  const perpY = dirX
+
+  // Number of points based on length and frequency
+  const numPoints = Math.max(2, Math.ceil(length * frequency / 10))
+
+  for (let i = 0; i <= numPoints; i++) {
+    const t = i / numPoints
+    const baseX = startX + dx * t
+    const baseY = startY + dy * t
+
+    // Sine wave displacement
+    const wave = Math.sin(t * Math.PI * 2 * frequency) * amplitude
+
+    points.push({
+      x: baseX + perpX * wave,
+      y: baseY + perpY * wave
+    })
+  }
+
+  return points
+}
+
+// Generate wiggle fill pattern (wavy parallel lines)
+function generateWiggleLines(
+  polygon: Point[],
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number,
+  angleDegrees: number,
+  amplitude: number,
+  frequency: number,
+  inset: number = 0
+): HatchLine[] {
+  // First generate straight hatch lines
+  const straightLines = generateGlobalHatchLines(globalBbox, spacing, angleDegrees)
+  const clippedLines = clipLinesToPolygon(straightLines, polygon, inset)
+
+  // Convert each straight line to a wiggle
+  const wiggleLines: HatchLine[] = []
+
+  for (const line of clippedLines) {
+    const wigglePoints = generateWiggleLine(
+      line.x1, line.y1,
+      line.x2, line.y2,
+      amplitude,
+      frequency
+    )
+
+    // Convert points to line segments
+    for (let i = 0; i < wigglePoints.length - 1; i++) {
+      wiggleLines.push({
+        x1: wigglePoints[i].x,
+        y1: wigglePoints[i].y,
+        x2: wigglePoints[i + 1].x,
+        y2: wigglePoints[i + 1].y
+      })
+    }
+  }
+
+  return wiggleLines
+}
+
+// ============================================================================
+// SPIRAL FILL PATTERN
+// ============================================================================
+
+// Generate an Archimedean spiral from center outward
+function generateSpiralLines(
+  polygon: Point[],
+  spacing: number,
+  inset: number = 0
+): HatchLine[] {
+  if (polygon.length < 3) return []
+
+  // Apply inset first
+  let workingPolygon = polygon
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(polygon, -inset)
+    if (!isValidPolygon(workingPolygon)) return []
+  }
+
+  // Find bounding box and center
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const maxRadius = Math.sqrt(
+    Math.pow((maxX - minX) / 2, 2) +
+    Math.pow((maxY - minY) / 2, 2)
+  ) * 1.5
+
+  // Generate spiral points
+  const spiralPoints: Point[] = []
+  const angleStep = 0.1 // radians per step
+  const radiusPerTurn = spacing
+  let angle = 0
+
+  while (true) {
+    const radius = (angle / (2 * Math.PI)) * radiusPerTurn
+    if (radius > maxRadius) break
+
+    spiralPoints.push({
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle)
+    })
+
+    angle += angleStep
+
+    // Safety limit
+    if (spiralPoints.length > 10000) break
+  }
+
+  // Convert to lines and clip to polygon
+  const lines: HatchLine[] = []
+  for (let i = 0; i < spiralPoints.length - 1; i++) {
+    const p1 = spiralPoints[i]
+    const p2 = spiralPoints[i + 1]
+
+    // Simple point-in-polygon test for both endpoints
+    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
+      lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+    }
+  }
+
+  return lines
+}
+
+// Point in polygon test using ray casting
+function pointInPolygon(point: Point, polygon: Point[]): boolean {
+  let inside = false
+  const n = polygon.length
+
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y
+    const xj = polygon[j].x, yj = polygon[j].y
+
+    if (((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi)) {
+      inside = !inside
+    }
+  }
+
+  return inside
+}
+
+// Fill pattern type
+type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral'
+
 // Calculate distance between two points
 function distance(p1: Point, p2: Point): number {
   const dx = p2.x - p1.x
@@ -541,6 +871,9 @@ export default function FillTab() {
   const [retainStrokes, setRetainStrokes] = useState(true)
   const [penWidth, setPenWidth] = useState(0.5) // in mm, converted to px for display
   const [showHatchPreview, setShowHatchPreview] = useState(false)
+  const [fillPattern, setFillPattern] = useState<FillPatternType>('lines')
+  const [wiggleAmplitude, setWiggleAmplitude] = useState(3)
+  const [wiggleFrequency, setWiggleFrequency] = useState(2)
   const [showOrderVisualization, setShowOrderVisualization] = useState(false)
   const [isAnimating, setIsAnimating] = useState(false)
   const [animationProgress, setAnimationProgress] = useState(0)
@@ -772,7 +1105,7 @@ export default function FillTab() {
       return []
     }
 
-    // Generate global hatch lines that cover all shapes - aligned to origin for consistency
+    // Generate global hatch lines for line-based patterns
     const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
     const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
 
@@ -780,21 +1113,42 @@ export default function FillTab() {
 
     fillPaths.forEach((path, index) => {
       try {
-        console.log(`Generating hatch for path ${index} (${path.id}): element connected=${path.element.isConnected}`)
+        console.log(`Generating ${fillPattern} fill for path ${index} (${path.id}): element connected=${path.element.isConnected}`)
         const polygon = getPolygonPoints(path.element)
         console.log(`  -> polygon points: ${polygon.length}`)
 
         if (polygon.length >= 3) {
-          // Clip global lines to this polygon
-          let lines = clipLinesToPolygon(globalLines, polygon, inset)
-          console.log(`  -> clipped lines: ${lines.length}`)
+          let lines: HatchLine[] = []
 
-          // Add cross-hatch if enabled
-          if (crossHatch) {
-            const crossLines = clipLinesToPolygon(globalCrossLines, polygon, inset)
-            lines = [...lines, ...crossLines]
+          switch (fillPattern) {
+            case 'concentric':
+              // Generate concentric (snake) pattern
+              lines = generateConcentricLines(polygon, lineSpacing, true)
+              break
+
+            case 'wiggle':
+              // Generate wiggle/wave pattern
+              lines = generateWiggleLines(polygon, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              break
+
+            case 'spiral':
+              // Generate spiral pattern
+              lines = generateSpiralLines(polygon, lineSpacing, inset)
+              break
+
+            case 'lines':
+            default:
+              // Standard line hatching
+              lines = clipLinesToPolygon(globalLines, polygon, inset)
+              // Add cross-hatch if enabled
+              if (crossHatch) {
+                const crossLines = clipLinesToPolygon(globalCrossLines, polygon, inset)
+                lines = [...lines, ...crossLines]
+              }
+              break
           }
 
+          console.log(`  -> generated ${lines.length} lines`)
           results.push({ pathInfo: path, lines, polygon })
         } else {
           console.log(`  -> skipping, not enough polygon points`)
@@ -804,9 +1158,9 @@ export default function FillTab() {
       }
     })
 
-    console.log(`hatchedPaths result: ${results.length} paths with hatching`)
+    console.log(`hatchedPaths result: ${results.length} paths with ${fillPattern} fill`)
     return results
-  }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset])
+  }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency])
 
   // Compute ordered lines using multi-pass optimization:
   // 1. Order shapes by proximity (starting from top-left)
@@ -1156,6 +1510,40 @@ export default function FillTab() {
           </div>
 
           <div className="fill-section">
+            <h3>Pattern Type</h3>
+            <div className="pattern-selector">
+              <button
+                className={`pattern-btn ${fillPattern === 'lines' ? 'active' : ''}`}
+                onClick={() => setFillPattern('lines')}
+                title="Parallel lines at an angle"
+              >
+                Lines
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'concentric' ? 'active' : ''}`}
+                onClick={() => setFillPattern('concentric')}
+                title="Concentric loops from outside in (snake)"
+              >
+                Concentric
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'wiggle' ? 'active' : ''}`}
+                onClick={() => setFillPattern('wiggle')}
+                title="Wavy/wiggle lines"
+              >
+                Wiggle
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'spiral' ? 'active' : ''}`}
+                onClick={() => setFillPattern('spiral')}
+                title="Spiral from center outward"
+              >
+                Spiral
+              </button>
+            </div>
+          </div>
+
+          <div className="fill-section">
             <h3>Pattern Settings</h3>
 
             <div className="fill-control">
@@ -1188,19 +1576,56 @@ export default function FillTab() {
               </div>
             </div>
 
-            <div className="fill-control checkbox">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={crossHatch}
-                  onChange={(e) => setCrossHatch(e.target.checked)}
-                />
-                Cross-hatch
-              </label>
-            </div>
+            {fillPattern === 'lines' && (
+              <div className="fill-control checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={crossHatch}
+                    onChange={(e) => setCrossHatch(e.target.checked)}
+                  />
+                  Cross-hatch
+                </label>
+              </div>
+            )}
 
-            <div className="fill-control">
-              <label>Inset</label>
+            {fillPattern === 'wiggle' && (
+              <>
+                <div className="fill-control">
+                  <label>Amplitude</label>
+                  <div className="control-row">
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      value={wiggleAmplitude}
+                      onChange={(e) => setWiggleAmplitude(Number(e.target.value))}
+                      className="fill-slider"
+                    />
+                    <span className="control-value">{wiggleAmplitude}px</span>
+                  </div>
+                </div>
+                <div className="fill-control">
+                  <label>Frequency</label>
+                  <div className="control-row">
+                    <input
+                      type="range"
+                      min="0.5"
+                      max="5"
+                      step="0.5"
+                      value={wiggleFrequency}
+                      onChange={(e) => setWiggleFrequency(Number(e.target.value))}
+                      className="fill-slider"
+                    />
+                    <span className="control-value">{wiggleFrequency}</span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {(fillPattern === 'lines' || fillPattern === 'wiggle') && (
+              <div className="fill-control">
+                <label>Inset</label>
               <div className="control-row">
                 <input
                   type="range"
@@ -1213,6 +1638,7 @@ export default function FillTab() {
                 <span className="control-value">{inset}px</span>
               </div>
             </div>
+            )}
 
             <div className="fill-control">
               <label>Pen Width</label>
