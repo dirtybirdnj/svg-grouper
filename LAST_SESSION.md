@@ -81,6 +81,21 @@ Extensive debug logging in:
 
 ---
 
+## Bugs Found at End of Session
+
+### 1. Flatten After Crop - Lovecraft Demon Bug (Critical)
+After performing a crop, if you flatten the document, it corrupts the geometry into bizarre shapes. Likely cause: element references are stale after crop replaces SVG content. Need to ensure flatten uses fresh element references from the new SVG.
+
+### 2. Sort by Shape Types - Feature Enhancement Needed
+The "sort by shape types" feature needs to work in two modes:
+- **Group selected**: Sort children within the selected group
+- **Multiple nodes selected**: Sort the selected nodes within their parent group
+
+### 3. Export Tab - Zoom > 120% Causes Overflow
+When zooming past ~120% in the Export tab page preview, vector data spills over the displayed page boundary. May be cosmetic only but needs investigation.
+
+---
+
 ## Priority for Next Session: Path Simplification
 
 ### The Problem
