@@ -129,19 +129,24 @@ ipcMain.handle('crop-svg', async (_event, args: { svg: string; x: number; y: num
     try {
       const { svg, x, y, width, height } = args
 
+      console.log(`[crop-svg] === CROP OPERATION STARTED ===`)
+
       // Validate inputs
       if (!svg || typeof svg !== 'string') {
+        console.log(`[crop-svg] ERROR: Invalid SVG input`)
         reject(new Error('Invalid SVG input'))
         return
       }
 
       if (typeof x !== 'number' || typeof y !== 'number' || typeof width !== 'number' || typeof height !== 'number') {
+        console.log(`[crop-svg] ERROR: Invalid crop dimensions`)
         reject(new Error('Invalid crop dimensions'))
         return
       }
 
-      console.log(`[crop-svg] Processing SVG of size: ${(svg.length / 1024).toFixed(2)} KB`)
-      console.log(`[crop-svg] Crop bounds: x=${x}, y=${y}, w=${width}, h=${height}`)
+      console.log(`[crop-svg] Input SVG size: ${(svg.length / 1024).toFixed(2)} KB`)
+      console.log(`[crop-svg] Crop bounds: x=${x.toFixed(2)}, y=${y.toFixed(2)}, w=${width.toFixed(2)}, h=${height.toFixed(2)}`)
+      console.log(`[crop-svg] Input SVG first 200 chars: ${svg.substring(0, 200)}`)
 
       // Path to Python script (in development vs production)
       const scriptPath = app.isPackaged
@@ -149,9 +154,12 @@ ipcMain.handle('crop-svg', async (_event, args: { svg: string; x: number; y: num
         : path.join(__dirname, '..', 'scripts', 'crop_svg.py')
 
       console.log(`[crop-svg] Script path: ${scriptPath}`)
+      console.log(`[crop-svg] Script exists: ${fs.existsSync(scriptPath)}`)
 
       // Spawn Python process with vpype
       const pythonArgs = [scriptPath, x.toString(), y.toString(), width.toString(), height.toString()]
+      console.log(`[crop-svg] Python command: /opt/homebrew/bin/python3 ${pythonArgs.join(' ')}`)
+
       const python = spawn('/opt/homebrew/bin/python3', pythonArgs, {
         maxBuffer: 50 * 1024 * 1024  // 50MB buffer for large SVGs
       })
@@ -161,41 +169,53 @@ ipcMain.handle('crop-svg', async (_event, args: { svg: string; x: number; y: num
 
       // Collect stdout
       python.stdout.on('data', (data) => {
-        output += data.toString()
+        const chunk = data.toString()
+        output += chunk
+        console.log(`[crop-svg] stdout chunk size: ${chunk.length}`)
       })
 
       // Collect stderr
       python.stderr.on('data', (data) => {
         errorOutput += data.toString()
-        console.error(`[crop-svg] ${data.toString()}`)
+        console.error(`[crop-svg] stderr: ${data.toString()}`)
       })
 
       // Handle process completion
       python.on('close', (code) => {
         console.log(`[crop-svg] Process exited with code ${code}`)
+        console.log(`[crop-svg] Total stdout size: ${output.length}`)
+        console.log(`[crop-svg] Total stderr size: ${errorOutput.length}`)
+
         if (code !== 0) {
+          console.log(`[crop-svg] ERROR: vpype failed`)
           reject(new Error(`vpype failed with code ${code}: ${errorOutput}`))
         } else {
-          console.log(`[crop-svg] Output size: ${(output.length / 1024).toFixed(2)} KB`)
+          console.log(`[crop-svg] Output SVG size: ${(output.length / 1024).toFixed(2)} KB`)
+          console.log(`[crop-svg] Output first 500 chars: ${output.substring(0, 500)}`)
+          console.log(`[crop-svg] === CROP OPERATION COMPLETE ===`)
           resolve(output)
         }
       })
 
       // Handle process errors
       python.on('error', (err) => {
-        console.error(`[crop-svg] Process error:`, err)
+        console.error(`[crop-svg] Process spawn error:`, err)
         reject(new Error(`Failed to start Python: ${err.message}`))
       })
 
       // Write SVG to stdin
       try {
+        console.log(`[crop-svg] Writing ${svg.length} bytes to stdin...`)
         python.stdin.write(svg, (err) => {
           if (err) {
             console.error(`[crop-svg] Error writing to stdin:`, err)
             reject(new Error(`Failed to write SVG to stdin: ${err.message}`))
+          } else {
+            console.log(`[crop-svg] Successfully wrote to stdin`)
           }
         })
         python.stdin.end()
+        console.log(`[crop-svg] stdin.end() called`)
       } catch (writeError) {
         console.error(`[crop-svg] Exception writing to stdin:`, writeError)
         reject(new Error(`Exception writing to stdin: ${writeError instanceof Error ? writeError.message : 'Unknown error'}`))

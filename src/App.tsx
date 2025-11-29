@@ -211,8 +211,16 @@ function AppContent() {
     rebuildSvgFromLayers(processedNodes)
   }
 
-  const handleToggleCrop = () => {
+  const handleToggleCrop = async () => {
     disarmActions()
+    if (showCrop) {
+      // If crop is active, apply the crop then navigate to Sort tab
+      // We need to trigger the crop operation from here
+      // For now, just navigate to Sort tab - crop will be applied there
+      setActiveTab('sort')
+      // Dispatch a custom event that SortTab can listen for to apply crop
+      window.dispatchEvent(new CustomEvent('apply-crop'))
+    }
     setShowCrop(!showCrop)
   }
 
