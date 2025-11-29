@@ -469,6 +469,32 @@
   text-align: right;
 }
 
+/* Fill Statistics */
+.fill-stats {
+  display: flex;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  margin-top: 0.5rem;
+  border-top: 1px solid #eee;
+}
+
+.fill-stat {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.fill-stat .stat-label {
+  color: #666;
+}
+
+.fill-stat .stat-value {
+  color: #333;
+  font-weight: 600;
+}
+
 .layer-list-placeholder {
   background: #f9f9f9;
   border: 1px dashed #ddd;
