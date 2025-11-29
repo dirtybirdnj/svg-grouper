@@ -7,6 +7,7 @@ import LoadingOverlay from '../LoadingOverlay'
 import { SVGNode } from '../../types/svg'
 import { parseSVGProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
+import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
 import './SortTab.css'
 
 export default function SortTab() {
@@ -38,6 +39,7 @@ export default function SortTab() {
     cropSize,
     setCropSize,
     statusMessage,
+    setStatusMessage,
     rebuildSvgFromLayers,
     skipNextParse,
   } = useAppContext()
@@ -52,6 +54,11 @@ export default function SortTab() {
   const [isHighlightPersistent, setIsHighlightPersistent] = useState(false)
   const [showPointMarkers, setShowPointMarkers] = useState<'none' | 'start' | 'end' | 'all'>('none')
   const [pointMarkerCoords, setPointMarkerCoords] = useState<{ x: number; y: number }[]>([])
+
+  // Simplification state
+  const [simplifyTolerance] = useState<number>(SIMPLIFY_PRESETS.moderate)
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_simplifyResult, setSimplifyResult] = useState<{ before: number; after: number } | null>(null)
 
   const handleFileLoad = useCallback((content: string, name: string) => {
     setSvgContent(content)
@@ -1308,6 +1315,95 @@ export default function SortTab() {
     }
   }
 
+  // Check if simplification is possible
+  const canSimplify = (): boolean => {
+    if (selectedNodeIds.size === 0) return false
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    // Check if any selected node is a path or group with paths
+    for (const id of selectedNodeIds) {
+      const node = findNode(layerNodes, id)
+      if (node) {
+        if (!node.isGroup && node.element.tagName.toLowerCase() === 'path') {
+          return true
+        }
+        if (node.isGroup && node.element.querySelectorAll('path').length > 0) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  // Handle simplify paths
+  const handleSimplifyPaths = () => {
+    if (!canSimplify()) return
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    let totalBefore = 0
+    let totalAfter = 0
+
+    for (const id of selectedNodeIds) {
+      const node = findNode(layerNodes, id)
+      if (!node) continue
+
+      if (!node.isGroup && node.element.tagName.toLowerCase() === 'path') {
+        // Single path
+        const before = countPathPoints(node.element)
+        const result = simplifyPathElement(node.element, {
+          tolerance: simplifyTolerance,
+          highQuality: true
+        })
+
+        if (result) {
+          totalBefore += before
+          totalAfter += result.simplifiedPoints
+          node.element.setAttribute('d', result.pathData)
+        }
+      } else if (node.isGroup) {
+        // Group - simplify all paths within
+        const paths = node.element.querySelectorAll('path')
+        for (const path of paths) {
+          const before = countPathPoints(path)
+          const result = simplifyPathElement(path, {
+            tolerance: simplifyTolerance,
+            highQuality: true
+          })
+
+          if (result) {
+            totalBefore += before
+            totalAfter += result.simplifiedPoints
+            path.setAttribute('d', result.pathData)
+          }
+        }
+      }
+    }
+
+    if (totalBefore > 0) {
+      setSimplifyResult({ before: totalBefore, after: totalAfter })
+      rebuildSvgFromLayers(layerNodes)
+
+      const reduction = Math.round((1 - totalAfter / totalBefore) * 100)
+      setStatusMessage(`Simplified: ${totalBefore} → ${totalAfter} points (${reduction}% reduction)`)
+    }
+  }
+
   const canFlatten = (): boolean => {
     if (selectedNodeIds.size !== 1) return false
 
@@ -1682,6 +1778,14 @@ export default function SortTab() {
               }
             >
               G
+            </button>
+            <button
+              className="action-button"
+              onClick={handleSimplifyPaths}
+              disabled={!canSimplify()}
+              title={`Simplify Paths - Reduce points (tolerance: ${simplifyTolerance})`}
+            >
+              ✂
             </button>
 {/* Visibility and delete buttons hidden - use keyboard shortcuts V and D instead */}
           </div>
