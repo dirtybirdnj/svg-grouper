@@ -112,20 +112,26 @@ function AppContent() {
         if (node.customMarkup) {
           result.push(node)
         } else if (node.isGroup && node.children.length > 0) {
+          // Recursively process children first
+          const ungroupedChildren = ungroupAll(node.children)
+
+          // Try to handle DOM operations if element has a parent
           const parent = node.element.parentElement
           if (parent) {
-            const ungroupedChildren = ungroupAll(node.children)
-
             for (const child of ungroupedChildren) {
               // Only insert into DOM if child doesn't have customMarkup
               // (customMarkup nodes are rendered via rebuildSvgFromLayers)
               if (!child.customMarkup) {
                 parent.insertBefore(child.element, node.element)
               }
-              result.push(child)
             }
-
             node.element.remove()
+          }
+
+          // Always add children to result, even if parent was null
+          // (this handles groups created programmatically like fill groups)
+          for (const child of ungroupedChildren) {
+            result.push(child)
           }
         } else if (!node.isGroup) {
           result.push(node)
