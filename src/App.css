@@ -590,8 +590,107 @@
 .status-bar-colors {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 0.5rem;
   flex-wrap: nowrap;
+}
+
+.color-stat-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: monospace;
+  font-size: 0.7rem;
+  color: #666;
+}
+
+.color-stat-counts {
+  white-space: nowrap;
+}
+
+.status-path-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-family: monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.status-path-info:hover {
+  background: rgba(74, 144, 226, 0.1);
+}
+
+.status-path-info.highlight-active {
+  background: rgba(74, 144, 226, 0.2);
+  outline: 1px solid #4a90e2;
+}
+
+.path-info-item {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: #555;
+}
+
+.path-info-item.clickable {
+  cursor: pointer;
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.path-info-item.clickable:hover {
+  background: rgba(231, 76, 60, 0.15);
+}
+
+.path-info-item.clickable.active {
+  background: rgba(231, 76, 60, 0.25);
+  color: #c0392b;
+}
+
+.path-info-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.status-group-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: monospace;
+  font-size: 0.75rem;
+}
+
+.group-info-summary {
+  color: #333;
+  font-weight: 500;
+  padding-right: 0.5rem;
+  border-right: 1px solid #ddd;
+}
+
+.group-color-item {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.group-color-counts {
+  display: flex;
+  gap: 0.15rem;
+  font-size: 0.7rem;
+}
+
+.count-fill {
+  color: #27ae60;
+}
+
+.count-path {
+  color: #9b59b6;
 }
 
 .status-bar .status-filename {
