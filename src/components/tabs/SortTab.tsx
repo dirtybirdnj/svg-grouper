@@ -48,6 +48,10 @@ export default function SortTab() {
   const [splitArmed, setSplitArmed] = useState(false)
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const [isIsolated, setIsIsolated] = useState(false)
+  const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
+  const [isHighlightPersistent, setIsHighlightPersistent] = useState(false)
+  const [showPointMarkers, setShowPointMarkers] = useState<'none' | 'start' | 'end' | 'all'>('none')
+  const [pointMarkerCoords, setPointMarkerCoords] = useState<{ x: number; y: number }[]>([])
 
   const handleFileLoad = useCallback((content: string, name: string) => {
     setSvgContent(content)
@@ -121,39 +125,658 @@ export default function SortTab() {
     setSplitArmed(false)
   }, [])
 
-  const collectAllColors = useCallback((nodes: SVGNode[]): string[] => {
-    const colors = new Set<string>()
+  // Helper function to count points in an element
+  const countElementPoints = (element: Element): number => {
+    const tagName = element.tagName.toLowerCase()
+    if (tagName === 'path') {
+      const d = element.getAttribute('d') || ''
+      const coordMatches = d.match(/(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)/g)
+      return coordMatches ? coordMatches.length : 0
+    } else if (tagName === 'line') {
+      return 2
+    } else if (tagName === 'polyline' || tagName === 'polygon') {
+      const points = element.getAttribute('points') || ''
+      const coordMatches = points.match(/(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)/g)
+      return coordMatches ? coordMatches.length : 0
+    } else if (tagName === 'rect') {
+      return 4
+    } else if (tagName === 'circle' || tagName === 'ellipse') {
+      return 1
+    }
+    return 0
+  }
 
-    const extractFromElement = (element: Element) => {
-      const style = element.getAttribute('style')
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') colors.add(fillMatch[1].trim())
-        if (strokeMatch && strokeMatch[1] !== 'none') colors.add(strokeMatch[1].trim())
-      }
+  const collectAllColorsWithCounts = useCallback((nodes: SVGNode[]): Map<string, { paths: number; points: number }> => {
+    const colorStats = new Map<string, { paths: number; points: number }>()
 
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-
-      if (fill && fill !== 'none' && fill !== 'transparent') colors.add(fill)
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') colors.add(stroke)
+    const addColorStat = (color: string, pointCount: number) => {
+      const normalized = normalizeColor(color)
+      const existing = colorStats.get(normalized) || { paths: 0, points: 0 }
+      colorStats.set(normalized, {
+        paths: existing.paths + 1,
+        points: existing.points + pointCount
+      })
     }
 
     const traverse = (node: SVGNode) => {
-      // Check for fillColor from line fill (customMarkup nodes)
-      if (node.fillColor) {
-        colors.add(node.fillColor)
+      if (!node.isGroup) {
+        const element = node.element
+        const style = element.getAttribute('style') || ''
+        let color = ''
+
+        // Check for fillColor from line fill (customMarkup nodes)
+        if (node.fillColor) {
+          color = node.fillColor
+        } else {
+          // Get color from fill or stroke
+          const fill = element.getAttribute('fill')
+          const stroke = element.getAttribute('stroke')
+
+          if (style.includes('fill:')) {
+            const match = style.match(/fill:\s*([^;]+)/)
+            if (match && match[1] !== 'none') color = match[1].trim()
+          }
+          if (!color && style.includes('stroke:')) {
+            const match = style.match(/stroke:\s*([^;]+)/)
+            if (match && match[1] !== 'none') color = match[1].trim()
+          }
+          if (!color && fill && fill !== 'none' && fill !== 'transparent') color = fill
+          if (!color && stroke && stroke !== 'none' && stroke !== 'transparent') color = stroke
+        }
+
+        if (color) {
+          const pointCount = countElementPoints(element)
+          addColorStat(color, pointCount)
+        }
       }
-      extractFromElement(node.element)
       node.children.forEach(traverse)
     }
 
     nodes.forEach(traverse)
-    return Array.from(colors)
+    return colorStats
   }, [])
 
-  const documentColors = collectAllColors(layerNodes)
+  const documentColorStats = collectAllColorsWithCounts(layerNodes)
+  const documentColors = Array.from(documentColorStats.keys())
+
+  // Extract path info for the selected node (when single path is selected)
+  const getSelectedPathInfo = useCallback(() => {
+    if (selectedNodeIds.size !== 1) return null
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const findNode = (nodes: SVGNode[]): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === selectedId) return node
+        const found = findNode(node.children)
+        if (found) return found
+      }
+      return null
+    }
+
+    const node = findNode(layerNodes)
+    if (!node || node.isGroup) return null
+
+    const element = node.element
+    const tagName = element.tagName.toLowerCase()
+
+    // Get color (fill or stroke)
+    let color = element.getAttribute('fill') || element.getAttribute('stroke') || ''
+    const style = element.getAttribute('style') || ''
+    if (style.includes('fill:')) {
+      const match = style.match(/fill:\s*([^;]+)/)
+      if (match) color = match[1].trim()
+    }
+    if (!color || color === 'none') {
+      if (style.includes('stroke:')) {
+        const match = style.match(/stroke:\s*([^;]+)/)
+        if (match) color = match[1].trim()
+      }
+      if (!color || color === 'none') {
+        color = element.getAttribute('stroke') || ''
+      }
+    }
+
+    // Get stroke width
+    let strokeWidth = element.getAttribute('stroke-width') || ''
+    if (style.includes('stroke-width:')) {
+      const match = style.match(/stroke-width:\s*([^;]+)/)
+      if (match) strokeWidth = match[1].trim()
+    }
+
+    // Count points and get start/end positions from path data
+    let pointCount = 0
+    let startPos = { x: 0, y: 0 }
+    let endPos = { x: 0, y: 0 }
+    const allPoints: { x: number; y: number }[] = []
+
+    const parseCoordPair = (match: string): { x: number; y: number } | null => {
+      const parsed = match.match(/(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)/)
+      if (parsed) {
+        return { x: parseFloat(parsed[1]), y: parseFloat(parsed[2]) }
+      }
+      return null
+    }
+
+    if (tagName === 'path') {
+      const d = element.getAttribute('d') || ''
+      // Match all coordinate pairs in path data
+      const coordMatches = d.match(/(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)/g)
+      if (coordMatches) {
+        pointCount = coordMatches.length
+        coordMatches.forEach(match => {
+          const pt = parseCoordPair(match)
+          if (pt) allPoints.push(pt)
+        })
+        if (allPoints.length > 0) {
+          startPos = allPoints[0]
+          endPos = allPoints[allPoints.length - 1]
+        }
+      }
+    } else if (tagName === 'line') {
+      pointCount = 2
+      startPos = {
+        x: parseFloat(element.getAttribute('x1') || '0'),
+        y: parseFloat(element.getAttribute('y1') || '0')
+      }
+      endPos = {
+        x: parseFloat(element.getAttribute('x2') || '0'),
+        y: parseFloat(element.getAttribute('y2') || '0')
+      }
+      allPoints.push(startPos, endPos)
+    } else if (tagName === 'polyline' || tagName === 'polygon') {
+      const points = element.getAttribute('points') || ''
+      const coordMatches = points.match(/(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)/g)
+      if (coordMatches) {
+        pointCount = coordMatches.length
+        coordMatches.forEach(match => {
+          const pt = parseCoordPair(match)
+          if (pt) allPoints.push(pt)
+        })
+        if (allPoints.length > 0) {
+          startPos = allPoints[0]
+          endPos = allPoints[allPoints.length - 1]
+        }
+      }
+    } else if (tagName === 'rect') {
+      pointCount = 4
+      const x = parseFloat(element.getAttribute('x') || '0')
+      const y = parseFloat(element.getAttribute('y') || '0')
+      const w = parseFloat(element.getAttribute('width') || '0')
+      const h = parseFloat(element.getAttribute('height') || '0')
+      startPos = { x, y }
+      endPos = { x, y }
+      allPoints.push({ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h })
+    } else if (tagName === 'circle' || tagName === 'ellipse') {
+      pointCount = 1
+      const cx = parseFloat(element.getAttribute('cx') || '0')
+      const cy = parseFloat(element.getAttribute('cy') || '0')
+      startPos = { x: cx, y: cy }
+      endPos = { x: cx, y: cy }
+      allPoints.push(startPos)
+    }
+
+    return {
+      id: selectedId,
+      color: color && color !== 'none' ? normalizeColor(color) : null,
+      strokeWidth: strokeWidth || null,
+      pointCount,
+      startPos,
+      endPos,
+      allPoints
+    }
+  }, [selectedNodeIds, layerNodes])
+
+  const selectedPathInfo = getSelectedPathInfo()
+
+  // Extract group info for the selected node (when single group is selected)
+  const getSelectedGroupInfo = useCallback(() => {
+    if (selectedNodeIds.size !== 1) return null
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const findNode = (nodes: SVGNode[]): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === selectedId) return node
+        const found = findNode(node.children)
+        if (found) return found
+      }
+      return null
+    }
+
+    const node = findNode(layerNodes)
+    if (!node || !node.isGroup) return null
+
+    // Count fills and paths, and collect colors
+    let fillCount = 0
+    let pathCount = 0
+    const colorCounts: Record<string, { fill: number; path: number }> = {}
+
+    const countElements = (n: SVGNode) => {
+      if (!n.isGroup) {
+        const element = n.element
+        const fill = element.getAttribute('fill')
+        const stroke = element.getAttribute('stroke')
+        const style = element.getAttribute('style') || ''
+
+        let hasFill = !!(fill && fill !== 'none' && fill !== 'transparent')
+        let hasStroke = !!(stroke && stroke !== 'none' && stroke !== 'transparent')
+
+        // Check style
+        if (style.includes('fill:')) {
+          const match = style.match(/fill:\s*([^;]+)/)
+          if (match && match[1].trim() !== 'none' && match[1].trim() !== 'transparent') {
+            hasFill = true
+          }
+        }
+        if (style.includes('stroke:')) {
+          const match = style.match(/stroke:\s*([^;]+)/)
+          if (match && match[1].trim() !== 'none' && match[1].trim() !== 'transparent') {
+            hasStroke = true
+          }
+        }
+
+        // Also check for customMarkup (line fill)
+        if (n.customMarkup) {
+          hasFill = true
+        }
+
+        // Get color for this element
+        let color = ''
+        if (hasFill) {
+          color = fill || ''
+          if (style.includes('fill:')) {
+            const match = style.match(/fill:\s*([^;]+)/)
+            if (match) color = match[1].trim()
+          }
+          if (n.fillColor) color = n.fillColor
+        } else if (hasStroke) {
+          color = stroke || ''
+          if (style.includes('stroke:')) {
+            const match = style.match(/stroke:\s*([^;]+)/)
+            if (match) color = match[1].trim()
+          }
+        }
+
+        if (color && color !== 'none' && color !== 'transparent') {
+          const normalizedColor = normalizeColor(color)
+          if (!colorCounts[normalizedColor]) {
+            colorCounts[normalizedColor] = { fill: 0, path: 0 }
+          }
+          if (hasFill) {
+            fillCount++
+            colorCounts[normalizedColor].fill++
+          } else {
+            pathCount++
+            colorCounts[normalizedColor].path++
+          }
+        } else {
+          // Element without clear fill/stroke
+          if (hasFill) fillCount++
+          else pathCount++
+        }
+      }
+      n.children.forEach(countElements)
+    }
+
+    node.children.forEach(countElements)
+
+    return {
+      fillCount,
+      pathCount,
+      colorCounts
+    }
+  }, [selectedNodeIds, layerNodes])
+
+  const selectedGroupInfo = getSelectedGroupInfo()
+
+  // Clear highlight and point markers when selection changes
+  useEffect(() => {
+    setHighlightedPathId(null)
+    setIsHighlightPersistent(false)
+    setShowPointMarkers('none')
+    setPointMarkerCoords([])
+  }, [selectedNodeIds])
+
+  // Apply/remove highlight effect on the SVG element
+  useEffect(() => {
+    if (!highlightedPathId) return
+
+    // Find the element in the DOM by ID
+    const element = document.getElementById(highlightedPathId)
+    if (!element) return
+
+    // Store original styles
+    const originalOutline = element.style.outline
+    const originalOutlineOffset = element.style.outlineOffset
+
+    // Apply highlight
+    element.style.outline = '3px solid #4a90e2'
+    element.style.outlineOffset = '2px'
+
+    return () => {
+      // Remove highlight
+      element.style.outline = originalOutline
+      element.style.outlineOffset = originalOutlineOffset
+    }
+  }, [highlightedPathId])
+
+  // Handlers for status bar path info interaction
+  const handlePathInfoMouseEnter = useCallback(() => {
+    if (selectedPathInfo && !isHighlightPersistent) {
+      setHighlightedPathId(selectedPathInfo.id)
+    }
+  }, [selectedPathInfo, isHighlightPersistent])
+
+  const handlePathInfoMouseLeave = useCallback(() => {
+    if (!isHighlightPersistent) {
+      setHighlightedPathId(null)
+    }
+  }, [isHighlightPersistent])
+
+  const handlePathInfoClick = useCallback(() => {
+    if (selectedPathInfo) {
+      if (isHighlightPersistent && highlightedPathId === selectedPathInfo.id) {
+        // Toggle off
+        setIsHighlightPersistent(false)
+        setHighlightedPathId(null)
+      } else {
+        // Toggle on
+        setHighlightedPathId(selectedPathInfo.id)
+        setIsHighlightPersistent(true)
+      }
+    }
+  }, [selectedPathInfo, isHighlightPersistent, highlightedPathId])
+
+  // Handler for clicking start point info
+  const handleStartPointClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!selectedPathInfo) return
+
+    if (showPointMarkers === 'start') {
+      // Toggle off
+      setShowPointMarkers('none')
+      setPointMarkerCoords([])
+    } else {
+      // Show start point and also enable highlight
+      setShowPointMarkers('start')
+      setPointMarkerCoords([selectedPathInfo.startPos])
+      setHighlightedPathId(selectedPathInfo.id)
+      setIsHighlightPersistent(true)
+    }
+  }, [selectedPathInfo, showPointMarkers])
+
+  // Handler for clicking end point info
+  const handleEndPointClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!selectedPathInfo) return
+
+    if (showPointMarkers === 'end') {
+      // Toggle off
+      setShowPointMarkers('none')
+      setPointMarkerCoords([])
+    } else {
+      // Show end point and also enable highlight
+      setShowPointMarkers('end')
+      setPointMarkerCoords([selectedPathInfo.endPos])
+      setHighlightedPathId(selectedPathInfo.id)
+      setIsHighlightPersistent(true)
+    }
+  }, [selectedPathInfo, showPointMarkers])
+
+  // Handler for clicking point count info
+  const handlePointCountClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!selectedPathInfo) return
+
+    if (showPointMarkers === 'all') {
+      // Toggle off
+      setShowPointMarkers('none')
+      setPointMarkerCoords([])
+    } else {
+      // Show all points and also enable highlight
+      setShowPointMarkers('all')
+      setPointMarkerCoords(selectedPathInfo.allPoints)
+      setHighlightedPathId(selectedPathInfo.id)
+      setIsHighlightPersistent(true)
+    }
+  }, [selectedPathInfo, showPointMarkers])
+
+  // Handler for hovering over path in layer tree
+  const handleLayerPathHover = useCallback((pathId: string | null) => {
+    if (!isHighlightPersistent) {
+      setHighlightedPathId(pathId)
+    }
+  }, [isHighlightPersistent])
+
+  // Handler for clicking path in layer tree
+  const handleLayerPathClick = useCallback((pathId: string) => {
+    if (isHighlightPersistent && highlightedPathId === pathId) {
+      // Toggle off
+      setIsHighlightPersistent(false)
+      setHighlightedPathId(null)
+    } else {
+      // Toggle on
+      setHighlightedPathId(pathId)
+      setIsHighlightPersistent(true)
+    }
+  }, [isHighlightPersistent, highlightedPathId])
+
+  // Handle color change from layer tree swatch double-click
+  const handleColorChange = useCallback((nodeId: string, oldColor: string, newColor: string, mode?: 'fill' | 'stroke', strokeWidth?: string) => {
+    const normalizedOld = normalizeColor(oldColor)
+    const normalizedNew = normalizeColor(newColor)
+
+    // Update colors in the node and its children
+    const updateNodeColors = (node: SVGNode): SVGNode => {
+      // Update element attributes
+      const updateElementColor = (element: Element) => {
+        const fill = element.getAttribute('fill')
+        const stroke = element.getAttribute('stroke')
+        const style = element.getAttribute('style')
+
+        if (mode === 'fill') {
+          // Set as fill, remove stroke
+          element.setAttribute('fill', normalizedNew)
+          element.setAttribute('stroke', 'none')
+          if (style) {
+            let newStyle = style
+              .replace(/fill:\s*[^;]+;?/g, '')
+              .replace(/stroke:\s*[^;]+;?/g, '')
+              .replace(/stroke-width:\s*[^;]+;?/g, '')
+              .trim()
+            if (newStyle) {
+              element.setAttribute('style', newStyle)
+            } else {
+              element.removeAttribute('style')
+            }
+          }
+        } else if (mode === 'stroke') {
+          // Set as stroke, remove fill
+          element.setAttribute('fill', 'none')
+          element.setAttribute('stroke', normalizedNew)
+          if (strokeWidth) {
+            element.setAttribute('stroke-width', strokeWidth)
+          }
+          if (style) {
+            let newStyle = style
+              .replace(/fill:\s*[^;]+;?/g, '')
+              .replace(/stroke:\s*[^;]+;?/g, '')
+              .replace(/stroke-width:\s*[^;]+;?/g, '')
+              .trim()
+            if (newStyle) {
+              element.setAttribute('style', newStyle)
+            } else {
+              element.removeAttribute('style')
+            }
+          }
+        } else {
+          // Legacy behavior - just replace colors
+          if (fill && normalizeColor(fill) === normalizedOld) {
+            element.setAttribute('fill', normalizedNew)
+          }
+          if (stroke && normalizeColor(stroke) === normalizedOld) {
+            element.setAttribute('stroke', normalizedNew)
+          }
+          if (style) {
+            let newStyle = style
+            // Replace fill color in style
+            newStyle = newStyle.replace(
+              /fill:\s*([^;]+)/g,
+              (match, color) => normalizeColor(color.trim()) === normalizedOld ? `fill: ${normalizedNew}` : match
+            )
+            // Replace stroke color in style
+            newStyle = newStyle.replace(
+              /stroke:\s*([^;]+)/g,
+              (match, color) => normalizeColor(color.trim()) === normalizedOld ? `stroke: ${normalizedNew}` : match
+            )
+            if (newStyle !== style) {
+              element.setAttribute('style', newStyle)
+            }
+          }
+        }
+      }
+
+      updateElementColor(node.element)
+
+      // Update customMarkup if present (for line fill)
+      let updatedMarkup = node.customMarkup
+      if (updatedMarkup && normalizedOld) {
+        // Replace stroke colors in the markup
+        updatedMarkup = updatedMarkup.replace(
+          new RegExp(`stroke="${normalizedOld}"`, 'gi'),
+          `stroke="${normalizedNew}"`
+        )
+        if (strokeWidth) {
+          updatedMarkup = updatedMarkup.replace(
+            /stroke-width="[^"]+"/g,
+            `stroke-width="${strokeWidth}"`
+          )
+        }
+      }
+
+      // Update fillColor if it matches
+      let updatedFillColor = node.fillColor
+      if (updatedFillColor && normalizeColor(updatedFillColor) === normalizedOld) {
+        updatedFillColor = normalizedNew
+      }
+
+      return {
+        ...node,
+        customMarkup: updatedMarkup,
+        fillColor: updatedFillColor,
+        children: node.children.map(updateNodeColors)
+      }
+    }
+
+    // Find the node and update it
+    const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.map(node => {
+        if (node.id === nodeId) {
+          return updateNodeColors(node)
+        }
+        if (node.children.length > 0) {
+          return { ...node, children: updateNodes(node.children) }
+        }
+        return node
+      })
+    }
+
+    const updatedNodes = updateNodes(layerNodes)
+    setLayerNodes(updatedNodes)
+    rebuildSvgFromLayers(updatedNodes)
+  }, [layerNodes, setLayerNodes, rebuildSvgFromLayers])
+
+  // Handle drag-and-drop reordering of layers
+  const handleReorder = useCallback((draggedId: string, targetId: string, position: 'before' | 'after' | 'inside') => {
+    // Find a node by ID
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    // Find parent of a node
+    const findParent = (nodes: SVGNode[], id: string, parent: SVGNode | null = null): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return parent
+        const found = findParent(node.children, id, node)
+        if (found !== undefined) return found
+      }
+      return null
+    }
+
+    // Remove a node from the tree
+    const removeNode = (nodes: SVGNode[], id: string): SVGNode[] => {
+      return nodes.filter(n => n.id !== id).map(n => ({
+        ...n,
+        children: removeNode(n.children, id)
+      }))
+    }
+
+    // Insert node at position relative to target
+    const insertNode = (nodes: SVGNode[], targetId: string, nodeToInsert: SVGNode, pos: 'before' | 'after' | 'inside'): SVGNode[] => {
+      const result: SVGNode[] = []
+      for (const node of nodes) {
+        if (node.id === targetId) {
+          if (pos === 'before') {
+            result.push(nodeToInsert)
+            result.push(node)
+          } else if (pos === 'after') {
+            result.push(node)
+            result.push(nodeToInsert)
+          } else if (pos === 'inside') {
+            // Add as first child of target
+            result.push({
+              ...node,
+              children: [nodeToInsert, ...node.children]
+            })
+          }
+        } else {
+          result.push({
+            ...node,
+            children: insertNode(node.children, targetId, nodeToInsert, pos)
+          })
+        }
+      }
+      return result
+    }
+
+    const draggedNode = findNode(layerNodes, draggedId)
+    const targetNode = findNode(layerNodes, targetId)
+
+    if (!draggedNode || !targetNode) return
+
+    // Check if we're trying to drop a parent into its own child (would create cycle)
+    const isDescendant = (parentNode: SVGNode, childId: string): boolean => {
+      if (parentNode.id === childId) return true
+      return parentNode.children.some(child => isDescendant(child, childId))
+    }
+
+    if (isDescendant(draggedNode, targetId)) return
+
+    // Remove the dragged node first
+    let newNodes = removeNode(layerNodes, draggedId)
+
+    // Insert at new position
+    newNodes = insertNode(newNodes, targetId, draggedNode, position)
+
+    // Update DOM: move the element
+    const draggedElement = draggedNode.element
+    const targetElement = targetNode.element
+
+    if (position === 'before') {
+      targetElement.parentElement?.insertBefore(draggedElement, targetElement)
+    } else if (position === 'after') {
+      targetElement.parentElement?.insertBefore(draggedElement, targetElement.nextSibling)
+    } else if (position === 'inside') {
+      targetElement.insertBefore(draggedElement, targetElement.firstChild)
+    }
+
+    setLayerNodes(newNodes)
+    rebuildSvgFromLayers(newNodes)
+  }, [layerNodes, setLayerNodes, rebuildSvgFromLayers])
 
   const handleNodeSelect = (node: SVGNode, isMultiSelect: boolean, isRangeSelect: boolean) => {
     disarmActions()
@@ -455,6 +1078,99 @@ export default function SortTab() {
     rebuildSvgFromLayers(updatedNodes)
   }
 
+  // Sort/reorder children by color - puts all elements of same color together
+  const handleSortByColor = () => {
+    if (selectedNodeIds.size !== 1) return
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNode(layerNodes, selectedId)
+
+    if (!selectedNode || selectedNode.children.length === 0) return
+
+    const getElementColor = (element: Element): string => {
+      // Check for fillColor first (from line fill customMarkup nodes)
+      const fill = element.getAttribute('fill')
+      const stroke = element.getAttribute('stroke')
+      const style = element.getAttribute('style')
+
+      if (style) {
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (fillMatch && fillMatch[1] !== 'none') return normalizeColor(fillMatch[1].trim())
+        if (strokeMatch && strokeMatch[1] !== 'none') return normalizeColor(strokeMatch[1].trim())
+      }
+
+      if (fill && fill !== 'none' && fill !== 'transparent') return normalizeColor(fill)
+      if (stroke && stroke !== 'none' && stroke !== 'transparent') return normalizeColor(stroke)
+
+      return '#000000' // default
+    }
+
+    const getNodeColor = (node: SVGNode): string => {
+      // Check fillColor first (from line fill)
+      if (node.fillColor) return normalizeColor(node.fillColor)
+      return getElementColor(node.element)
+    }
+
+    // Sort children by color (reorder without creating new groups)
+    const sortedChildren = [...selectedNode.children].sort((a, b) => {
+      const colorA = getNodeColor(a)
+      const colorB = getNodeColor(b)
+      return colorA.localeCompare(colorB)
+    })
+
+    // Reorder DOM elements to match sorted order
+    sortedChildren.forEach(child => {
+      selectedNode.element.appendChild(child.element)
+    })
+
+    // Update the node in the tree
+    const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.map(node => {
+        if (node.id === selectedId) {
+          return { ...node, children: sortedChildren }
+        }
+        if (node.children.length > 0) {
+          return { ...node, children: updateNodeChildren(node.children) }
+        }
+        return node
+      })
+    }
+
+    const updatedNodes = updateNodeChildren(layerNodes)
+    setLayerNodes(updatedNodes)
+    rebuildSvgFromLayers(updatedNodes)
+  }
+
+  // Check if sorting by color would change the order
+  const canSortByColor = (): boolean => {
+    if (selectedNodeIds.size !== 1) return false
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNode(layerNodes, selectedId)
+
+    if (!selectedNode || selectedNode.children.length < 2) return false
+    return true
+  }
+
   const handleGroupUngroup = () => {
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
@@ -586,7 +1302,8 @@ export default function SortTab() {
 
       const updatedNodes = removeAndGroup(layerNodes)
       setLayerNodes(updatedNodes)
-      setSelectedNodeIds(new Set())
+      setSelectedNodeIds(new Set([groupId]))
+      setLastSelectedNodeId(groupId)
       rebuildSvgFromLayers(updatedNodes)
     }
   }
@@ -632,7 +1349,6 @@ export default function SortTab() {
 
   const handleFlatten = async () => {
     if (!canFlatten() || !window.electron?.flattenShapes) {
-      alert('Flatten is not available. Select a group with all children of the same color.')
       return
     }
 
@@ -673,23 +1389,10 @@ export default function SortTab() {
     color = findColor(selectedNode)
 
     if (!color) {
-      alert('Could not determine color of shapes.')
       return
     }
 
-    const confirmed = confirm(
-      `This will merge all touching shapes of color ${color} in group "${selectedNode.name}".\n\n` +
-      `Continue?`
-    )
-
-    if (!confirmed) return
-
     try {
-      const svgElement = document.querySelector('.canvas-content svg')
-      if (!svgElement) {
-        throw new Error('SVG element not found')
-      }
-
       const groupSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgDimensions?.width || 1000}" height="${svgDimensions?.height || 1000}" viewBox="0 0 ${svgDimensions?.width || 1000} ${svgDimensions?.height || 1000}">
   ${selectedNode.element.outerHTML}
 </svg>`
@@ -709,24 +1412,63 @@ export default function SortTab() {
         throw new Error('Failed to parse flattened SVG')
       }
 
+      // Parse the flattened group into new child nodes
+      const parseElement = (element: Element, parentId: string): SVGNode[] => {
+        const nodes: SVGNode[] = []
+        const children = Array.from(element.children)
+
+        children.forEach((child, index) => {
+          const tagName = child.tagName.toLowerCase()
+          const id = child.getAttribute('id') || `${parentId}-${tagName}-${index}`
+
+          const node: SVGNode = {
+            id,
+            name: id,
+            type: tagName,
+            element: child,
+            isGroup: tagName === 'g',
+            children: tagName === 'g' ? parseElement(child, id) : []
+          }
+          nodes.push(node)
+        })
+
+        return nodes
+      }
+
+      // Import the flattened group into the document
       const parent = selectedNode.element.parentElement
       if (parent) {
-        const importedGroup = document.importNode(flattenedGroup, true)
+        const importedGroup = document.importNode(flattenedGroup, true) as SVGGElement
         parent.replaceChild(importedGroup, selectedNode.element)
-        selectedNode.element = importedGroup as SVGGElement
 
-        const serializer = new XMLSerializer()
-        const svgString = serializer.serializeToString(svgElement)
-        setSvgContent(svgString)
+        // Parse new children from the flattened group
+        const newChildren = parseElement(importedGroup, selectedNode.id)
 
-        setLayerNodes([...layerNodes])
+        // Update the node tree with the new flattened structure
+        const updateNode = (nodes: SVGNode[]): SVGNode[] => {
+          return nodes.map(node => {
+            if (node.id === selectedId) {
+              return {
+                ...node,
+                element: importedGroup,
+                children: newChildren
+              }
+            }
+            if (node.children.length > 0) {
+              return { ...node, children: updateNode(node.children) }
+            }
+            return node
+          })
+        }
 
-        alert('Shapes flattened successfully!')
+        const updatedNodes = updateNode(layerNodes)
+        setLayerNodes(updatedNodes)
+        rebuildSvgFromLayers(updatedNodes)
+        setSelectedNodeIds(new Set())
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
-      alert(`Flatten failed: ${message}`)
-      console.error('Flatten error:', error)
+      console.error('Flatten error:', error, message)
     }
   }
 
@@ -867,6 +1609,13 @@ export default function SortTab() {
             disarmActions()
           }
           break
+        case 's':
+          if (canSortByColor()) {
+            e.preventDefault()
+            handleSortByColor()
+            disarmActions()
+          }
+          break
       }
     }
 
@@ -894,9 +1643,17 @@ export default function SortTab() {
               className="action-button"
               onClick={handleGroupByColor}
               disabled={!canGroupByColor()}
-              title="Group by Color (P)"
+              title="Group by Color (P) - Create subgroups for each color"
             >
               🎨
+            </button>
+            <button
+              className="action-button"
+              onClick={handleSortByColor}
+              disabled={!canSortByColor()}
+              title="Shape Type Sort (S) - Reorder children by color"
+            >
+              ⇅
             </button>
             <button
               className="action-button group-button"
@@ -926,25 +1683,7 @@ export default function SortTab() {
             >
               G
             </button>
-            <button
-              className="action-button"
-              onClick={handleToggleVisibility}
-              disabled={selectedNodeIds.size === 0}
-              title="Toggle Visibility (V)"
-            >
-              👁
-            </button>
-            <button
-              className="action-button delete"
-              onClick={handleDeleteNode}
-              disabled={selectedNodeIds.size === 0}
-              style={{
-                background: deleteArmed ? '#e74c3c' : undefined,
-              }}
-              title={deleteArmed ? "Delete (D) - Press again to confirm" : "Delete (D)"}
-            >
-              🗑
-            </button>
+{/* Visibility and delete buttons hidden - use keyboard shortcuts V and D instead */}
           </div>
         </div>
         <div className="sidebar-content">
@@ -958,6 +1697,10 @@ export default function SortTab() {
               selectedNodeIds={selectedNodeIds}
               onNodeSelect={handleNodeSelect}
               processingStates={layerProcessingStates}
+              onColorChange={handleColorChange}
+              onReorder={handleReorder}
+              onPathHover={handleLayerPathHover}
+              onPathClick={handleLayerPathClick}
             />
           )}
         </div>
@@ -1069,6 +1812,47 @@ export default function SortTab() {
             />
           )}
 
+          {/* Point markers overlay */}
+          {pointMarkerCoords.length > 0 && svgDimensions && (
+            <div
+              className="point-markers-overlay"
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                pointerEvents: 'none',
+                zIndex: 30,
+              }}
+            >
+              {pointMarkerCoords.map((pt, index) => {
+                const isStart = showPointMarkers === 'start' || (showPointMarkers === 'all' && index === 0)
+                const isEnd = showPointMarkers === 'end' || (showPointMarkers === 'all' && index === pointMarkerCoords.length - 1)
+                const size = showPointMarkers === 'all' ? 6 : 10
+
+                return (
+                  <div
+                    key={index}
+                    className="point-marker"
+                    style={{
+                      position: 'absolute',
+                      left: `calc(50% + ${offset.x + pt.x * scale}px)`,
+                      top: `calc(50% + ${offset.y + pt.y * scale}px)`,
+                      width: size,
+                      height: size,
+                      borderRadius: '50%',
+                      backgroundColor: isStart ? '#27ae60' : isEnd ? '#e74c3c' : '#e74c3c',
+                      border: '1px solid white',
+                      transform: 'translate(-50%, -50%)',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                    }}
+                  />
+                )
+              })}
+            </div>
+          )}
+
           {loadingState.isLoading && (
             <LoadingOverlay
               progress={loadingState.progress}
@@ -1097,18 +1881,86 @@ export default function SortTab() {
             )}
           </div>
           <div className="status-bar-right">
-            {documentColors.length > 0 && (
-              <div className="status-bar-colors">
-                {documentColors.map((color, index) => (
-                  <span
-                    key={index}
-                    className="color-swatch"
-                    style={{
-                      backgroundColor: normalizeColor(color),
-                    }}
-                    title={color}
-                  />
+            {selectedPathInfo && (
+              <div
+                className={`status-path-info ${isHighlightPersistent ? 'highlight-active' : ''}`}
+                onMouseEnter={handlePathInfoMouseEnter}
+                onMouseLeave={handlePathInfoMouseLeave}
+                onClick={handlePathInfoClick}
+                title={isHighlightPersistent ? 'Click to hide highlight' : 'Hover to highlight, click to lock'}
+              >
+                {selectedPathInfo.color && (
+                  <span className="path-info-item">
+                    <span className="path-info-swatch" style={{ backgroundColor: selectedPathInfo.color }} />
+                    {selectedPathInfo.color}
+                  </span>
+                )}
+                {selectedPathInfo.strokeWidth && (
+                  <span className="path-info-item">
+                    stroke: {selectedPathInfo.strokeWidth}
+                  </span>
+                )}
+                <span
+                  className={`path-info-item clickable ${showPointMarkers === 'all' ? 'active' : ''}`}
+                  onClick={handlePointCountClick}
+                  title="Click to show all points"
+                >
+                  {selectedPathInfo.pointCount} pts
+                </span>
+                <span
+                  className={`path-info-item clickable ${showPointMarkers === 'start' ? 'active' : ''}`}
+                  onClick={handleStartPointClick}
+                  title="Click to show start point"
+                >
+                  start: ({selectedPathInfo.startPos.x.toFixed(1)}, {selectedPathInfo.startPos.y.toFixed(1)})
+                </span>
+                <span
+                  className={`path-info-item clickable ${showPointMarkers === 'end' ? 'active' : ''}`}
+                  onClick={handleEndPointClick}
+                  title="Click to show end point"
+                >
+                  end: ({selectedPathInfo.endPos.x.toFixed(1)}, {selectedPathInfo.endPos.y.toFixed(1)})
+                </span>
+              </div>
+            )}
+            {selectedGroupInfo && (
+              <div className="status-group-info">
+                <span className="group-info-summary">
+                  {selectedGroupInfo.fillCount}F / {selectedGroupInfo.pathCount}P
+                </span>
+                {Object.entries(selectedGroupInfo.colorCounts).map(([color, counts]) => (
+                  <span key={color} className="group-color-item">
+                    <span className="path-info-swatch" style={{ backgroundColor: color }} />
+                    <span className="group-color-counts">
+                      {counts.fill > 0 && <span className="count-fill">{counts.fill}F</span>}
+                      {counts.path > 0 && <span className="count-path">{counts.path}P</span>}
+                    </span>
+                  </span>
                 ))}
+              </div>
+            )}
+            {!selectedPathInfo && !selectedGroupInfo && documentColors.length > 0 && (
+              <div className="status-bar-colors">
+                {documentColors.map((color, index) => {
+                  const stats = documentColorStats.get(color)
+                  return (
+                    <span
+                      key={index}
+                      className="color-stat-item"
+                      title={`${color} - ${stats?.paths || 0} paths, ${stats?.points || 0} points`}
+                    >
+                      <span
+                        className="color-swatch"
+                        style={{
+                          backgroundColor: color,
+                        }}
+                      />
+                      <span className="color-stat-counts">
+                        {stats?.paths || 0}/{stats?.points || 0}
+                      </span>
+                    </span>
+                  )
+                })}
               </div>
             )}
           </div>

@@ -6,9 +6,26 @@ Merges touching shapes of the same color using boolean union operations
 
 import sys
 import xml.etree.ElementTree as ET
-from shapely.geometry import Polygon, MultiPolygon
+from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
 from shapely.ops import unary_union
+from shapely.validation import make_valid
 import re
+
+
+def extract_polygons(geom):
+    """Extract all polygon geometries from a geometry (handles GeometryCollection from make_valid)"""
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, Polygon):
+        return [geom]
+    if isinstance(geom, MultiPolygon):
+        return list(geom.geoms)
+    if isinstance(geom, GeometryCollection):
+        result = []
+        for g in geom.geoms:
+            result.extend(extract_polygons(g))
+        return result
+    return []
 
 def parse_path_to_polygon(path_d):
     """Convert SVG path data to shapely Polygon (simplified - handles basic paths)"""
@@ -66,27 +83,40 @@ def main():
         paths_to_remove = []
         parent_group = None
 
-        for group in root.iter():
-            if group.tag.endswith('g'):
-                for path in group.findall('.//{http://www.w3.org/2000/svg}path'):
-                    fill = path.get('fill', '')
-                    style = path.get('style', '')
+        # Build parent map to track actual parents
+        parent_map = {c: p for p in root.iter() for c in p}
 
-                    # Check fill in attribute or style
-                    path_color = fill
-                    if 'fill:' in style:
-                        match = re.search(r'fill:\s*([^;]+)', style)
-                        if match:
-                            path_color = match.group(1).strip()
+        for path in root.iter():
+            if not path.tag.endswith('path'):
+                continue
 
-                    if path_color == color:
-                        path_d = path.get('d', '')
-                        poly = parse_path_to_polygon(path_d)
-                        if poly:
-                            polygons.append(poly)
-                            paths_to_remove.append((group, path))
-                            if parent_group is None:
-                                parent_group = group
+            fill = path.get('fill', '')
+            style = path.get('style', '')
+
+            # Check fill in attribute or style
+            path_color = fill
+            if 'fill:' in style:
+                match = re.search(r'fill:\s*([^;]+)', style)
+                if match:
+                    path_color = match.group(1).strip()
+
+            if path_color == color:
+                path_d = path.get('d', '')
+                poly = parse_path_to_polygon(path_d)
+                if poly:
+                    # Make the polygon valid to handle self-intersections
+                    if not poly.is_valid:
+                        valid_geom = make_valid(poly)
+                        # Extract any polygons from the result (could be GeometryCollection)
+                        valid_polys = extract_polygons(valid_geom)
+                        polygons.extend(valid_polys)
+                    elif not poly.is_empty:
+                        polygons.append(poly)
+                    actual_parent = parent_map.get(path)
+                    if actual_parent is not None:
+                        paths_to_remove.append((actual_parent, path))
+                        if parent_group is None:
+                            parent_group = actual_parent
 
         if not polygons:
             print("Python: No shapes found to flatten", file=sys.stderr)
@@ -95,26 +125,54 @@ def main():
 
         print(f"Python: Found {len(polygons)} shapes to merge", file=sys.stderr)
 
-        # Perform union operation
-        merged = unary_union(polygons)
+        # Perform union operation with fallback for topology errors
+        try:
+            merged = unary_union(polygons)
+        except Exception as union_error:
+            print(f"Python: Initial union failed, trying buffer(0) cleanup: {union_error}", file=sys.stderr)
+            # Apply buffer(0) to clean up each geometry - this often fixes topology issues
+            cleaned_polygons = []
+            for p in polygons:
+                try:
+                    cleaned = p.buffer(0)
+                    cleaned_polygons.extend(extract_polygons(cleaned))
+                except:
+                    pass  # Skip problematic geometries
+            if not cleaned_polygons:
+                print("Python: No valid shapes after cleanup", file=sys.stderr)
+                print(svg_input, end='')
+                return
+            merged = unary_union(cleaned_polygons)
+
         print(f"Python: Merged into {len(merged.geoms) if isinstance(merged, MultiPolygon) else 1} shape(s)", file=sys.stderr)
 
         # Remove old paths
         for group, path in paths_to_remove:
             group.remove(path)
 
-        # Add new merged paths
-        if isinstance(merged, MultiPolygon):
-            for poly in merged.geoms:
-                new_path = ET.SubElement(parent_group, '{http://www.w3.org/2000/svg}path')
-                new_path.set('d', polygon_to_path(poly))
+        # Extract all polygons from the merged result
+        merged_polygons = extract_polygons(merged)
+
+        if not merged_polygons:
+            print("Python: No polygons in merged result", file=sys.stderr)
+            print(svg_input, end='')
+            return
+
+        # Create a group to contain the merged paths
+        merged_group = ET.SubElement(parent_group, '{http://www.w3.org/2000/svg}g')
+        merged_group.set('id', f'flattened-{color.replace("#", "")}')
+
+        # Add new merged paths to the group
+        for i, poly in enumerate(merged_polygons):
+            path_d = polygon_to_path(poly)
+            if path_d:  # Only add if we got valid path data
+                new_path = ET.SubElement(merged_group, '{http://www.w3.org/2000/svg}path')
+                new_path.set('id', f'flattened-{color.replace("#", "")}-{i}')
+                new_path.set('d', path_d)
                 new_path.set('fill', color)
                 new_path.set('stroke', 'none')
-        else:
-            new_path = ET.SubElement(parent_group, '{http://www.w3.org/2000/svg}path')
-            new_path.set('d', polygon_to_path(merged))
-            new_path.set('fill', color)
-            new_path.set('stroke', 'none')
+
+        print(f"Python: Created group with {len(merged_polygons)} paths", file=sys.stderr)
 
         # Output modified SVG
         output = ET.tostring(root, encoding='unicode')

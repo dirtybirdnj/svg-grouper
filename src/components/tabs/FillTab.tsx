@@ -1267,8 +1267,9 @@ function generateGyroidLines(
   // Spacing is the period of the gyroid pattern
   const scale = (2 * Math.PI) / spacing
 
-  // Grid resolution for marching - smaller = smoother curves
-  const gridStep = spacing / 8 // 8 samples per period
+  // Grid resolution for marching - smaller = smoother curves but slower
+  // Using spacing/4 for balance of quality and performance
+  const gridStep = spacing / 4 // 4 samples per period (was 8, too slow)
   const padding = spacing * 2
 
   // The gyroid function for 2D: we slice at different z values
@@ -1613,6 +1614,80 @@ export default function FillTab() {
   const [wiggleFrequency, setWiggleFrequency] = useState(2)
   const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
 
+  // Accumulated fill layers - each layer has lines with a color
+  interface FillLayer {
+    lines: HatchLine[]
+    color: string
+    pathId: string
+  }
+  const [accumulatedLayers, setAccumulatedLayers] = useState<FillLayer[]>([])
+  const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
+
+  // Draft states for sliders - show value during drag, commit on release
+  const [draftLineSpacing, setDraftLineSpacing] = useState(15)
+  const [draftAngle, setDraftAngle] = useState(45)
+  const [draftInset, setDraftInset] = useState(0)
+  const [draftWiggleAmplitude, setDraftWiggleAmplitude] = useState(5)
+  const [draftWiggleFrequency, setDraftWiggleFrequency] = useState(2)
+  const [draftPenWidth, setDraftPenWidth] = useState(0.5)
+
+  // Sync draft states when actual values change programmatically (e.g., auto-rotate angle)
+  useEffect(() => { setDraftLineSpacing(lineSpacing) }, [lineSpacing])
+  useEffect(() => { setDraftAngle(angle) }, [angle])
+  useEffect(() => { setDraftInset(inset) }, [inset])
+  useEffect(() => { setDraftWiggleAmplitude(wiggleAmplitude) }, [wiggleAmplitude])
+  useEffect(() => { setDraftWiggleFrequency(wiggleFrequency) }, [wiggleFrequency])
+  useEffect(() => { setDraftPenWidth(penWidth) }, [penWidth])
+
+  // Selected control for keyboard nudge
+  type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
+  const [selectedControl, setSelectedControl] = useState<ControlId>(null)
+
+  // Handle arrow key nudging for selected control
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!selectedControl || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+
+      const direction = e.key === 'ArrowRight' ? 1 : -1
+
+      switch (selectedControl) {
+        case 'lineSpacing': {
+          const v = Math.max(1, Math.min(20, lineSpacing + direction))
+          setLineSpacing(v)
+          break
+        }
+        case 'angle': {
+          const v = Math.max(0, Math.min(180, angle + direction * 5))
+          setAngle(v)
+          break
+        }
+        case 'inset': {
+          const v = Math.max(0, Math.min(10, inset + direction))
+          setInset(v)
+          break
+        }
+        case 'wiggleAmplitude': {
+          const v = Math.max(1, Math.min(10, wiggleAmplitude + direction))
+          setWiggleAmplitude(v)
+          break
+        }
+        case 'wiggleFrequency': {
+          const v = Math.max(0.5, Math.min(5, wiggleFrequency + direction * 0.5))
+          setWiggleFrequency(v)
+          break
+        }
+        case 'penWidth': {
+          const v = Math.max(0.1, Math.min(2, +(penWidth + direction * 0.1).toFixed(1)))
+          setPenWidth(v)
+          break
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selectedControl, lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth])
+
   // Drag state for pan
   const [isDragging, setIsDragging] = useState(false)
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
@@ -1714,8 +1789,41 @@ export default function FillTab() {
     return paths
   }, [targetNode])
 
+  // Preserve original fill paths for "Apply & Fill Again" - stores polygon boundaries for layering
+  // Declared here so boundingBox can use it
+  const [preservedFillData, setPreservedFillData] = useState<{ pathInfo: FillPathInfo; polygon: PolygonWithHoles }[] | null>(null)
+
+  // Clear preserved data when target changes (user selected a different layer)
+  useEffect(() => {
+    setPreservedFillData(null)
+  }, [fillTargetNodeId])
+
   // Calculate bounding box of all fill paths using polygon points (works on disconnected elements)
   const boundingBox = useMemo(() => {
+    // Use preserved polygon data if available, otherwise compute from fillPaths
+    if (preservedFillData && preservedFillData.length > 0) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      preservedFillData.forEach(({ polygon }) => {
+        for (const p of polygon.outer) {
+          minX = Math.min(minX, p.x)
+          minY = Math.min(minY, p.y)
+          maxX = Math.max(maxX, p.x)
+          maxY = Math.max(maxY, p.y)
+        }
+        for (const hole of polygon.holes) {
+          for (const p of hole) {
+            minX = Math.min(minX, p.x)
+            minY = Math.min(minY, p.y)
+            maxX = Math.max(maxX, p.x)
+            maxY = Math.max(maxY, p.y)
+          }
+        }
+      })
+      if (minX !== Infinity) {
+        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+      }
+    }
+
     if (fillPaths.length === 0) return null
 
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -1749,18 +1857,26 @@ export default function FillTab() {
       width: maxX - minX,
       height: maxY - minY,
     }
-  }, [fillPaths])
+  }, [fillPaths, preservedFillData])
 
   // Generate hatch lines for each path - using async processing to keep UI responsive
   const [hatchedPaths, setHatchedPaths] = useState<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]>([])
   const [, setIsGeneratingHatch] = useState(false)
+  const [fillProgress, setFillProgress] = useState(0)
   const hatchAbortRef = useRef<{ aborted: boolean }>({ aborted: false })
+
+  // Use preserved data if available (after Apply & Fill Again), otherwise use computed fillPaths
+  const activeFillPaths = preservedFillData
+    ? preservedFillData.map(d => d.pathInfo)
+    : fillPaths
 
   useEffect(() => {
     // Abort any in-progress generation
     hatchAbortRef.current.aborted = true
 
-    if (!showHatchPreview || fillPaths.length === 0 || !boundingBox) {
+    // Use activeFillPaths which falls back to preserved data if available
+    const pathsToProcess = activeFillPaths
+    if (!showHatchPreview || pathsToProcess.length === 0 || !boundingBox) {
       setHatchedPaths([])
       return
     }
@@ -1771,6 +1887,7 @@ export default function FillTab() {
 
     setIsGeneratingHatch(true)
     setIsProcessing(true)
+    setFillProgress(0)
 
     // Process paths asynchronously in batches
     const processAsync = async () => {
@@ -1779,19 +1896,33 @@ export default function FillTab() {
       const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
 
       const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
-      const BATCH_SIZE = 5 // Process 5 paths per frame
+      // Use smaller batch size for expensive patterns
+      const isExpensivePattern = fillPattern === 'gyroid' || fillPattern === 'honeycomb'
+      const BATCH_SIZE = isExpensivePattern ? 1 : 5
+      const totalPaths = pathsToProcess.length
 
-      for (let i = 0; i < fillPaths.length; i += BATCH_SIZE) {
+      for (let i = 0; i < pathsToProcess.length; i += BATCH_SIZE) {
         // Check if aborted
         if (abortController.aborted) return
 
-        const batch = fillPaths.slice(i, i + BATCH_SIZE)
+        // Update progress
+        const progress = Math.round((i / totalPaths) * 100)
+        setFillProgress(progress)
+
+        const batch = pathsToProcess.slice(i, i + BATCH_SIZE)
 
         for (const path of batch) {
           if (abortController.aborted) return
 
           try {
-            const polygonData = getPolygonPoints(path.element)
+            // Use preserved polygon data if available, otherwise compute from element
+            let polygonData: PolygonWithHoles
+            if (preservedFillData) {
+              const preserved = preservedFillData.find(p => p.pathInfo.id === path.id)
+              polygonData = preserved ? preserved.polygon : getPolygonPoints(path.element)
+            } else {
+              polygonData = getPolygonPoints(path.element)
+            }
 
             if (polygonData.outer.length >= 3) {
               let lines: HatchLine[] = []
@@ -1837,6 +1968,7 @@ export default function FillTab() {
 
       // Only update state if not aborted
       if (!abortController.aborted) {
+        setFillProgress(100)
         setHatchedPaths(results)
         setIsGeneratingHatch(false)
         setIsProcessing(false)
@@ -1850,7 +1982,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, fillPaths, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, setIsProcessing])
 
   // Compute ordered lines using multi-pass optimization:
   // 1. Order shapes by proximity (starting from top-left)
@@ -1909,15 +2041,24 @@ export default function FillTab() {
     const pathElements: string[] = []
 
     if (showHatchPreview) {
-      // Normal hatch preview (original color, no ordering)
+      // First, draw accumulated layers
+      accumulatedLayers.forEach(layer => {
+        const linesHtml = layer.lines.map(line =>
+          `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
+        ).join('\n')
+        pathElements.push(`<g class="accumulated-layer">${linesHtml}</g>`)
+      })
+
+      // Then draw current working layer
       fillPaths.forEach((path) => {
         const hatchData = hatchedPaths.find(h => h.pathInfo.id === path.id)
         if (hatchData && hatchData.lines.length > 0) {
+          const currentColor = layerColor || path.color
           const linesHtml = hatchData.lines.map(line =>
-            `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${path.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
+            `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${currentColor}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
           ).join('\n')
 
-          pathElements.push(`<g>${linesHtml}</g>`)
+          pathElements.push(`<g class="current-layer">${linesHtml}</g>`)
         }
 
         // Add outline stroke if retaining strokes
@@ -1943,7 +2084,7 @@ export default function FillTab() {
     }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, retainStrokes, penWidthPx])
+  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx])
 
   const handleBack = () => {
     setFillTargetNodeId(null)
@@ -1955,73 +2096,163 @@ export default function FillTab() {
   }, [showHatchPreview])
 
   const handleApplyFill = useCallback(() => {
-    if (!targetNode || hatchedPaths.length === 0) return
+    if (!targetNode || (hatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
 
-    // Build a map of node ID to custom markup and color
-    const customMarkupMap = new Map<string, { markup: string; color: string }>()
+    // Collect all lines: accumulated layers + current preview
+    // Group by path ID AND color so different colors become separate layer nodes
+    const allLinesByPathAndColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
 
-    // Group optimized lines by their original path ID to maintain per-path grouping
-    // but use the optimized order within each path
-    const linesByPath = new Map<string, OrderedLine[]>()
-    optimizedLines.forEach(line => {
-      const existing = linesByPath.get(line.pathId) || []
-      existing.push(line)
-      linesByPath.set(line.pathId, existing)
+    // Add accumulated layers first
+    accumulatedLayers.forEach(layer => {
+      layer.lines.forEach(line => {
+        const key = `${layer.pathId}|${layer.color}`
+        const existing = allLinesByPathAndColor.get(key) || []
+        existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
+        allLinesByPathAndColor.set(key, existing)
+      })
     })
 
-    // Generate markup for each hatched path using optimized line order
-    hatchedPaths.forEach(({ pathInfo }) => {
-      const lines = linesByPath.get(pathInfo.id) || []
-      // Build the hatch group markup as a string using optimized order
-      const linesMarkup = lines.map(line =>
-        `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${line.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
-      ).join('\n')
+    // Add current optimized lines
+    optimizedLines.forEach(line => {
+      const color = layerColor || line.color
+      const key = `${line.pathId}|${color}`
+      const existing = allLinesByPathAndColor.get(key) || []
+      existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
+      allLinesByPathAndColor.set(key, existing)
+    })
 
-      let outlineMarkup = ''
+    // Get unique colors used across all fills
+    const colorsUsed = new Set<string>()
+    accumulatedLayers.forEach(layer => colorsUsed.add(layer.color))
+    optimizedLines.forEach(line => colorsUsed.add(layerColor || line.color))
+    const uniqueColors = Array.from(colorsUsed)
+
+    // For each original path, create child nodes for each color used
+    const newChildNodes: SVGNode[] = []
+
+    hatchedPaths.forEach(({ pathInfo }) => {
+      // Find all color variations for this path
+      uniqueColors.forEach(color => {
+        const key = `${pathInfo.id}|${color}`
+        const lines = allLinesByPathAndColor.get(key)
+        if (!lines || lines.length === 0) return
+
+        const linesMarkup = lines.map(line =>
+          `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
+        ).join('\n')
+
+        const nodeId = uniqueColors.length > 1
+          ? `hatch-${pathInfo.id}-${color.replace('#', '')}`
+          : `hatch-${pathInfo.id}`
+        const nodeName = uniqueColors.length > 1
+          ? `Fill ${color}`
+          : `Fill`
+
+        const groupMarkup = `<g id="${nodeId}">\n${linesMarkup}\n</g>`
+
+        // Create a dummy element for the node (customMarkup will be used for rendering)
+        const parser = new DOMParser()
+        const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${groupMarkup}</svg>`, 'image/svg+xml')
+        const dummyElement = dummyDoc.querySelector('g') as Element
+
+        newChildNodes.push({
+          id: nodeId,
+          name: nodeName,
+          type: 'g',
+          element: dummyElement,
+          isGroup: true,
+          fillColor: color,
+          children: [],
+          customMarkup: groupMarkup,
+        })
+      })
+
+      // Add outline as separate node if retainStrokes
       if (retainStrokes) {
-        // Clone the original element and modify attributes for outline
         const el = pathInfo.element.cloneNode(true) as Element
         el.setAttribute('fill', 'none')
         el.setAttribute('stroke', pathInfo.color)
         el.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
         el.removeAttribute('style')
         const serializer = new XMLSerializer()
-        outlineMarkup = serializer.serializeToString(el)
-      }
+        const outlineMarkup = serializer.serializeToString(el)
 
-      const groupMarkup = `<g id="hatch-${pathInfo.id}">\n${linesMarkup}\n${outlineMarkup}\n</g>`
-      customMarkupMap.set(pathInfo.id, { markup: groupMarkup, color: pathInfo.color })
+        newChildNodes.push({
+          id: `outline-${pathInfo.id}`,
+          name: `Outline`,
+          type: pathInfo.type,
+          element: el,
+          isGroup: false,
+          fillColor: undefined,
+          children: [],
+          customMarkup: outlineMarkup,
+        })
+      }
     })
 
-    // Update layer nodes with custom markup
-    // Keep the original type/name/isGroup to preserve layer tree appearance
-    const updateNodeMarkup = (nodes: SVGNode[]): SVGNode[] => {
+    // Replace target node with a group containing the fill children
+    const updateNodeWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
-        const data = customMarkupMap.get(node.id)
-        if (data) {
+        if (node.id === targetNode.id) {
+          // Replace this node with a group containing all fill layers
           return {
             ...node,
-            customMarkup: data.markup,
-            fillColor: data.color,
-            // Keep original type, name, and isGroup - don't change to 'g'
+            children: newChildNodes,
+            customMarkup: undefined, // Remove any custom markup on parent, children have it
           }
         }
         if (node.children.length > 0) {
-          return { ...node, children: updateNodeMarkup(node.children) }
+          return { ...node, children: updateNodeWithFillChildren(node.children) }
         }
         return node
       })
     }
 
-    const updatedNodes = updateNodeMarkup(layerNodes)
+    const updatedNodes = updateNodeWithFillChildren(layerNodes)
     setLayerNodes(updatedNodes)
-
-    // Rebuild SVG with the updated nodes (pass explicitly to avoid stale closure)
     rebuildSvgFromLayers(updatedNodes)
+
+    // Clear all state when done
+    setPreservedFillData(null)
+    setAccumulatedLayers([])
+    setLayerColor('')
 
     setFillTargetNodeId(null)
     setActiveTab('sort')
-  }, [targetNode, hatchedPaths, optimizedLines, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers])
+  }, [targetNode, hatchedPaths, optimizedLines, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers, setPreservedFillData])
+
+  // Add current hatch lines as a layer and rotate angle for next layer
+  const handleAddLayer = useCallback(() => {
+    if (hatchedPaths.length === 0) return
+
+    // Collect all current lines into accumulated layers
+    const newLayers: FillLayer[] = []
+    hatchedPaths.forEach(({ pathInfo, lines }) => {
+      const color = layerColor || pathInfo.color // Use custom color or original
+      lines.forEach(line => {
+        newLayers.push({
+          lines: [line],
+          color,
+          pathId: pathInfo.id,
+        })
+      })
+    })
+
+    setAccumulatedLayers(prev => [...prev, ...newLayers])
+
+    // Rotate angle for next layer (cross-hatching effect)
+    const newAngle = (angle + 45) % 180
+    setAngle(newAngle)
+
+    // Reset layer color for next layer
+    setLayerColor('')
+  }, [hatchedPaths, layerColor, angle, setAngle])
+
+  // Clear all accumulated layers
+  const handleClearLayers = useCallback(() => {
+    setAccumulatedLayers([])
+    setLayerColor('')
+  }, [])
 
   const handleNavigateToOrder = useCallback(() => {
     if (!boundingBox || optimizedLines.length === 0) return
@@ -2227,28 +2458,36 @@ export default function FillTab() {
           <div className="fill-section">
             <h3>Pattern Settings</h3>
 
-            <div className="fill-control">
+            <div
+              className={`fill-control selectable ${selectedControl === 'lineSpacing' ? 'selected' : ''}`}
+              onClick={() => setSelectedControl('lineSpacing')}
+            >
               <label>Line Spacing</label>
               <div className="control-row">
                 <input
                   type="range"
                   min="1"
                   max="20"
-                  value={lineSpacing}
-                  onChange={(e) => setLineSpacing(Number(e.target.value))}
+                  value={draftLineSpacing}
+                  onChange={(e) => setDraftLineSpacing(Number(e.target.value))}
+                  onPointerUp={() => setLineSpacing(draftLineSpacing)}
+                  onKeyUp={() => setLineSpacing(draftLineSpacing)}
                   className="fill-slider"
                 />
-                <span className="control-value">{lineSpacing}px</span>
+                <span className="control-value">{draftLineSpacing}px</span>
               </div>
             </div>
 
-            <div className="fill-control">
+            <div
+              className={`fill-control selectable ${selectedControl === 'angle' ? 'selected' : ''}`}
+              onClick={() => setSelectedControl('angle')}
+            >
               <label>Angle</label>
               <div className="control-row">
                 <span
                   className="angle-arrow"
-                  style={{ transform: `rotate(${angle}deg)` }}
-                  title={`${angle}° direction`}
+                  style={{ transform: `rotate(${draftAngle}deg)` }}
+                  title={`${draftAngle}° direction`}
                 >
                   →
                 </span>
@@ -2256,11 +2495,13 @@ export default function FillTab() {
                   type="range"
                   min="0"
                   max="180"
-                  value={angle}
-                  onChange={(e) => setAngle(Number(e.target.value))}
+                  value={draftAngle}
+                  onChange={(e) => setDraftAngle(Number(e.target.value))}
+                  onPointerUp={() => setAngle(draftAngle)}
+                  onKeyUp={() => setAngle(draftAngle)}
                   className="fill-slider"
                 />
-                <span className="control-value">{angle}°</span>
+                <span className="control-value">{draftAngle}°</span>
               </div>
             </div>
 
@@ -2279,21 +2520,29 @@ export default function FillTab() {
 
             {fillPattern === 'wiggle' && (
               <>
-                <div className="fill-control">
+                <div
+                  className={`fill-control selectable ${selectedControl === 'wiggleAmplitude' ? 'selected' : ''}`}
+                  onClick={() => setSelectedControl('wiggleAmplitude')}
+                >
                   <label>Amplitude</label>
                   <div className="control-row">
                     <input
                       type="range"
                       min="1"
                       max="10"
-                      value={wiggleAmplitude}
-                      onChange={(e) => setWiggleAmplitude(Number(e.target.value))}
+                      value={draftWiggleAmplitude}
+                      onChange={(e) => setDraftWiggleAmplitude(Number(e.target.value))}
+                      onPointerUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
+                      onKeyUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
                       className="fill-slider"
                     />
-                    <span className="control-value">{wiggleAmplitude}px</span>
+                    <span className="control-value">{draftWiggleAmplitude}px</span>
                   </div>
                 </div>
-                <div className="fill-control">
+                <div
+                  className={`fill-control selectable ${selectedControl === 'wiggleFrequency' ? 'selected' : ''}`}
+                  onClick={() => setSelectedControl('wiggleFrequency')}
+                >
                   <label>Frequency</label>
                   <div className="control-row">
                     <input
@@ -2301,11 +2550,13 @@ export default function FillTab() {
                       min="0.5"
                       max="5"
                       step="0.5"
-                      value={wiggleFrequency}
-                      onChange={(e) => setWiggleFrequency(Number(e.target.value))}
+                      value={draftWiggleFrequency}
+                      onChange={(e) => setDraftWiggleFrequency(Number(e.target.value))}
+                      onPointerUp={() => setWiggleFrequency(draftWiggleFrequency)}
+                      onKeyUp={() => setWiggleFrequency(draftWiggleFrequency)}
                       className="fill-slider"
                     />
-                    <span className="control-value">{wiggleFrequency}</span>
+                    <span className="control-value">{draftWiggleFrequency}</span>
                   </div>
                 </div>
               </>
@@ -2331,23 +2582,31 @@ export default function FillTab() {
             )}
 
             {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb') && (
-              <div className="fill-control">
+              <div
+                className={`fill-control selectable ${selectedControl === 'inset' ? 'selected' : ''}`}
+                onClick={() => setSelectedControl('inset')}
+              >
                 <label>Inset</label>
-              <div className="control-row">
-                <input
-                  type="range"
-                  min="0"
-                  max="10"
-                  value={inset}
-                  onChange={(e) => setInset(Number(e.target.value))}
-                  className="fill-slider"
-                />
-                <span className="control-value">{inset}px</span>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="10"
+                    value={draftInset}
+                    onChange={(e) => setDraftInset(Number(e.target.value))}
+                    onPointerUp={() => setInset(draftInset)}
+                    onKeyUp={() => setInset(draftInset)}
+                    className="fill-slider"
+                  />
+                  <span className="control-value">{draftInset}px</span>
+                </div>
               </div>
-            </div>
             )}
 
-            <div className="fill-control">
+            <div
+              className={`fill-control selectable ${selectedControl === 'penWidth' ? 'selected' : ''}`}
+              onClick={() => setSelectedControl('penWidth')}
+            >
               <label>Pen Width</label>
               <div className="control-row">
                 <input
@@ -2355,11 +2614,13 @@ export default function FillTab() {
                   min="0.1"
                   max="2"
                   step="0.1"
-                  value={penWidth}
-                  onChange={(e) => setPenWidth(Number(e.target.value))}
+                  value={draftPenWidth}
+                  onChange={(e) => setDraftPenWidth(Number(e.target.value))}
+                  onPointerUp={() => setPenWidth(draftPenWidth)}
+                  onKeyUp={() => setPenWidth(draftPenWidth)}
                   className="fill-slider"
                 />
-                <span className="control-value">{penWidth}mm</span>
+                <span className="control-value">{draftPenWidth}mm</span>
               </div>
             </div>
 
@@ -2393,14 +2654,78 @@ export default function FillTab() {
             </button>
           </div>
 
+          {showHatchPreview && fillProgress < 100 && (
+            <div className="fill-progress">
+              <div className="fill-progress-bar">
+                <div
+                  className="fill-progress-fill"
+                  style={{ width: `${fillProgress}%` }}
+                />
+              </div>
+              <span className="fill-progress-text">{fillProgress}%</span>
+            </div>
+          )}
+
+          <div className="fill-section layer-section">
+            <h3>Layer Color</h3>
+            <div className="layer-color-row">
+              <input
+                type="color"
+                value={layerColor || (fillPaths[0]?.color || '#000000')}
+                onChange={(e) => setLayerColor(e.target.value)}
+                className="layer-color-picker"
+                title="Pick color for this fill layer"
+              />
+              <input
+                type="text"
+                value={layerColor || (fillPaths[0]?.color || '#000000')}
+                onChange={(e) => setLayerColor(e.target.value)}
+                className="layer-color-input"
+                placeholder="#000000"
+              />
+              {layerColor && (
+                <button
+                  className="layer-color-reset"
+                  onClick={() => setLayerColor('')}
+                  title="Reset to original color"
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+            {accumulatedLayers.length > 0 && (
+              <div className="accumulated-layers-info">
+                <span>{accumulatedLayers.length} lines in {new Set(accumulatedLayers.map(l => l.color)).size} layer(s) queued</span>
+                <button
+                  className="clear-layers-btn"
+                  onClick={handleClearLayers}
+                  title="Clear all accumulated layers"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="fill-actions secondary">
+            <button
+              className="fill-add-layer-btn"
+              disabled={fillPaths.length === 0 || !showHatchPreview}
+              onClick={handleAddLayer}
+              title="Add current pattern as a layer and rotate angle for next (builds up cross-hatch)"
+            >
+              Add Layer (+45°)
+            </button>
+          </div>
+
           <div className="fill-actions secondary">
             <button
               className="fill-apply-btn"
               disabled={fillPaths.length === 0 || !showHatchPreview}
               onClick={handleApplyFill}
-              title={!showHatchPreview ? 'Preview first to see the result' : 'Apply hatching to the SVG'}
+              title={!showHatchPreview ? 'Preview first to see the result' : 'Apply all layers to the SVG'}
             >
-              Apply Fill
+              Apply Fill{accumulatedLayers.length > 0 ? ` (${new Set(accumulatedLayers.map(l => l.color)).size + 1} layers)` : ''}
             </button>
           </div>
         </div>

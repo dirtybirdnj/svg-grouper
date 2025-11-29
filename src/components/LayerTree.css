@@ -52,8 +52,12 @@
 .layer-node-content.hidden .layer-icon.group-fill,
 .layer-node-content.hidden .layer-icon.group-stroke,
 .layer-node-content.hidden .layer-icon.group-mixed,
-.layer-node-content.hidden .layer-icon.path {
+.layer-node-content.hidden .layer-icon.path-fill {
   background: #999 !important;
+}
+
+.layer-node-content.hidden .layer-icon.path-stroke {
+  border-bottom-color: #999 !important;
 }
 
 .layer-node-content.hidden .layer-name {
@@ -137,9 +141,19 @@
   background: #c0392b;
 }
 
-.layer-icon.path {
-  color: white;
-  background: #4a90e2;
+.layer-icon.path-fill {
+  background: #27ae60;
+  border-radius: 3px;
+}
+
+.layer-icon.path-stroke {
+  width: 0;
+  height: 0;
+  background: transparent;
+  border-left: 10px solid transparent;
+  border-right: 10px solid transparent;
+  border-bottom: 17px solid #9b59b6;
+  border-radius: 0;
 }
 
 .layer-name {
@@ -156,6 +170,15 @@
   color: #999;
   margin-left: 0.25rem;
   flex-shrink: 0;
+}
+
+.path-info-compact {
+  font-size: 0.7rem;
+  font-family: monospace;
+  color: #888;
+  margin-left: 0.5rem;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .color-swatches {
@@ -217,4 +240,285 @@
 
 .layer-node-content.processing-complete:hover {
   background: #c3e6cb !important;
+}
+
+/* Color swatch clickable states */
+.color-swatch {
+  cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+
+.color-swatch:hover {
+  transform: scale(1.15);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  z-index: 1;
+}
+
+.color-swatch.copied {
+  background: #27ae60 !important;
+  animation: pulse-copied 0.3s ease;
+}
+
+@keyframes pulse-copied {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.3); }
+  100% { transform: scale(1.15); }
+}
+
+/* Color picker popup */
+.color-picker-popup {
+  position: fixed;
+  z-index: 1000;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  width: 200px;
+}
+
+.color-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  background: #f8f8f8;
+  border-bottom: 1px solid #eee;
+  border-radius: 8px 8px 0 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #333;
+}
+
+.color-picker-close {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  color: #999;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.color-picker-close:hover {
+  color: #333;
+}
+
+.color-picker-content {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.color-picker-input {
+  width: 100%;
+  height: 100px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.color-picker-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.color-picker-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.color-picker-hex-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.color-picker-hex-input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.color-picker-hex-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+}
+
+.color-picker-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #f8f8f8;
+  border-radius: 4px;
+}
+
+.color-preview-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.color-preview-label {
+  font-family: monospace;
+  font-size: 0.85rem;
+  color: #666;
+}
+
+.color-picker-apply {
+  width: 100%;
+  padding: 0.6rem;
+  background: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.color-picker-apply:hover {
+  background: #357abd;
+}
+
+/* Mode toggle (Fill/Stroke) */
+.mode-toggle {
+  display: flex;
+  gap: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid #ddd;
+}
+
+.mode-toggle-btn {
+  flex: 1;
+  padding: 0.5rem;
+  border: none;
+  background: #f5f5f5;
+  color: #666;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-toggle-btn:first-child {
+  border-right: 1px solid #ddd;
+}
+
+.mode-toggle-btn:hover {
+  background: #e8e8e8;
+}
+
+.mode-toggle-btn.active {
+  background: #4a90e2;
+  color: white;
+}
+
+.mode-toggle-btn.active:hover {
+  background: #357abd;
+}
+
+/* Stroke width controls */
+.stroke-width-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.stroke-width-label {
+  font-size: 0.75rem;
+  color: #666;
+  font-weight: 500;
+}
+
+.stroke-width-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.stroke-width-slider {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  background: #ddd;
+  border-radius: 2px;
+  outline: none;
+}
+
+.stroke-width-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #4a90e2;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.stroke-width-input {
+  width: 50px;
+  padding: 0.3rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.stroke-width-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+}
+
+/* Drag and drop styles */
+.layer-node.dragging {
+  opacity: 0.5;
+}
+
+.layer-node.dragging .layer-node-content {
+  background: #e3f2ff;
+  border: 1px dashed #4a90e2;
+}
+
+.layer-node.drop-before > .layer-node-content::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 3px;
+  background: #4a90e2;
+  border-radius: 2px;
+}
+
+.layer-node.drop-after > .layer-node-content::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 3px;
+  background: #4a90e2;
+  border-radius: 2px;
+}
+
+.layer-node.drop-inside > .layer-node-content {
+  background: rgba(74, 144, 226, 0.2);
+  outline: 2px solid #4a90e2;
+  outline-offset: -2px;
+}
+
+.layer-node-content {
+  position: relative;
+  cursor: grab;
+}
+
+.layer-node-content:active {
+  cursor: grabbing;
 }
