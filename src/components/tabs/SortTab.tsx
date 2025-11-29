@@ -1601,11 +1601,71 @@ export default function SortTab() {
     setCropAspectRatio(`${h}:${w}` as '1:2' | '3:4' | '16:9' | '9:16')
   }
 
+  // Check if SVG has filled shapes (not line-based content)
+  const countFilledShapes = (): number => {
+    if (!svgContent) return 0
+
+    const parser = new DOMParser()
+    const doc = parser.parseFromString(svgContent, 'image/svg+xml')
+    let fillCount = 0
+
+    const checkElement = (el: Element) => {
+      const tagName = el.tagName.toLowerCase()
+      if (['path', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+        const fill = el.getAttribute('fill')
+        const stroke = el.getAttribute('stroke')
+        const style = el.getAttribute('style') || ''
+
+        // Check if element has fill but no stroke
+        let hasFill = false
+        let hasStroke = false
+
+        if (style.includes('fill:')) {
+          const fillMatch = style.match(/fill:\s*([^;]+)/)
+          hasFill = fillMatch ? fillMatch[1].trim() !== 'none' : false
+        } else if (fill && fill !== 'none') {
+          hasFill = true
+        }
+
+        if (style.includes('stroke:')) {
+          const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+          hasStroke = strokeMatch ? strokeMatch[1].trim() !== 'none' : false
+        } else if (stroke && stroke !== 'none') {
+          hasStroke = true
+        }
+
+        if (hasFill && !hasStroke) {
+          fillCount++
+        }
+      }
+
+      // Check children
+      for (const child of Array.from(el.children)) {
+        checkElement(child)
+      }
+    }
+
+    const svg = doc.querySelector('svg')
+    if (svg) {
+      for (const child of Array.from(svg.children)) {
+        checkElement(child)
+      }
+    }
+
+    return fillCount
+  }
+
   // Apply crop to SVG
   const handleApplyCrop = async () => {
     if (!svgContent || !svgDimensions || !window.electron?.cropSVG) {
       setStatusMessage('error:Crop not available - requires Electron')
       return
+    }
+
+    // Check for filled shapes
+    const filledShapeCount = countFilledShapes()
+    if (filledShapeCount > 0) {
+      setStatusMessage(`Cropping ${filledShapeCount} filled shapes (will become outlines). Use Fill to convert to lines first for better results.`)
     }
 
     // Get crop dimensions in SVG coordinates
@@ -1634,7 +1694,9 @@ export default function SortTab() {
     const cropX = svgCenterX - cropDims.width / 2
     const cropY = svgCenterY - cropDims.height / 2
 
-    setStatusMessage('Applying crop...')
+    if (filledShapeCount === 0) {
+      setStatusMessage('Applying crop...')
+    }
     setIsProcessing(true)
 
     try {
