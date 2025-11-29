@@ -27,7 +27,6 @@ function AppContent() {
     selectedNodeIds,
     setSelectedNodeIds,
     setFillTargetNodeId,
-    syncSvgContent,
     rebuildSvgFromLayers,
     setOrderData,
     isProcessing,
@@ -109,13 +108,20 @@ function AppContent() {
       let result: SVGNode[] = []
 
       for (const node of nodes) {
-        if (node.isGroup && node.children.length > 0) {
+        // Preserve nodes with customMarkup (like line fill patterns) - treat as leaf nodes
+        if (node.customMarkup) {
+          result.push(node)
+        } else if (node.isGroup && node.children.length > 0) {
           const parent = node.element.parentElement
           if (parent) {
             const ungroupedChildren = ungroupAll(node.children)
 
             for (const child of ungroupedChildren) {
-              parent.insertBefore(child.element, node.element)
+              // Only insert into DOM if child doesn't have customMarkup
+              // (customMarkup nodes are rendered via rebuildSvgFromLayers)
+              if (!child.customMarkup) {
+                parent.insertBefore(child.element, node.element)
+              }
               result.push(child)
             }
 
@@ -132,11 +138,18 @@ function AppContent() {
     const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
       const colorGroups = new Map<string, SVGNode[]>()
       nodes.forEach(node => {
-        const color = getElementColor(node.element) || 'no-color'
-        if (!colorGroups.has(color)) {
-          colorGroups.set(color, [])
+        // For nodes with customMarkup (line fills), use the fillColor property
+        let color: string | null = null
+        if (node.customMarkup && node.fillColor) {
+          color = node.fillColor
+        } else {
+          color = getElementColor(node.element)
         }
-        colorGroups.get(color)!.push(node)
+        const colorKey = color || 'no-color'
+        if (!colorGroups.has(colorKey)) {
+          colorGroups.set(colorKey, [])
+        }
+        colorGroups.get(colorKey)!.push(node)
       })
 
       if (colorGroups.size <= 1) return nodes
@@ -183,7 +196,8 @@ function AppContent() {
 
     setLayerNodes(processedNodes)
     setSelectedNodeIds(new Set())
-    syncSvgContent()
+    // Use rebuildSvgFromLayers to properly render customMarkup (line fill patterns)
+    rebuildSvgFromLayers(processedNodes)
   }
 
   const handleToggleCrop = () => {
