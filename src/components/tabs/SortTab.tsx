@@ -44,6 +44,8 @@ export default function SortTab() {
     rebuildSvgFromLayers,
     skipNextParse,
     setIsProcessing,
+    setFillTargetNodeId,
+    setOrderData,
   } = useAppContext()
 
   // Ref for the canvas container to get its dimensions
@@ -1657,42 +1659,116 @@ export default function SortTab() {
 
   // Apply crop to SVG
   const handleApplyCrop = async () => {
+    console.log('[Crop] handleApplyCrop called')
+    console.log('[Crop] svgContent exists:', !!svgContent)
+    console.log('[Crop] svgDimensions:', svgDimensions)
+    console.log('[Crop] window.electron?.cropSVG exists:', !!window.electron?.cropSVG)
+
     if (!svgContent || !svgDimensions || !window.electron?.cropSVG) {
       setStatusMessage('error:Crop not available - requires Electron')
+      console.log('[Crop] Aborting: missing requirements')
       return
     }
 
     // Check for filled shapes
     const filledShapeCount = countFilledShapes()
+    console.log('[Crop] Filled shape count:', filledShapeCount)
     if (filledShapeCount > 0) {
       setStatusMessage(`Cropping ${filledShapeCount} filled shapes (will become outlines). Use Fill to convert to lines first for better results.`)
     }
 
     // Get crop dimensions in SVG coordinates
     const cropDims = getCropDimensions()
+    console.log('[Crop] Crop dimensions:', cropDims)
 
     // Get the canvas container dimensions
     const container = canvasContainerRef.current
     if (!container) {
       setStatusMessage('error:Could not find canvas container')
+      console.log('[Crop] Aborting: no canvas container')
       return
     }
 
-    // Get container rect to verify it exists (dimensions used for coordinate transform)
-    container.getBoundingClientRect()
+    // Get container rect for coordinate transform
+    const containerRect = container.getBoundingClientRect()
 
-    // The SVG is centered at the viewport center, then transformed by offset and scale
-    // The crop overlay is always centered at the viewport center.
-    // To convert the crop center from viewport to SVG coordinates:
-    // svgCenterX = -offset.x / scale + svgDimensions.width / 2
-    // svgCenterY = -offset.y / scale + svgDimensions.height / 2
+    // Find the actual SVG element to get its rendered size
+    const svgElement = container.querySelector('svg')
+    if (!svgElement) {
+      console.log('[Crop] ERROR: Could not find SVG element')
+      setStatusMessage('error:Could not find SVG element')
+      return
+    }
 
-    const svgCenterX = -offset.x / scale + svgDimensions.width / 2
-    const svgCenterY = -offset.y / scale + svgDimensions.height / 2
+    // Get the SVG element's bounding rect to see its actual rendered size
+    const svgRect = svgElement.getBoundingClientRect()
+    console.log('[Crop] SVG element rect:', svgRect.width.toFixed(2), 'x', svgRect.height.toFixed(2))
 
-    // Crop box in SVG coordinates
-    const cropX = svgCenterX - cropDims.width / 2
-    const cropY = svgCenterY - cropDims.height / 2
+    // The SVG is displayed with CSS max-width: 90%; max-height: 90%
+    // This means its base (untransformed) size is constrained to fit in 90% of the container
+    // Then the transform scale is applied on top
+    //
+    // So the SVG's rendered size = (baseSize * scale) where baseSize fits in 90% of container
+    // We can calculate baseSize from: renderedSize / scale = baseSize
+    const baseSvgWidth = svgRect.width / scale
+    const baseSvgHeight = svgRect.height / scale
+    console.log('[Crop] SVG base size (before zoom):', baseSvgWidth.toFixed(2), 'x', baseSvgHeight.toFixed(2))
+
+    // The base scale is the ratio of base rendered size to SVG coordinate size
+    const baseScale = baseSvgWidth / svgDimensions.width
+    console.log('[Crop] Base scale (SVG coords to base pixels):', baseScale.toFixed(4))
+
+    // Total effective scale from SVG coords to current viewport pixels
+    const effectiveScale = baseScale * scale
+
+    console.log('[Crop] Container size:', containerRect.width, 'x', containerRect.height)
+    console.log('[Crop] SVG dimensions:', svgDimensions.width, 'x', svgDimensions.height)
+    console.log('[Crop] Base scale (fit to container):', baseScale.toFixed(4))
+    console.log('[Crop] User zoom scale:', scale.toFixed(4))
+    console.log('[Crop] Effective scale:', effectiveScale.toFixed(4))
+    console.log('[Crop] Current offset:', offset)
+
+    // The crop overlay is centered at the viewport center.
+    // The SVG (after base scale + translation + user scale) has its center at:
+    //   viewport position = (containerWidth/2 + offset.x, containerHeight/2 + offset.y)
+    //
+    // To find the SVG coordinate at viewport center:
+    // Distance from SVG center (in viewport) to viewport center = (-offset.x, -offset.y)
+    // This distance in SVG coords = (-offset.x / effectiveScale, -offset.y / effectiveScale)
+    // SVG coord at viewport center = SVG center + distance
+    //   = (svgWidth/2 - offset.x/effectiveScale, svgHeight/2 - offset.y/effectiveScale)
+
+    const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
+    const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
+
+    console.log('[Crop] SVG coord at viewport center:', { svgCenterX: svgCenterX.toFixed(2), svgCenterY: svgCenterY.toFixed(2) })
+
+    // Crop box in SVG coordinates - centered at the viewport center's SVG position
+    let cropX = svgCenterX - cropDims.width / 2
+    let cropY = svgCenterY - cropDims.height / 2
+    console.log('[Crop] Raw crop box: x=', cropX.toFixed(2), 'y=', cropY.toFixed(2), 'w=', cropDims.width.toFixed(2), 'h=', cropDims.height.toFixed(2))
+
+    // Clamp crop box to SVG bounds
+    if (cropX < 0) {
+      console.log('[Crop] Clamping X from', cropX.toFixed(2), 'to 0')
+      cropX = 0
+    }
+    if (cropY < 0) {
+      console.log('[Crop] Clamping Y from', cropY.toFixed(2), 'to 0')
+      cropY = 0
+    }
+    if (cropX + cropDims.width > svgDimensions.width) {
+      const oldX = cropX
+      cropX = svgDimensions.width - cropDims.width
+      console.log('[Crop] Clamping X from', oldX.toFixed(2), 'to', cropX.toFixed(2), '(right edge)')
+    }
+    if (cropY + cropDims.height > svgDimensions.height) {
+      const oldY = cropY
+      cropY = svgDimensions.height - cropDims.height
+      console.log('[Crop] Clamping Y from', oldY.toFixed(2), 'to', cropY.toFixed(2), '(bottom edge)')
+    }
+
+    console.log('[Crop] Final crop box: x=', cropX.toFixed(2), 'y=', cropY.toFixed(2), 'w=', cropDims.width.toFixed(2), 'h=', cropDims.height.toFixed(2))
 
     if (filledShapeCount === 0) {
       setStatusMessage('Applying crop...')
@@ -1700,6 +1776,9 @@ export default function SortTab() {
     setIsProcessing(true)
 
     try {
+      console.log('[Crop] Calling window.electron.cropSVG...')
+      console.log('[Crop] Input SVG length:', svgContent.length)
+
       const croppedSvg = await window.electron.cropSVG({
         svg: svgContent,
         x: cropX,
@@ -1708,21 +1787,56 @@ export default function SortTab() {
         height: cropDims.height
       })
 
-      // Update SVG content with cropped result
-      setSvgContent(croppedSvg)
-      setShowCrop(false)
-      setStatusMessage(`Cropped to ${cropDims.width.toFixed(0)} × ${cropDims.height.toFixed(0)} px`)
+      console.log('[Crop] Received cropped SVG, length:', croppedSvg.length)
+      console.log('[Crop] First 500 chars of result:', croppedSvg.substring(0, 500))
 
-      // Reset pan/zoom
+      // Treat the cropped SVG as a new file - reset all state
+      // Clear layer nodes and selection
+      setLayerNodes([])
+      setSelectedNodeIds(new Set())
+      setLastSelectedNodeId(null)
+
+      // Clear any fill/order mode data
+      setFillTargetNodeId(null)
+      setOrderData(null)
+
+      // Reset pan/zoom before loading new content
       setScale(1)
       setOffset({ x: 0, y: 0 })
+
+      // Clear the SVG dimensions so they get recalculated
+      setSvgDimensions(null)
+
+      // Ensure the next parse is NOT skipped
+      skipNextParse.current = false
+      parsingRef.current = false
+
+      // Hide crop overlay
+      setShowCrop(false)
+
+      // Update SVG content with cropped result - this will trigger re-parsing
+      setSvgContent(croppedSvg)
+
+      setStatusMessage(`Cropped to ${cropDims.width.toFixed(0)} × ${cropDims.height.toFixed(0)} px`)
+      console.log('[Crop] Crop complete, all state reset for new SVG')
     } catch (err) {
-      console.error('Crop failed:', err)
+      console.error('[Crop] Crop failed:', err)
       setStatusMessage(`error:Crop failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
     } finally {
       setIsProcessing(false)
     }
   }
+
+  // Listen for apply-crop event from header button
+  useEffect(() => {
+    const handleApplyCropEvent = () => {
+      console.log('[Crop] Received apply-crop event')
+      handleApplyCrop()
+    }
+
+    window.addEventListener('apply-crop', handleApplyCropEvent)
+    return () => window.removeEventListener('apply-crop', handleApplyCropEvent)
+  }, [svgContent, svgDimensions, scale, offset, cropSize, cropAspectRatio])
 
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -2017,24 +2131,6 @@ export default function SortTab() {
                 ↻
               </button>
             </div>
-            <button
-              className="crop-apply-button"
-              onClick={handleApplyCrop}
-              title="Apply crop - clips SVG content to crop region"
-              style={{
-                marginLeft: '1rem',
-                padding: '0.4rem 1rem',
-                background: '#27ae60',
-                color: 'white',
-                border: 'none',
-                borderRadius: '4px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                fontSize: '0.9rem'
-              }}
-            >
-              ✓ Apply Crop
-            </button>
           </div>
         )}
         <div ref={canvasContainerRef} className="canvas-container">

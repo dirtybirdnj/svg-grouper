@@ -299,6 +299,59 @@ export default function SVGCanvas({
                     stroke="#4a90e2"
                     strokeWidth="1"
                   />
+
+                  {/* DEBUG: Red rect showing calculated crop area in SVG coords */}
+                  {(() => {
+                    // Replicate the crop calculation from SortTab to show where we THINK we're cropping
+                    const svgElement = svgContainerRef.current?.querySelector('svg')
+                    if (!svgElement) return null
+
+                    const svgRect = svgElement.getBoundingClientRect()
+                    const baseSvgWidth = svgRect.width / scale
+                    const baseSvgHeight = svgRect.height / scale
+                    const baseScale = baseSvgWidth / svgDimensions.width
+                    const effectiveScale = baseScale * scale
+
+                    // SVG coord at viewport center
+                    const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
+                    const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
+
+                    // Crop box in SVG coords
+                    let cropSvgX = svgCenterX - dims.width / 2
+                    let cropSvgY = svgCenterY - dims.height / 2
+
+                    // Clamp to bounds
+                    if (cropSvgX < 0) cropSvgX = 0
+                    if (cropSvgY < 0) cropSvgY = 0
+                    if (cropSvgX + dims.width > svgDimensions.width) cropSvgX = svgDimensions.width - dims.width
+                    if (cropSvgY + dims.height > svgDimensions.height) cropSvgY = svgDimensions.height - dims.height
+
+                    // Convert SVG coords back to viewport coords for drawing
+                    // The SVG is positioned with its center at (containerWidth/2 + offset.x, containerHeight/2 + offset.y)
+                    // A point at SVG coord (x,y) is at viewport position:
+                    //   viewportX = containerWidth/2 + offset.x + (x - svgWidth/2) * effectiveScale
+                    //   viewportY = containerHeight/2 + offset.y + (y - svgHeight/2) * effectiveScale
+                    const debugX = viewportCenterX + offset.x + (cropSvgX - svgDimensions.width / 2) * effectiveScale
+                    const debugY = viewportCenterY + offset.y + (cropSvgY - svgDimensions.height / 2) * effectiveScale
+                    const debugW = dims.width * effectiveScale
+                    const debugH = dims.height * effectiveScale
+
+                    console.log('[DEBUG OVERLAY] effectiveScale:', effectiveScale.toFixed(4),
+                      'cropSvg:', cropSvgX.toFixed(0), cropSvgY.toFixed(0),
+                      'debugViewport:', debugX.toFixed(0), debugY.toFixed(0))
+
+                    return (
+                      <rect
+                        x={debugX}
+                        y={debugY}
+                        width={debugW}
+                        height={debugH}
+                        fill="none"
+                        stroke="red"
+                        strokeWidth="2"
+                      />
+                    )
+                  })()}
                 </svg>
               </div>
             </>
