@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import FileUpload from '../FileUpload'
 import SVGCanvas from '../SVGCanvas'
@@ -34,6 +34,7 @@ export default function SortTab() {
     offset,
     setOffset,
     showCrop,
+    setShowCrop,
     cropAspectRatio,
     setCropAspectRatio,
     cropSize,
@@ -42,7 +43,11 @@ export default function SortTab() {
     setStatusMessage,
     rebuildSvgFromLayers,
     skipNextParse,
+    setIsProcessing,
   } = useAppContext()
+
+  // Ref for the canvas container to get its dimensions
+  const canvasContainerRef = useRef<HTMLDivElement>(null)
 
   const [sidebarWidth, setSidebarWidth] = useState(300)
   const [isResizing, setIsResizing] = useState(false)
@@ -1596,6 +1601,67 @@ export default function SortTab() {
     setCropAspectRatio(`${h}:${w}` as '1:2' | '3:4' | '16:9' | '9:16')
   }
 
+  // Apply crop to SVG
+  const handleApplyCrop = async () => {
+    if (!svgContent || !svgDimensions || !window.electron?.cropSVG) {
+      setStatusMessage('error:Crop not available - requires Electron')
+      return
+    }
+
+    // Get crop dimensions in SVG coordinates
+    const cropDims = getCropDimensions()
+
+    // Get the canvas container dimensions
+    const container = canvasContainerRef.current
+    if (!container) {
+      setStatusMessage('error:Could not find canvas container')
+      return
+    }
+
+    // Get container rect to verify it exists (dimensions used for coordinate transform)
+    container.getBoundingClientRect()
+
+    // The SVG is centered at the viewport center, then transformed by offset and scale
+    // The crop overlay is always centered at the viewport center.
+    // To convert the crop center from viewport to SVG coordinates:
+    // svgCenterX = -offset.x / scale + svgDimensions.width / 2
+    // svgCenterY = -offset.y / scale + svgDimensions.height / 2
+
+    const svgCenterX = -offset.x / scale + svgDimensions.width / 2
+    const svgCenterY = -offset.y / scale + svgDimensions.height / 2
+
+    // Crop box in SVG coordinates
+    const cropX = svgCenterX - cropDims.width / 2
+    const cropY = svgCenterY - cropDims.height / 2
+
+    setStatusMessage('Applying crop...')
+    setIsProcessing(true)
+
+    try {
+      const croppedSvg = await window.electron.cropSVG({
+        svg: svgContent,
+        x: cropX,
+        y: cropY,
+        width: cropDims.width,
+        height: cropDims.height
+      })
+
+      // Update SVG content with cropped result
+      setSvgContent(croppedSvg)
+      setShowCrop(false)
+      setStatusMessage(`Cropped to ${cropDims.width.toFixed(0)} × ${cropDims.height.toFixed(0)} px`)
+
+      // Reset pan/zoom
+      setScale(1)
+      setOffset({ x: 0, y: 0 })
+    } catch (err) {
+      console.error('Crop failed:', err)
+      setStatusMessage(`error:Crop failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
     setIsResizing(true)
@@ -1889,9 +1955,27 @@ export default function SortTab() {
                 ↻
               </button>
             </div>
+            <button
+              className="crop-apply-button"
+              onClick={handleApplyCrop}
+              title="Apply crop - clips SVG content to crop region"
+              style={{
+                marginLeft: '1rem',
+                padding: '0.4rem 1rem',
+                background: '#27ae60',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontSize: '0.9rem'
+              }}
+            >
+              ✓ Apply Crop
+            </button>
           </div>
         )}
-        <div className="canvas-container">
+        <div ref={canvasContainerRef} className="canvas-container">
           {!svgContent ? (
             <FileUpload
               onFileLoad={handleFileLoad}
