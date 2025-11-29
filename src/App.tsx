@@ -89,13 +89,18 @@ function AppContent() {
 
     const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.filter(node => {
+        // Don't delete nodes with customMarkup (line fill patterns) even if they have no children
+        if (node.customMarkup) {
+          return true
+        }
         if (node.isGroup && node.children.length === 0) {
           node.element.remove()
           return false
         }
         if (node.children.length > 0) {
           node.children = deleteEmptyLayers(node.children)
-          if (node.isGroup && node.children.length === 0) {
+          // After filtering children, check if group is now empty (but still preserve customMarkup)
+          if (node.isGroup && node.children.length === 0 && !node.customMarkup) {
             node.element.remove()
             return false
           }
