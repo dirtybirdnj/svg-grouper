@@ -16,7 +16,7 @@ def main():
         print("Usage: crop_svg.py <x> <y> <width> <height>", file=sys.stderr)
         sys.exit(1)
 
-    # Get crop bounds from arguments
+    # Get crop bounds from arguments (x, y is top-left corner)
     x = float(sys.argv[1])
     y = float(sys.argv[2])
     width = float(sys.argv[3])
@@ -26,32 +26,53 @@ def main():
     svg_input = sys.stdin.read()
 
     print(f"Python: Received SVG of size {len(svg_input)} bytes", file=sys.stderr)
-    print(f"Python: Crop bounds: ({x}, {y}) to ({x + width}, {y + height})", file=sys.stderr)
+    print(f"Python: Crop region: x={x}, y={y}, width={width}, height={height}", file=sys.stderr)
 
-    # Parse SVG
+    # Parse SVG to check for fills and get dimensions
     ET.register_namespace('', 'http://www.w3.org/2000/svg')
     ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
     root = ET.fromstring(svg_input)
 
     # Get SVG dimensions
-    svg_width = root.get('width', '0')
-    svg_height = root.get('height', '0')
+    svg_width_str = root.get('width', '0')
+    svg_height_str = root.get('height', '0')
+
+    # Parse dimensions (handle units)
+    def parse_dimension(val):
+        val = str(val).strip()
+        if val.endswith('px'):
+            return float(val[:-2])
+        elif val.endswith('pt'):
+            return float(val[:-2]) * 1.333333
+        elif val.endswith('in'):
+            return float(val[:-2]) * 96
+        elif val.endswith('mm'):
+            return float(val[:-2]) * 3.7795275591
+        elif val.endswith('cm'):
+            return float(val[:-2]) * 37.795275591
+        else:
+            try:
+                return float(val)
+            except:
+                return 0
+
+    svg_width = parse_dimension(svg_width_str)
+    svg_height = parse_dimension(svg_height_str)
     print(f"Python: SVG dimensions: {svg_width} x {svg_height}", file=sys.stderr)
 
-    # Count different element types
+    # Count different element types and convert fills
     stroke_count = 0
     fill_count = 0
     line_count = 0
 
     for elem in root.iter():
-        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag  # Handle namespaced tags
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
 
         if tag in ('path', 'polygon', 'rect', 'circle', 'ellipse', 'polyline'):
             fill_attr = elem.get('fill', '')
             stroke_attr = elem.get('stroke', '')
             style = elem.get('style', '')
 
-            # Check style attribute for fill/stroke
             has_fill = False
             has_stroke = False
 
@@ -76,7 +97,6 @@ def main():
                 elem.set('stroke', color)
                 elem.set('stroke-width', '1')
                 elem.set('fill', 'none')
-                # Remove fill from style if present
                 if style:
                     new_style = ';'.join(
                         part for part in style.split(';')
@@ -92,19 +112,24 @@ def main():
     print(f"Python: Found {line_count} lines, {stroke_count} stroked paths, {fill_count} filled shapes", file=sys.stderr)
 
     if fill_count > 0:
-        print(f"Python: WARNING - {fill_count} filled shapes converted to strokes (outlines only)", file=sys.stderr)
-        print(f"Python: For better results, use Fill feature to convert fills to line patterns before cropping", file=sys.stderr)
+        print(f"Python: WARNING - {fill_count} filled shapes converted to strokes", file=sys.stderr)
 
     # Convert to string
     svg_with_strokes = ET.tostring(root, encoding='unicode')
 
-    # Run vpype crop
-    print(f"Python: Running vpype crop...", file=sys.stderr)
+    # Build vpype command:
+    # 1. read with --attr stroke --attr stroke-width to preserve colors by layer
+    # 2. crop to the specified region
+    # 3. translate to move crop region to origin (0,0)
+    # 4. write with --restore-attribs to preserve stroke attributes
+
+    # Note: vpype crop uses x y width height format where x,y is top-left
     vpype_cmd = [
         'vpype',
-        'read', '-',
-        'crop', str(x), str(y), str(x + width), str(y + height),
-        'write', '--format', 'svg', '-'
+        'read', '--attr', 'stroke', '--attr', 'stroke-width', '-',
+        'crop', f'{x}', f'{y}', f'{width}', f'{height}',
+        'translate', '--', f'{-x}', f'{-y}',  # Move to origin
+        'write', '--page-size', f'{width}x{height}', '--restore-attribs', '--format', 'svg', '-'
     ]
 
     print(f"Python: Command: {' '.join(vpype_cmd)}", file=sys.stderr)
@@ -124,18 +149,14 @@ def main():
     output_svg = result.stdout
     print(f"Python: Cropped SVG size: {len(output_svg)} bytes", file=sys.stderr)
 
-    # vpype outputs with different dimensions, we need to keep the cropped size
-    # Parse the output and update dimensions
+    # Ensure proper XML declaration and dimensions
     try:
         out_root = ET.fromstring(output_svg)
-        # Set the width/height to match the crop dimensions
+        # Make sure width/height are set correctly
         out_root.set('width', f'{width}')
         out_root.set('height', f'{height}')
-        # Update viewBox to match
         out_root.set('viewBox', f'0 0 {width} {height}')
-        output_svg = ET.tostring(out_root, encoding='unicode')
-        # Add XML declaration
-        output_svg = '<?xml version="1.0" encoding="utf-8"?>\n' + output_svg
+        output_svg = '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(out_root, encoding='unicode')
     except Exception as e:
         print(f"Python: Warning - could not update output dimensions: {e}", file=sys.stderr)
 
