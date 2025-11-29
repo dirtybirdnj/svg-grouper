@@ -2026,6 +2026,35 @@ export default function FillTab() {
     }
   }, [hatchedPaths])
 
+  // Calculate fill statistics for display
+  const fillStats = useMemo(() => {
+    if (!showHatchPreview || hatchedPaths.length === 0) {
+      return null
+    }
+
+    let totalLines = 0
+    let totalPoints = 0
+
+    // Count lines from current preview
+    hatchedPaths.forEach(({ lines }) => {
+      totalLines += lines.length
+      // Each line has 2 points (start and end)
+      totalPoints += lines.length * 2
+    })
+
+    // Add accumulated layers
+    accumulatedLayers.forEach(layer => {
+      totalLines += layer.lines.length
+      totalPoints += layer.lines.length * 2
+    })
+
+    return {
+      lines: totalLines,
+      points: totalPoints,
+      paths: hatchedPaths.length + (accumulatedLayers.length > 0 ? 1 : 0)
+    }
+  }, [showHatchPreview, hatchedPaths, accumulatedLayers])
+
   // Convert mm to SVG units (assuming 96 DPI, 1mm = 3.7795px)
   const penWidthPx = penWidth * 3.7795
 
@@ -2663,6 +2692,19 @@ export default function FillTab() {
                 />
               </div>
               <span className="fill-progress-text">{fillProgress}%</span>
+            </div>
+          )}
+
+          {fillStats && (
+            <div className="fill-stats">
+              <div className="fill-stat">
+                <span className="stat-label">Lines:</span>
+                <span className="stat-value">{fillStats.lines.toLocaleString()}</span>
+              </div>
+              <div className="fill-stat">
+                <span className="stat-label">Points:</span>
+                <span className="stat-value">{fillStats.points.toLocaleString()}</span>
+              </div>
             </div>
           )}
 
