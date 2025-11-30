@@ -90,9 +90,9 @@ interface AppContextType {
   statusMessage: string
   setStatusMessage: (message: string) => void
 
-  // Fill mode state
-  fillTargetNodeId: string | null
-  setFillTargetNodeId: (id: string | null) => void
+  // Fill mode state - supports single ID or array of IDs for multiple selection
+  fillTargetNodeIds: string[]
+  setFillTargetNodeIds: (ids: string[]) => void
 
   // Order mode state
   orderData: OrderData | null
@@ -314,8 +314,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [cropArmed, setCropArmed] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
 
-  // Fill mode state
-  const [fillTargetNodeId, setFillTargetNodeId] = useState<string | null>(null)
+  // Fill mode state - supports multiple selected nodes
+  const [fillTargetNodeIds, setFillTargetNodeIds] = useState<string[]>([])
 
   // Order mode state
   const [orderData, setOrderData] = useState<OrderData | null>(null)
@@ -388,8 +388,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCropArmed,
     statusMessage,
     setStatusMessage,
-    fillTargetNodeId,
-    setFillTargetNodeId,
+    fillTargetNodeIds,
+    setFillTargetNodeIds,
     orderData,
     setOrderData,
     isProcessing,

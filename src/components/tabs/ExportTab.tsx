@@ -287,9 +287,17 @@ function nodeHasFills(node: SVGNode): boolean {
   return false
 }
 
+interface DrawablePath {
+  element: SVGElement
+  length: number
+  color: string
+  strokeWidth: number
+  markup: string
+}
+
 // Extract all path data for progressive drawing
-function extractDrawablePaths(svgElement: SVGSVGElement): { element: SVGElement; length: number }[] {
-  const paths: { element: SVGElement; length: number }[] = []
+function extractDrawablePaths(svgElement: SVGSVGElement): DrawablePath[] {
+  const paths: DrawablePath[] = []
 
   const collectPaths = (el: Element) => {
     const tagName = el.tagName.toLowerCase()
@@ -318,7 +326,30 @@ function extractDrawablePaths(svgElement: SVGSVGElement): { element: SVGElement;
           length = 100 // fallback for polyline/polygon
         }
 
-        paths.push({ element: el as SVGElement, length })
+        // Extract color from stroke attribute or style
+        let color = stroke || '#000000'
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (strokeMatch) {
+          color = strokeMatch[1].trim()
+        }
+        if (color === 'none') color = '#000000'
+
+        // Extract stroke width
+        let strokeWidth = 1
+        const swAttr = el.getAttribute('stroke-width')
+        if (swAttr) {
+          strokeWidth = parseFloat(swAttr) || 1
+        }
+        const swMatch = style.match(/stroke-width:\s*([^;]+)/)
+        if (swMatch) {
+          strokeWidth = parseFloat(swMatch[1]) || 1
+        }
+
+        // Get the element's markup for rendering
+        const serializer = new XMLSerializer()
+        const markup = serializer.serializeToString(el)
+
+        paths.push({ element: el as SVGElement, length, color, strokeWidth, markup })
       }
     }
 
@@ -338,9 +369,11 @@ export default function ExportTab() {
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false)
   const [playbackProgress, setPlaybackProgress] = useState(0)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1) // 0.25, 0.5, 1, 2, 4
   const playbackRef = useRef<number | null>(null)
-  const [drawablePaths, setDrawablePaths] = useState<{ element: SVGElement; length: number }[]>([])
+  const [drawablePaths, setDrawablePaths] = useState<DrawablePath[]>([])
   const [hasFillsWarning, setHasFillsWarning] = useState(false)
+  const [selectedColor, setSelectedColor] = useState<string | null>(null) // Filter by color
 
   // Paper sizes state
   const [paperSizes, setPaperSizes] = useState<PaperSize[]>(loadPaperSizes)
@@ -555,21 +588,28 @@ export default function ExportTab() {
     }
   }, [layerNodes, svgElementRef, svgContent])
 
+  // Filter paths by selected color
+  const filteredPaths = useMemo(() => {
+    if (!selectedColor) return drawablePaths
+    return drawablePaths.filter(p => p.color.toLowerCase() === selectedColor.toLowerCase())
+  }, [drawablePaths, selectedColor])
+
   // Playback control functions
   const handlePlay = useCallback(() => {
-    if (hasFillsWarning) {
+    if (hasFillsWarning && !selectedColor) {
       alert('Warning: This SVG contains fill layers that won\'t be drawn by a pen plotter.\n\nPlease convert fills to strokes using the "Convert fills to strokes" option, or use the Fill tab to apply line fill patterns to shapes.')
       return
     }
 
-    if (drawablePaths.length === 0) {
+    if (filteredPaths.length === 0) {
       alert('No drawable paths found. The SVG may not contain any stroked paths.')
       return
     }
 
     setIsPlaying(true)
     const startTime = performance.now()
-    const duration = 10000 // 10 seconds for full playback
+    const baseDuration = 10000 // 10 seconds at 1x speed
+    const duration = baseDuration / playbackSpeed
     const startProgress = playbackProgress
 
     const animate = (currentTime: number) => {
@@ -586,7 +626,7 @@ export default function ExportTab() {
     }
 
     playbackRef.current = requestAnimationFrame(animate)
-  }, [hasFillsWarning, drawablePaths, playbackProgress])
+  }, [hasFillsWarning, filteredPaths, playbackProgress, playbackSpeed, selectedColor])
 
   const handlePause = useCallback(() => {
     setIsPlaying(false)
@@ -600,6 +640,29 @@ export default function ExportTab() {
     handlePause()
     setPlaybackProgress(0)
   }, [handlePause])
+
+  const handleSlower = useCallback(() => {
+    const speeds = [0.25, 0.5, 1, 2, 4]
+    const idx = speeds.indexOf(playbackSpeed)
+    if (idx > 0) setPlaybackSpeed(speeds[idx - 1])
+  }, [playbackSpeed])
+
+  const handleFaster = useCallback(() => {
+    const speeds = [0.25, 0.5, 1, 2, 4]
+    const idx = speeds.indexOf(playbackSpeed)
+    if (idx < speeds.length - 1) setPlaybackSpeed(speeds[idx + 1])
+  }, [playbackSpeed])
+
+  const handleColorClick = useCallback((color: string) => {
+    if (selectedColor === color) {
+      setSelectedColor(null) // Deselect
+    } else {
+      setSelectedColor(color)
+    }
+    // Reset playback when changing color filter
+    handlePause()
+    setPlaybackProgress(0)
+  }, [selectedColor, handlePause])
 
   const handleProgressChange = useCallback((value: number) => {
     handlePause()
@@ -617,14 +680,50 @@ export default function ExportTab() {
 
   // Calculate which paths should be visible based on progress
   const visiblePathCount = useMemo(() => {
-    if (drawablePaths.length === 0) return 0
-    return Math.floor((playbackProgress / 100) * drawablePaths.length)
-  }, [playbackProgress, drawablePaths])
+    if (filteredPaths.length === 0) return 0
+    return Math.floor((playbackProgress / 100) * filteredPaths.length)
+  }, [playbackProgress, filteredPaths])
+
+  // Generate playback preview SVG content showing only visible paths
+  const playbackPreviewContent = useMemo(() => {
+    if (!svgElementRef.current || filteredPaths.length === 0 || playbackProgress === 0) return ''
+
+    // Get viewBox and dimensions from original SVG
+    const viewBox = svgElementRef.current.getAttribute('viewBox') || ''
+    const width = svgElementRef.current.getAttribute('width') || ''
+    const height = svgElementRef.current.getAttribute('height') || ''
+
+    // Build SVG with only visible paths
+    const visiblePaths = filteredPaths.slice(0, visiblePathCount)
+    const pathsMarkup = visiblePaths.map(p => p.markup).join('\n')
+
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${width}" height="${height}">\n${pathsMarkup}\n</svg>`
+  }, [svgElementRef, filteredPaths, visiblePathCount, playbackProgress])
 
   const stats = useMemo(() => {
     if (!layerNodes.length) return null
     return analyzeSVG(layerNodes)
   }, [layerNodes])
+
+  // Calculate which color index is currently being animated based on cumulative path counts
+  const activeColorIndex = useMemo(() => {
+    if (!stats || stats.colorPalette.length === 0 || drawablePaths.length === 0) return -1
+    if (playbackProgress === 0) return -1
+    if (playbackProgress >= 100) return stats.colorPalette.length // All complete
+
+    // Calculate cumulative paths per color to determine which color is active
+    let cumulativePaths = 0
+    const totalPaths = stats.colorPalette.reduce((sum, c) => sum + c.paths, 0)
+
+    for (let i = 0; i < stats.colorPalette.length; i++) {
+      cumulativePaths += stats.colorPalette[i].paths
+      const colorEndProgress = (cumulativePaths / totalPaths) * 100
+      if (playbackProgress <= colorEndProgress) {
+        return i
+      }
+    }
+    return stats.colorPalette.length - 1
+  }, [stats, playbackProgress, drawablePaths.length])
 
   const svgSizeBytes = useMemo(() => {
     if (!svgContent) return 0
@@ -1264,6 +1363,26 @@ export default function ExportTab() {
           <h2>Page Preview</h2>
           <div className="playback-controls">
             <button
+              className="playback-btn speed-btn"
+              onClick={handleSlower}
+              title="Slower"
+              disabled={playbackSpeed <= 0.25}
+            >
+              ◀◀
+            </button>
+            <span className="speed-indicator" title="Playback speed">
+              {playbackSpeed}x
+            </span>
+            <button
+              className="playback-btn speed-btn"
+              onClick={handleFaster}
+              title="Faster"
+              disabled={playbackSpeed >= 4}
+            >
+              ▶▶
+            </button>
+            <div className="playback-divider" />
+            <button
               className="playback-btn"
               onClick={handleRestart}
               title="Restart"
@@ -1286,12 +1405,13 @@ export default function ExportTab() {
               step="0.1"
               value={playbackProgress}
               onChange={(e) => handleProgressChange(Number(e.target.value))}
-              title={`${playbackProgress.toFixed(0)}% - ${visiblePathCount} of ${drawablePaths.length} paths`}
+              title={`${playbackProgress.toFixed(0)}% - ${visiblePathCount} of ${filteredPaths.length} paths`}
             />
             <span className="playback-info">
-              {visiblePathCount}/{drawablePaths.length}
+              {visiblePathCount}/{filteredPaths.length}
+              {selectedColor && <span className="filter-indicator"> (filtered)</span>}
             </span>
-            {hasFillsWarning && (
+            {hasFillsWarning && !selectedColor && (
               <span className="fills-warning" title="SVG contains fills that need to be converted to strokes">
                 ⚠
               </span>
@@ -1341,7 +1461,7 @@ export default function ExportTab() {
               >
                 <div
                   className="content-inner"
-                  dangerouslySetInnerHTML={{ __html: previewSvgContent }}
+                  dangerouslySetInnerHTML={{ __html: playbackProgress > 0 ? playbackPreviewContent : previewSvgContent }}
                   style={{
                     // Apply inset by shifting the content, then scale
                     transform: `scale(${pageLayout.scale * previewScale}) translate(${-pageLayout.insetPx}px, ${-pageLayout.insetPx}px)`,
@@ -1364,6 +1484,67 @@ export default function ExportTab() {
       <aside className="export-analysis">
         <div className="analysis-container">
           <h2>SVG Analysis</h2>
+
+          {/* Color Palette - at top with playback animation */}
+          {stats && stats.colorPalette.length > 0 && (
+            <section className="analysis-section color-palette-section">
+              <h3>
+                Color Palette ({stats.colorPalette.length} colors)
+                {selectedColor && (
+                  <button
+                    className="clear-filter-btn"
+                    onClick={() => { setSelectedColor(null); handleRestart() }}
+                    title="Clear filter"
+                  >
+                    × Clear
+                  </button>
+                )}
+              </h3>
+              <div className="color-palette">
+                {stats.colorPalette.map((colorData, index) => {
+                  // Get contrasting text color for readability
+                  let textColor = '#333'
+                  try {
+                    textColor = fontColorContrast(colorData.color)
+                  } catch {
+                    // If fontColorContrast fails (invalid color), default to dark
+                  }
+
+                  // Calculate opacity based on playback state and selection
+                  let opacity = 1
+                  const isSelected = selectedColor?.toLowerCase() === colorData.color.toLowerCase()
+
+                  if (selectedColor && !isSelected) {
+                    opacity = 0.3 // Dim non-selected colors
+                  } else if (!selectedColor && playbackProgress > 0 && playbackProgress < 100) {
+                    if (index > activeColorIndex) {
+                      opacity = 0.3 // Pending colors
+                    }
+                  }
+
+                  return (
+                    <div
+                      key={index}
+                      className={`color-item ${index === activeColorIndex && !selectedColor ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
+                      title={`Click to filter by ${colorData.color} - ${colorData.paths} paths, ${colorData.points} points`}
+                      onClick={() => handleColorClick(colorData.color)}
+                      style={{
+                        backgroundColor: colorData.color,
+                        color: textColor,
+                        border: `1px solid ${textColor === '#000000' ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)'}`,
+                        opacity,
+                        transition: 'opacity 0.3s ease',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span className="color-value">{colorData.color}</span>
+                      <span className="color-stats">{colorData.paths}/{colorData.points}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Combined Document, Content Statistics, and Path Operations */}
           <section className="analysis-section">
@@ -1459,38 +1640,6 @@ export default function ExportTab() {
             )}
           </section>
 
-          {/* Color Palette */}
-          {stats && stats.colorPalette.length > 0 && (
-            <section className="analysis-section">
-              <h3>Color Palette ({stats.colorPalette.length} colors)</h3>
-              <div className="color-palette">
-                {stats.colorPalette.map((colorData, index) => {
-                  // Get contrasting text color for readability
-                  let textColor = '#333'
-                  try {
-                    textColor = fontColorContrast(colorData.color)
-                  } catch {
-                    // If fontColorContrast fails (invalid color), default to dark
-                  }
-                  return (
-                    <div
-                      key={index}
-                      className="color-item"
-                      title={`${colorData.color} - ${colorData.paths} paths, ${colorData.points} points`}
-                      style={{
-                        backgroundColor: colorData.color,
-                        color: textColor,
-                        border: `1px solid ${textColor === '#000000' ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)'}`,
-                      }}
-                    >
-                      <span className="color-value">{colorData.color}</span>
-                      <span className="color-stats">{colorData.paths}/{colorData.points}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
-          )}
         </div>
       </aside>
 
@@ -1544,6 +1693,23 @@ export default function ExportTab() {
           </div>
         </div>
       )}
+
+      {/* Status Bar */}
+      <div className="status-bar">
+        <div className="status-bar-left">
+          {fileName && <span className="status-filename">{fileName}</span>}
+        </div>
+        <div className="status-bar-center">
+          {selectedColor && <span className="status-filter">Filtered: {selectedColor}</span>}
+        </div>
+        <div className="status-bar-right">
+          {stats && (
+            <span className="status-info">
+              {stats.totalPaths} paths • {stats.colorPalette.length} colors
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

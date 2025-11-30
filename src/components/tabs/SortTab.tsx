@@ -46,7 +46,7 @@ export default function SortTab() {
     skipNextParse,
     isProcessing,
     setIsProcessing,
-    setFillTargetNodeId,
+    setFillTargetNodeIds,
     setOrderData,
     flattenArmed,
     setFlattenArmed,
@@ -2183,6 +2183,120 @@ export default function SortTab() {
     setStatusMessage(`Welded: ${totalBefore} segments → ${totalAfter} compound path(s)`)
   }
 
+  // Check if flip order is possible
+  const canFlipOrder = (): boolean => {
+    // Can flip if multiple nodes selected, or if a single selected node has children
+    if (selectedNodeIds.size > 1) return true
+    if (selectedNodeIds.size === 1) {
+      const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
+        for (const node of nodes) {
+          if (node.id === id) return node
+          const found = findNodeById(node.children, id)
+          if (found) return found
+        }
+        return null
+      }
+      const nodeId = Array.from(selectedNodeIds)[0]
+      const node = findNodeById(layerNodes, nodeId)
+      return node ? node.children.length > 1 : false
+    }
+    return false
+  }
+
+  // Handle flip order - reverse the order of selected nodes or children of a selected group
+  const handleFlipOrder = () => {
+    if (!canFlipOrder()) return
+
+    const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNodeById(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    if (selectedNodeIds.size === 1) {
+      // Single node selected - flip its children
+      const nodeId = Array.from(selectedNodeIds)[0]
+
+      const flipChildrenOfNode = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (node.id === nodeId) {
+            // Reverse children order
+            const reversedChildren = [...node.children].reverse()
+            // Also reverse DOM order
+            const parent = node.element
+            reversedChildren.forEach(child => {
+              parent.appendChild(child.element)
+            })
+            return { ...node, children: reversedChildren }
+          }
+          if (node.children.length > 0) {
+            return { ...node, children: flipChildrenOfNode(node.children) }
+          }
+          return node
+        })
+      }
+
+      const updatedNodes = flipChildrenOfNode(layerNodes)
+      setLayerNodes(updatedNodes)
+      rebuildSvgFromLayers(updatedNodes)
+
+      const node = findNodeById(layerNodes, nodeId)
+      setStatusMessage(`Flipped order of ${node?.children.length || 0} children`)
+    } else {
+      // Multiple nodes selected - flip their order within their common parent
+      // Find the common parent and flip selected siblings
+      const selectedIds = Array.from(selectedNodeIds)
+
+      const flipSelectedInNodes = (nodes: SVGNode[]): SVGNode[] => {
+        // Check if selected nodes are at this level
+        const selectedAtThisLevel = nodes.filter(n => selectedIds.includes(n.id))
+
+        if (selectedAtThisLevel.length > 1) {
+          // Get indices of selected nodes
+          const indices = selectedAtThisLevel.map(n => nodes.findIndex(node => node.id === n.id))
+          const sorted = [...indices].sort((a, b) => a - b)
+
+          // Reverse the selected nodes within the array
+          const newNodes = [...nodes]
+          for (let i = 0; i < sorted.length; i++) {
+            newNodes[sorted[i]] = nodes[sorted[sorted.length - 1 - i]]
+          }
+
+          // Update DOM order for all nodes at this level
+          const parent = nodes[0]?.element.parentElement
+          if (parent) {
+            newNodes.forEach(node => {
+              parent.appendChild(node.element)
+            })
+          }
+
+          return newNodes.map(node => {
+            if (node.children.length > 0) {
+              return { ...node, children: flipSelectedInNodes(node.children) }
+            }
+            return node
+          })
+        }
+
+        // Recurse into children
+        return nodes.map(node => {
+          if (node.children.length > 0) {
+            return { ...node, children: flipSelectedInNodes(node.children) }
+          }
+          return node
+        })
+      }
+
+      const updatedNodes = flipSelectedInNodes(layerNodes)
+      setLayerNodes(updatedNodes)
+      rebuildSvgFromLayers(updatedNodes)
+      setStatusMessage(`Flipped order of ${selectedIds.length} selected items`)
+    }
+  }
+
   // Handle flatten all - remove empty layers, ungroup all, group by color
   const handleFlattenAll = () => {
     if (!flattenArmed) {
@@ -2547,7 +2661,7 @@ export default function SortTab() {
       setLastSelectedNodeId(null)
 
       // Clear any fill/order mode data
-      setFillTargetNodeId(null)
+      setFillTargetNodeIds([])
       setOrderData(null)
 
       // Reset pan/zoom before loading new content
@@ -2753,6 +2867,15 @@ export default function SortTab() {
               title={weldArmed ? "Click again to confirm weld" : "Weld - Combine paths into compound path (reduces path count)"}
             >
               ⚡
+            </button>
+            <div className="toolbar-divider" />
+            <button
+              className="action-button"
+              onClick={handleFlipOrder}
+              disabled={!canFlipOrder()}
+              title="Flip Order - Reverse order of selected items or children of selected group"
+            >
+              ⇅
             </button>
             <button
               className="action-button"

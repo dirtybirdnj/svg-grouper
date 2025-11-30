@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import { linesToCompoundPath } from '../../utils/geometry'
+import simplify from 'simplify-js'
 import './FillTab.css'
 
 interface FillPathInfo {
@@ -35,6 +36,93 @@ interface OrderedLine extends HatchLine {
 interface PolygonWithHoles {
   outer: Point[]
   holes: Point[][]
+}
+
+// Chain connected line segments into polylines, then simplify each polyline
+// Returns simplified lines that approximate the original with fewer points
+function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
+  if (tolerance <= 0 || lines.length === 0) return lines
+
+  const CONNECT_THRESHOLD = 0.5 // Points closer than this are considered connected
+
+  // Build chains of connected lines
+  const chains: Point[][] = []
+  const used = new Set<number>()
+
+  for (let i = 0; i < lines.length; i++) {
+    if (used.has(i)) continue
+
+    // Start a new chain
+    const chain: Point[] = [
+      { x: lines[i].x1, y: lines[i].y1 },
+      { x: lines[i].x2, y: lines[i].y2 }
+    ]
+    used.add(i)
+
+    // Try to extend the chain in both directions
+    let extended = true
+    while (extended) {
+      extended = false
+      const chainStart = chain[0]
+      const chainEnd = chain[chain.length - 1]
+
+      for (let j = 0; j < lines.length; j++) {
+        if (used.has(j)) continue
+
+        const line = lines[j]
+        const p1 = { x: line.x1, y: line.y1 }
+        const p2 = { x: line.x2, y: line.y2 }
+
+        // Check if line connects to end of chain
+        const d1End = Math.hypot(p1.x - chainEnd.x, p1.y - chainEnd.y)
+        const d2End = Math.hypot(p2.x - chainEnd.x, p2.y - chainEnd.y)
+        const d1Start = Math.hypot(p1.x - chainStart.x, p1.y - chainStart.y)
+        const d2Start = Math.hypot(p2.x - chainStart.x, p2.y - chainStart.y)
+
+        if (d1End < CONNECT_THRESHOLD) {
+          chain.push(p2)
+          used.add(j)
+          extended = true
+        } else if (d2End < CONNECT_THRESHOLD) {
+          chain.push(p1)
+          used.add(j)
+          extended = true
+        } else if (d1Start < CONNECT_THRESHOLD) {
+          chain.unshift(p2)
+          used.add(j)
+          extended = true
+        } else if (d2Start < CONNECT_THRESHOLD) {
+          chain.unshift(p1)
+          used.add(j)
+          extended = true
+        }
+      }
+    }
+
+    chains.push(chain)
+  }
+
+  // Simplify each chain and convert back to lines
+  const simplifiedLines: HatchLine[] = []
+
+  for (const chain of chains) {
+    if (chain.length < 2) continue
+
+    // Apply Ramer-Douglas-Peucker simplification
+    const simplified = simplify(chain, tolerance, true)
+
+    // Convert simplified points back to line segments
+    for (let i = 0; i < simplified.length - 1; i++) {
+      simplifiedLines.push({
+        x1: simplified[i].x,
+        y1: simplified[i].y,
+        x2: simplified[i + 1].x,
+        y2: simplified[i + 1].y
+      })
+    }
+  }
+
+  return simplifiedLines
 }
 
 // Get polygon points from an SVG element
@@ -1200,6 +1288,64 @@ function generateSpiralLines(
   return lines
 }
 
+// Generate a single spiral from a given center point, returning raw lines (not clipped)
+// This is used for "single spiral" mode where we generate one spiral for all shapes
+function generateGlobalSpiralLines(
+  centerX: number,
+  centerY: number,
+  maxRadius: number,
+  spacing: number,
+  angleDegrees: number = 0
+): HatchLine[] {
+  // Convert angle offset to radians
+  const angleOffset = (angleDegrees * Math.PI) / 180
+
+  // Generate spiral points
+  const spiralPoints: Point[] = []
+  const angleStep = 0.1 // radians per step
+  const radiusPerTurn = spacing
+  let angle = 0
+
+  while (true) {
+    const radius = (angle / (2 * Math.PI)) * radiusPerTurn
+    if (radius > maxRadius) break
+
+    // Apply angle offset to rotate the entire spiral
+    const rotatedAngle = angle + angleOffset
+    spiralPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+
+    // Safety limit
+    if (spiralPoints.length > 50000) break
+  }
+
+  // Convert to lines (not clipped)
+  const lines: HatchLine[] = []
+  for (let i = 0; i < spiralPoints.length - 1; i++) {
+    const p1 = spiralPoints[i]
+    const p2 = spiralPoints[i + 1]
+    lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+  }
+
+  return lines
+}
+
+// Clip spiral lines to a specific polygon (used for single spiral mode)
+// This properly clips lines at polygon boundaries, not just checking endpoints
+function clipSpiralToPolygon(
+  spiralLines: HatchLine[],
+  polygonData: PolygonWithHoles,
+  inset: number = 0
+): HatchLine[] {
+  // Reuse the existing clipLinesToPolygon which properly handles
+  // line-polygon intersections for correct clipping
+  return clipLinesToPolygon(spiralLines, polygonData, inset)
+}
+
 // ============================================================================
 // GYROID FILL PATTERN
 // ============================================================================
@@ -1591,8 +1737,8 @@ export default function FillTab() {
     svgContent,
     layerNodes,
     setLayerNodes,
-    fillTargetNodeId,
-    setFillTargetNodeId,
+    fillTargetNodeIds,
+    setFillTargetNodeIds,
     setActiveTab,
     rebuildSvgFromLayers,
     setOrderData,
@@ -1614,6 +1760,8 @@ export default function FillTab() {
   const [wiggleAmplitude, setWiggleAmplitude] = useState(5)
   const [wiggleFrequency, setWiggleFrequency] = useState(2)
   const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
+  const [singleSpiral, setSingleSpiral] = useState(false) // Use one giant spiral for all shapes
+  const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
 
   // Accumulated fill layers - each layer has lines with a color
   interface FillLayer {
@@ -1631,6 +1779,7 @@ export default function FillTab() {
   const [draftWiggleAmplitude, setDraftWiggleAmplitude] = useState(5)
   const [draftWiggleFrequency, setDraftWiggleFrequency] = useState(2)
   const [draftPenWidth, setDraftPenWidth] = useState(0.5)
+  const [draftSimplifyTolerance, setDraftSimplifyTolerance] = useState(0)
 
   // Sync draft states when actual values change programmatically (e.g., auto-rotate angle)
   useEffect(() => { setDraftLineSpacing(lineSpacing) }, [lineSpacing])
@@ -1639,6 +1788,7 @@ export default function FillTab() {
   useEffect(() => { setDraftWiggleAmplitude(wiggleAmplitude) }, [wiggleAmplitude])
   useEffect(() => { setDraftWiggleFrequency(wiggleFrequency) }, [wiggleFrequency])
   useEffect(() => { setDraftPenWidth(penWidth) }, [penWidth])
+  useEffect(() => { setDraftSimplifyTolerance(simplifyTolerance) }, [simplifyTolerance])
 
   // Selected control for keyboard nudge
   type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
@@ -1695,9 +1845,9 @@ export default function FillTab() {
 
   const previewRef = useRef<HTMLDivElement>(null)
 
-  // Find the target node
-  const targetNode = useMemo(() => {
-    if (!fillTargetNodeId) return null
+  // Find the target nodes (supports multiple selection)
+  const targetNodes = useMemo(() => {
+    if (fillTargetNodeIds.length === 0) return []
 
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
@@ -1708,12 +1858,20 @@ export default function FillTab() {
       return null
     }
 
-    return findNode(layerNodes, fillTargetNodeId)
-  }, [layerNodes, fillTargetNodeId])
+    const found: SVGNode[] = []
+    for (const id of fillTargetNodeIds) {
+      const node = findNode(layerNodes, id)
+      if (node) found.push(node)
+    }
+    return found
+  }, [layerNodes, fillTargetNodeIds])
 
-  // Extract all fill paths from target node (including nested children)
+  // For backward compatibility and display purposes
+  const targetNode = targetNodes.length > 0 ? targetNodes[0] : null
+
+  // Extract all fill paths from all target nodes (including nested children)
   const fillPaths = useMemo(() => {
-    if (!targetNode) return []
+    if (targetNodes.length === 0) return []
 
     const paths: FillPathInfo[] = []
 
@@ -1786,18 +1944,21 @@ export default function FillTab() {
       }
     }
 
-    extractFillPaths(targetNode)
+    // Extract from all target nodes
+    for (const node of targetNodes) {
+      extractFillPaths(node)
+    }
     return paths
-  }, [targetNode])
+  }, [targetNodes])
 
   // Preserve original fill paths for "Apply & Fill Again" - stores polygon boundaries for layering
   // Declared here so boundingBox can use it
   const [preservedFillData, setPreservedFillData] = useState<{ pathInfo: FillPathInfo; polygon: PolygonWithHoles }[] | null>(null)
 
-  // Clear preserved data when target changes (user selected a different layer)
+  // Clear preserved data when target changes (user selected different layers)
   useEffect(() => {
     setPreservedFillData(null)
-  }, [fillTargetNodeId])
+  }, [fillTargetNodeIds])
 
   // Calculate bounding box of all fill paths using polygon points (works on disconnected elements)
   const boundingBox = useMemo(() => {
@@ -1896,6 +2057,18 @@ export default function FillTab() {
       const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
       const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
 
+      // Generate global spiral if in single spiral mode
+      let globalSpiralLines: HatchLine[] = []
+      if (fillPattern === 'spiral' && singleSpiral && boundingBox) {
+        const centerX = boundingBox.x + boundingBox.width / 2
+        const centerY = boundingBox.y + boundingBox.height / 2
+        // Calculate max radius to cover the entire bounding box
+        const maxRadius = Math.sqrt(
+          Math.pow(boundingBox.width / 2, 2) + Math.pow(boundingBox.height / 2, 2)
+        ) * spiralOverDiameter
+        globalSpiralLines = generateGlobalSpiralLines(centerX, centerY, maxRadius, lineSpacing, angle)
+      }
+
       const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
       // Use smaller batch size for expensive patterns
       const isExpensivePattern = fillPattern === 'gyroid' || fillPattern === 'honeycomb'
@@ -1937,8 +2110,13 @@ export default function FillTab() {
                   lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
                   break
                 case 'spiral':
-                  // Spiral works from center outward on outer boundary
-                  lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  if (singleSpiral) {
+                    // Single spiral mode: clip the global spiral to this shape
+                    lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+                  } else {
+                    // Per-shape spiral: generate unique spiral for each shape
+                    lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  }
                   break
                 case 'honeycomb':
                   lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
@@ -1983,7 +2161,20 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, setIsProcessing])
+
+  // Apply simplification to hatched paths when tolerance > 0
+  const simplifiedHatchedPaths = useMemo(() => {
+    if (simplifyTolerance <= 0 || hatchedPaths.length === 0) {
+      return hatchedPaths
+    }
+
+    return hatchedPaths.map(({ pathInfo, lines, polygon }) => ({
+      pathInfo,
+      polygon,
+      lines: simplifyLines(lines, simplifyTolerance)
+    }))
+  }, [hatchedPaths, simplifyTolerance])
 
   // Compute ordered lines using multi-pass optimization:
   // 1. Order shapes by proximity (starting from top-left)
@@ -1991,14 +2182,14 @@ export default function FillTab() {
   // 3. Chain shapes together
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats: _stats } = useMemo(() => {
-    if (hatchedPaths.length === 0) {
+    if (simplifiedHatchedPaths.length === 0) {
       return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0, shapeCount: 0 } }
     }
 
     // Unoptimized: flatten lines in original order
     const unoptimized: OrderedLine[] = []
     let globalIndex = 0
-    hatchedPaths.forEach(({ pathInfo, lines }) => {
+    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
       lines.forEach(line => {
         unoptimized.push({
           ...line,
@@ -2011,7 +2202,7 @@ export default function FillTab() {
     })
 
     // Optimized: use multi-pass algorithm (shape ordering + line optimization within shapes)
-    const optimized = optimizeLineOrderMultiPass(hatchedPaths)
+    const optimized = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
 
     // Calculate statistics
     const unoptimizedDistance = calculateTravelDistance(unoptimized)
@@ -2023,21 +2214,21 @@ export default function FillTab() {
     return {
       unoptimizedLines: unoptimized,
       optimizedLines: optimized,
-      stats: { unoptimizedDistance, optimizedDistance, improvement, shapeCount: hatchedPaths.length }
+      stats: { unoptimizedDistance, optimizedDistance, improvement, shapeCount: simplifiedHatchedPaths.length }
     }
-  }, [hatchedPaths])
+  }, [simplifiedHatchedPaths])
 
-  // Calculate fill statistics for display
+  // Calculate fill statistics for display (uses simplified paths)
   const fillStats = useMemo(() => {
-    if (!showHatchPreview || hatchedPaths.length === 0) {
+    if (!showHatchPreview || simplifiedHatchedPaths.length === 0) {
       return null
     }
 
     let totalLines = 0
     let totalPoints = 0
 
-    // Count lines from current preview
-    hatchedPaths.forEach(({ lines }) => {
+    // Count lines from current preview (simplified)
+    simplifiedHatchedPaths.forEach(({ lines }) => {
       totalLines += lines.length
       // Each line has 2 points (start and end)
       totalPoints += lines.length * 2
@@ -2052,9 +2243,9 @@ export default function FillTab() {
     return {
       lines: totalLines,
       points: totalPoints,
-      paths: hatchedPaths.length + (accumulatedLayers.length > 0 ? 1 : 0)
+      paths: simplifiedHatchedPaths.length + (accumulatedLayers.length > 0 ? 1 : 0)
     }
-  }, [showHatchPreview, hatchedPaths, accumulatedLayers])
+  }, [showHatchPreview, simplifiedHatchedPaths, accumulatedLayers])
 
   // Convert mm to SVG units (assuming 96 DPI, 1mm = 3.7795px)
   const penWidthPx = penWidth * 3.7795
@@ -2077,9 +2268,9 @@ export default function FillTab() {
         pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="none" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
       })
 
-      // Then draw current working layer (as compound paths)
+      // Then draw current working layer (as compound paths, using simplified paths)
       fillPaths.forEach((path) => {
-        const hatchData = hatchedPaths.find(h => h.pathInfo.id === path.id)
+        const hatchData = simplifiedHatchedPaths.find(h => h.pathInfo.id === path.id)
         if (hatchData && hatchData.lines.length > 0) {
           const currentColor = layerColor || path.color
           const pathD = linesToCompoundPath(hatchData.lines, 2)
@@ -2110,10 +2301,10 @@ export default function FillTab() {
     }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, hatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx])
+  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx])
 
   const handleBack = () => {
-    setFillTargetNodeId(null)
+    setFillTargetNodeIds([])
     setActiveTab('sort')
   }
 
@@ -2122,7 +2313,7 @@ export default function FillTab() {
   }, [showHatchPreview])
 
   const handleApplyFill = useCallback(() => {
-    if (!targetNode || (hatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
+    if (targetNodes.length === 0 || (simplifiedHatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
 
     // Collect all lines: accumulated layers + current preview
     // Group by path ID AND color so different colors become separate layer nodes
@@ -2155,9 +2346,38 @@ export default function FillTab() {
 
     // For each original path, create child nodes for each color used
     // If retainStrokes is enabled, weld the outline into the fill compound path
-    const fillNodes: SVGNode[] = []
+    const fillNodesByTargetId = new Map<string, SVGNode[]>()
 
-    hatchedPaths.forEach(({ pathInfo }) => {
+    // Initialize map for each target node
+    targetNodes.forEach(node => fillNodesByTargetId.set(node.id, []))
+
+    simplifiedHatchedPaths.forEach(({ pathInfo }) => {
+      // Find which target node this path belongs to
+      const findOwnerTargetId = (node: SVGNode, pathId: string): string | null => {
+        if (node.id === pathId) return node.id
+        for (const child of node.children) {
+          if (child.id === pathId) return node.id
+          const found = findOwnerTargetId(child, pathId)
+          if (found) return node.id
+        }
+        return null
+      }
+
+      let ownerTargetId: string | null = null
+      for (const targetNode of targetNodes) {
+        // Check if this path is the target itself or a descendant
+        if (targetNode.id === pathInfo.id) {
+          ownerTargetId = targetNode.id
+          break
+        }
+        const found = findOwnerTargetId(targetNode, pathInfo.id)
+        if (found) {
+          ownerTargetId = targetNode.id
+          break
+        }
+      }
+      if (!ownerTargetId) return
+
       // Find all color variations for this path
       uniqueColors.forEach(color => {
         const key = `${pathInfo.id}|${color}`
@@ -2191,7 +2411,7 @@ export default function FillTab() {
         const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
         const pathElement = dummyDoc.querySelector('path') as Element
 
-        fillNodes.push({
+        const fillNode: SVGNode = {
           id: nodeId,
           name: nodeName,
           type: 'path',
@@ -2200,32 +2420,37 @@ export default function FillTab() {
           fillColor: undefined,
           children: [],
           customMarkup: pathMarkup,
-        })
+        }
+
+        const existing = fillNodesByTargetId.get(ownerTargetId) || []
+        existing.push(fillNode)
+        fillNodesByTargetId.set(ownerTargetId, existing)
       })
     })
 
-    // All fills (with outlines welded in if retainStrokes was enabled)
-    const newChildNodes = [...fillNodes]
+    // Get set of target node IDs for quick lookup
+    const targetIdSet = new Set(targetNodes.map(n => n.id))
 
-    // Replace target node with a group containing the fill children
-    const updateNodeWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
+    // Replace each target node with a group containing its fill children
+    const updateNodesWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
-        if (node.id === targetNode.id) {
+        if (targetIdSet.has(node.id)) {
+          const newChildren = fillNodesByTargetId.get(node.id) || []
           // Replace this node with a group containing all fill layers
           return {
             ...node,
-            children: newChildNodes,
+            children: newChildren,
             customMarkup: undefined, // Remove any custom markup on parent, children have it
           }
         }
         if (node.children.length > 0) {
-          return { ...node, children: updateNodeWithFillChildren(node.children) }
+          return { ...node, children: updateNodesWithFillChildren(node.children) }
         }
         return node
       })
     }
 
-    const updatedNodes = updateNodeWithFillChildren(layerNodes)
+    const updatedNodes = updateNodesWithFillChildren(layerNodes)
     setLayerNodes(updatedNodes)
     rebuildSvgFromLayers(updatedNodes)
 
@@ -2234,17 +2459,17 @@ export default function FillTab() {
     setAccumulatedLayers([])
     setLayerColor('')
 
-    setFillTargetNodeId(null)
+    setFillTargetNodeIds([])
     setActiveTab('sort')
-  }, [targetNode, hatchedPaths, optimizedLines, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeId, setActiveTab, rebuildSvgFromLayers, setPreservedFillData])
+  }, [targetNodes, simplifiedHatchedPaths, optimizedLines, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData])
 
   // Add current hatch lines as a layer and rotate angle for next layer
   const handleAddLayer = useCallback(() => {
-    if (hatchedPaths.length === 0) return
+    if (simplifiedHatchedPaths.length === 0) return
 
-    // Collect all current lines into accumulated layers
+    // Collect all current lines into accumulated layers (using simplified paths)
     const newLayers: FillLayer[] = []
-    hatchedPaths.forEach(({ pathInfo, lines }) => {
+    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
       const color = layerColor || pathInfo.color // Use custom color or original
       lines.forEach(line => {
         newLayers.push({
@@ -2263,7 +2488,7 @@ export default function FillTab() {
 
     // Reset layer color for next layer
     setLayerColor('')
-  }, [hatchedPaths, layerColor, angle, setAngle])
+  }, [simplifiedHatchedPaths, layerColor, angle, setAngle])
 
   // Clear all accumulated layers
   const handleClearLayers = useCallback(() => {
@@ -2343,12 +2568,12 @@ export default function FillTab() {
     )
   }
 
-  if (!fillTargetNodeId || !targetNode) {
+  if (fillTargetNodeIds.length === 0 || targetNodes.length === 0) {
     return (
       <div className="fill-tab empty-state">
         <div className="empty-content">
-          <h3>No Layer Selected</h3>
-          <p>Go to the Sort tab, select a layer with fills, and click the Fill button.</p>
+          <h3>No Layers Selected</h3>
+          <p>Go to the Sort tab, select one or more layers with fills, and click the Fill button.</p>
           <button className="back-button" onClick={handleBack}>
             ← Back to Sort
           </button>
@@ -2581,22 +2806,39 @@ export default function FillTab() {
             )}
 
             {fillPattern === 'spiral' && (
-              <div className="fill-control">
-                <label>Over Diameter</label>
-                <div className="control-row">
-                  <input
-                    type="number"
-                    min="1"
-                    max="5"
-                    step="0.1"
-                    value={spiralOverDiameter}
-                    onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
-                    className="fill-input"
-                    style={{ width: '80px' }}
-                  />
-                  <span className="control-value">× radius</span>
+              <>
+                <div className="fill-control checkbox">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={singleSpiral}
+                      onChange={(e) => setSingleSpiral(e.target.checked)}
+                    />
+                    Single spiral pattern
+                  </label>
+                  <p className="control-hint">
+                    {singleSpiral
+                      ? 'One spiral across all shapes'
+                      : 'Individual spiral per shape'}
+                  </p>
                 </div>
-              </div>
+                <div className="fill-control">
+                  <label>Over Diameter</label>
+                  <div className="control-row">
+                    <input
+                      type="number"
+                      min="1"
+                      max="5"
+                      step="0.1"
+                      value={spiralOverDiameter}
+                      onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
+                      className="fill-input"
+                      style={{ width: '80px' }}
+                    />
+                    <span className="control-value">× radius</span>
+                  </div>
+                </div>
+              </>
             )}
 
             {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb') && (
@@ -2697,6 +2939,26 @@ export default function FillTab() {
             </div>
           )}
 
+          {showHatchPreview && (
+            <div className="fill-control">
+              <label>Simplify</label>
+              <div className="control-row">
+                <input
+                  type="range"
+                  min="0"
+                  max="10"
+                  step="0.5"
+                  value={draftSimplifyTolerance}
+                  onChange={(e) => setDraftSimplifyTolerance(Number(e.target.value))}
+                  onPointerUp={() => setSimplifyTolerance(draftSimplifyTolerance)}
+                  onKeyUp={() => setSimplifyTolerance(draftSimplifyTolerance)}
+                  className="fill-slider"
+                />
+                <span className="control-value">{draftSimplifyTolerance === 0 ? 'Off' : draftSimplifyTolerance.toFixed(1)}</span>
+              </div>
+            </div>
+          )}
+
           <div className="fill-section layer-section">
             <h3>Layer Color</h3>
             <div className="layer-color-row">
@@ -2761,6 +3023,30 @@ export default function FillTab() {
           </div>
         </div>
       </aside>
+
+      {/* Status Bar */}
+      <div className="status-bar">
+        <div className="status-bar-left">
+          {targetNodes.length === 1 && targetNode && (
+            <span className="status-filename">{targetNode.name || targetNode.id}</span>
+          )}
+          {targetNodes.length > 1 && (
+            <span className="status-filename">{targetNodes.length} layers selected</span>
+          )}
+        </div>
+        <div className="status-bar-center">
+          {fillPaths.length > 0 && (
+            <span className="status-info">{fillPaths.length} fillable shapes</span>
+          )}
+        </div>
+        <div className="status-bar-right">
+          {fillStats && (
+            <span className="status-info">
+              {fillStats.lines.toLocaleString()} lines • {fillStats.points.toLocaleString()} points
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

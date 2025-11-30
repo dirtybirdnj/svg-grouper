@@ -26,7 +26,7 @@ function AppContent() {
     setLayerNodes,
     selectedNodeIds,
     setSelectedNodeIds,
-    setFillTargetNodeId,
+    setFillTargetNodeIds,
     rebuildSvgFromLayers,
     setOrderData,
     isProcessing,
@@ -140,6 +140,11 @@ function AppContent() {
         // Preserve nodes with customMarkup (like line fill patterns) - treat as leaf nodes
         if (node.customMarkup) {
           result.push(node)
+        } else if (node.isGroup && node.element.hasAttribute('transform')) {
+          // Preserve groups with transforms (e.g., from exported files)
+          // Recursively process children but keep the transform group intact
+          const processedChildren = ungroupAll(node.children)
+          result.push({ ...node, children: processedChildren })
         } else if (node.isGroup && node.children.length > 0) {
           // Recursively process children first
           const ungroupedChildren = ungroupAll(node.children)
@@ -251,13 +256,13 @@ function AppContent() {
   const handleFill = () => {
     disarmActions()
 
-    // Check if a layer is selected
-    if (selectedNodeIds.size !== 1) {
-      setStatusMessage('error:Select a single layer or group to use Fill')
+    // Check if at least one layer is selected
+    if (selectedNodeIds.size === 0) {
+      setStatusMessage('error:Select one or more layers to use Fill')
       return
     }
 
-    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedIds = Array.from(selectedNodeIds)
 
     // Find the selected node
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
@@ -267,12 +272,6 @@ function AppContent() {
         if (found) return found
       }
       return null
-    }
-
-    const selectedNode = findNode(layerNodes, selectedId)
-    if (!selectedNode) {
-      setStatusMessage('error:Could not find selected layer')
-      return
     }
 
     // Check if the layer contains fill paths (closed shapes with fill attribute)
@@ -300,13 +299,23 @@ function AppContent() {
       return false
     }
 
-    if (!hasFillPaths(selectedNode)) {
-      setStatusMessage('error:Fill is only supported for closed shapes with fills')
-      return
+    // Validate all selected nodes exist and have fill paths
+    const validIds: string[] = []
+    for (const id of selectedIds) {
+      const node = findNode(layerNodes, id)
+      if (!node) {
+        setStatusMessage('error:Could not find selected layer')
+        return
+      }
+      if (!hasFillPaths(node)) {
+        setStatusMessage('error:All selected layers must contain closed shapes with fills')
+        return
+      }
+      validIds.push(id)
     }
 
-    // Navigate to Fill tab with the selected node
-    setFillTargetNodeId(selectedId)
+    // Navigate to Fill tab with the selected nodes
+    setFillTargetNodeIds(validIds)
     setActiveTab('fill')
     setStatusMessage('')
   }
@@ -360,13 +369,15 @@ function AppContent() {
         maxX = Math.max(maxX, x1, x2)
         maxY = Math.max(maxY, y1, y2)
       } else if (tagName === 'path') {
-        // Try to extract lines from simple path elements (M x y L x y format)
+        // Extract lines from path elements - handles both simple and compound paths
         const d = element.getAttribute('d') || ''
         const stroke = element.getAttribute('stroke') || '#000'
 
-        // Simple regex for M x,y L x,y or M x y L x y patterns
-        const lineMatch = d.match(/M\s*([\d.-]+)[,\s]+([\d.-]+)\s*L\s*([\d.-]+)[,\s]+([\d.-]+)/i)
-        if (lineMatch) {
+        // Match all M...L segments in compound paths (e.g., "M1,2 L3,4 M5,6 L7,8")
+        // Regex matches: M x,y L x,y patterns throughout the path data
+        const lineRegex = /M\s*([\d.-]+)[,\s]+([\d.-]+)\s*L\s*([\d.-]+)[,\s]+([\d.-]+)/gi
+        let lineMatch
+        while ((lineMatch = lineRegex.exec(d)) !== null) {
           const x1 = parseFloat(lineMatch[1])
           const y1 = parseFloat(lineMatch[2])
           const x2 = parseFloat(lineMatch[3])

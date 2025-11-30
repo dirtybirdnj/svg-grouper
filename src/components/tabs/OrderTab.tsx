@@ -382,6 +382,25 @@ export default function OrderTab() {
           </div>
         )}
       </main>
+
+      {/* Status Bar */}
+      <div className="status-bar">
+        <div className="status-bar-left">
+          {orderData?.source && <span className="status-filename">Source: {orderData.source}</span>}
+        </div>
+        <div className="status-bar-center">
+          {optimizedLines.length > 0 && (
+            <span className="status-info">{optimizedLines.length} lines</span>
+          )}
+        </div>
+        <div className="status-bar-right">
+          {stats.improvement > 0 && (
+            <span className="status-info">
+              Travel reduced: {stats.improvement.toFixed(1)}%
+            </span>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

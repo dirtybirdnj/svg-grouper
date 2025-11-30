@@ -3,17 +3,17 @@ import { TABS } from '../types/tabs'
 import './TabNavigation.css'
 
 export default function TabNavigation() {
-  const { activeTab, setActiveTab, svgContent, fillTargetNodeId } = useAppContext()
+  const { activeTab, setActiveTab, svgContent, fillTargetNodeIds } = useAppContext()
 
   const isTabDisabled = (tabKey: string) => {
     if (!svgContent && tabKey !== 'sort') return true
-    if (tabKey === 'fill' && !fillTargetNodeId) return true
+    if (tabKey === 'fill' && fillTargetNodeIds.length === 0) return true
     return false
   }
 
   const getTabTitle = (tabKey: string) => {
     if (!svgContent && tabKey !== 'sort') return 'Load an SVG first'
-    if (tabKey === 'fill' && !fillTargetNodeId) return 'Select a fill layer and use the Fill button'
+    if (tabKey === 'fill' && fillTargetNodeIds.length === 0) return 'Select fill layers and use the Fill button'
     return undefined
   }
 

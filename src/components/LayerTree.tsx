@@ -563,7 +563,8 @@ function LayerNode({
       )}
       {hasChildren && isExpanded && (
         <div className="layer-children">
-          {node.children.map(child => (
+          {/* Reverse order: last in DOM = visually on top = shown first */}
+          {[...node.children].reverse().map(child => (
             <LayerNode
               key={child.id}
               node={child}
@@ -665,7 +666,8 @@ export default function LayerTree({ nodes, selectedNodeIds, onNodeSelect, proces
 
   return (
     <div className="layer-tree">
-      {nodes.map(node => (
+      {/* Reverse order: last in DOM = visually on top = shown first */}
+      {[...nodes].reverse().map(node => (
         <LayerNode
           key={node.id}
           node={node}
