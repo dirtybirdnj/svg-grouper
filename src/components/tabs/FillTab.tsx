@@ -28,6 +28,8 @@ import {
   generateGlobalHilbertLines,
   clipHilbertToPolygon,
   generateFermatLines,
+  generateGlobalFermatLines,
+  clipFermatToPolygon,
   generateWaveLines,
   generateScribbleLines,
   generateCustomTileLines,
@@ -193,6 +195,7 @@ export default function FillTab() {
   const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
   const [singleSpiral, setSingleSpiral] = useState(false) // Use one giant spiral for all shapes
   const [singleHilbert, setSingleHilbert] = useState(true) // Use one Hilbert curve for all shapes (default true)
+  const [singleFermat, setSingleFermat] = useState(true) // Use one Fermat spiral for all shapes (default true)
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
   const [customTileShape, setCustomTileShape] = useState<keyof typeof TILE_SHAPES>('triangle') // Selected tile shape for custom pattern
 
@@ -510,6 +513,12 @@ export default function FillTab() {
         globalHilbertLines = generateGlobalHilbertLines(boundingBox, lineSpacing)
       }
 
+      // Generate global Fermat spiral if in single Fermat mode
+      let globalFermatLines: HatchLine[] = []
+      if (fillPattern === 'fermat' && singleFermat && boundingBox) {
+        globalFermatLines = generateGlobalFermatLines(boundingBox, lineSpacing, angle, spiralOverDiameter)
+      }
+
       const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
       // Use smaller batch size for expensive patterns
       const isExpensivePattern = fillPattern === 'gyroid' || fillPattern === 'honeycomb'
@@ -592,12 +601,17 @@ export default function FillTab() {
                     lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
                   } else {
                     // Per-shape Hilbert: generate unique curve for each shape
-                    const hilbertOrder = Math.max(2, Math.min(6, Math.floor(6 - lineSpacing / 10)))
-                    lines = generateHilbertLines(polygonData, lineSpacing, inset, hilbertOrder)
+                    lines = generateHilbertLines(polygonData, lineSpacing, inset)
                   }
                   break
                 case 'fermat':
-                  lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  if (singleFermat) {
+                    // Single Fermat mode: clip the global spiral to this shape
+                    lines = clipFermatToPolygon(globalFermatLines, polygonData, inset)
+                  } else {
+                    // Per-shape Fermat: generate unique spiral for each shape
+                    lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  }
                   break
                 case 'wave':
                   lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
@@ -670,7 +684,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, customTileShape, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -1448,6 +1462,24 @@ export default function FillTab() {
                   />
                   <span className="control-value">× radius</span>
                 </div>
+              </div>
+            )}
+
+            {fillPattern === 'fermat' && (
+              <div className="fill-control checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={singleFermat}
+                    onChange={(e) => setSingleFermat(e.target.checked)}
+                  />
+                  Single Fermat pattern
+                </label>
+                <p className="control-hint">
+                  {singleFermat
+                    ? 'One spiral across all shapes'
+                    : 'Individual spiral per shape'}
+                </p>
               </div>
             )}
 

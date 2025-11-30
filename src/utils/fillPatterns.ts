@@ -771,9 +771,8 @@ export function generateCrossSpiralLines(
 // Generate Hilbert curve pattern (space-filling curve)
 export function generateHilbertLines(
   polygonData: PolygonWithHoles,
-  _spacing: number,
-  inset: number = 0,
-  order: number = 4 // Recursion depth (4-6 typical)
+  spacing: number,
+  inset: number = 0
 ): HatchLine[] {
   const { outer } = polygonData
   if (outer.length < 3) return []
@@ -799,7 +798,9 @@ export function generateHilbertLines(
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
 
-  // Determine order based on spacing
+  // Calculate order so that cell size approximately equals spacing
+  // cellSize = size / 2^order, so order = log2(size / spacing)
+  const order = Math.max(2, Math.min(7, Math.round(Math.log2(size / spacing))))
   const gridSize = Math.pow(2, order)
   const cellSize = size / gridSize
 
@@ -890,10 +891,9 @@ export function generateGlobalHilbertLines(
   const centerX = globalBbox.x + globalBbox.width / 2
   const centerY = globalBbox.y + globalBbox.height / 2
 
-  // Calculate order based on spacing - higher spacing = lower order
-  // Target cell size approximately equals spacing
-  const targetCellSize = spacing
-  const order = Math.max(2, Math.min(7, Math.ceil(Math.log2(size / targetCellSize))))
+  // Calculate order so that cell size approximately equals spacing
+  // cellSize = size / 2^order, so order = log2(size / spacing)
+  const order = Math.max(2, Math.min(7, Math.round(Math.log2(size / spacing))))
   const gridSize = Math.pow(2, order)
   const cellSize = size / gridSize
 
@@ -1095,6 +1095,96 @@ export function generateFermatLines(
   }
 
   return lines
+}
+
+// Generate a global Fermat spiral that spans the entire bounding box
+// Used for "single pattern" mode where one spiral covers all shapes
+export function generateGlobalFermatLines(
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number,
+  angleDegrees: number = 0,
+  overDiameter: number = 1.5
+): HatchLine[] {
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
+
+  // Calculate max radius to cover the entire bounding box
+  const maxRadius = Math.sqrt(
+    Math.pow(globalBbox.width / 2, 2) + Math.pow(globalBbox.height / 2, 2)
+  ) * overDiameter
+
+  const angleOffset = (angleDegrees * Math.PI) / 180
+
+  // Fermat spiral: r = a * sqrt(theta)
+  const a = spacing / Math.sqrt(2 * Math.PI)
+
+  const lines: HatchLine[] = []
+
+  // Generate main spiral
+  const spiralPoints: Point[] = []
+  const angleStep = 0.02 // Finer step for better coverage
+  let angle = 0
+
+  while (true) {
+    const radius = a * Math.sqrt(angle)
+    if (radius > maxRadius) break
+
+    const rotatedAngle = angle + angleOffset
+    spiralPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+    if (spiralPoints.length > 100000) break
+  }
+
+  // Generate mirror spiral (Fermat has two arms)
+  const mirrorPoints: Point[] = []
+  angle = 0
+  while (true) {
+    const radius = a * Math.sqrt(angle)
+    if (radius > maxRadius) break
+
+    const rotatedAngle = angle + angleOffset + Math.PI
+    mirrorPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+    if (mirrorPoints.length > 100000) break
+  }
+
+  // Convert to lines
+  for (let i = 0; i < spiralPoints.length - 1; i++) {
+    lines.push({
+      x1: spiralPoints[i].x,
+      y1: spiralPoints[i].y,
+      x2: spiralPoints[i + 1].x,
+      y2: spiralPoints[i + 1].y
+    })
+  }
+
+  for (let i = 0; i < mirrorPoints.length - 1; i++) {
+    lines.push({
+      x1: mirrorPoints[i].x,
+      y1: mirrorPoints[i].y,
+      x2: mirrorPoints[i + 1].x,
+      y2: mirrorPoints[i + 1].y
+    })
+  }
+
+  return lines
+}
+
+// Clip global Fermat lines to a polygon
+export function clipFermatToPolygon(
+  fermatLines: HatchLine[],
+  polygonData: PolygonWithHoles,
+  inset: number = 0
+): HatchLine[] {
+  return clipLinesToPolygon(fermatLines, polygonData, inset)
 }
 
 // Generate smooth wave/sine pattern
