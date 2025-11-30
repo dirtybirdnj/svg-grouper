@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
+import { linesToCompoundPath } from '../../utils/geometry'
 import './FillTab.css'
 
 interface FillPathInfo {
@@ -2070,24 +2071,20 @@ export default function FillTab() {
     const pathElements: string[] = []
 
     if (showHatchPreview) {
-      // First, draw accumulated layers
+      // First, draw accumulated layers (as compound paths for efficiency)
       accumulatedLayers.forEach(layer => {
-        const linesHtml = layer.lines.map(line =>
-          `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
-        ).join('\n')
-        pathElements.push(`<g class="accumulated-layer">${linesHtml}</g>`)
+        const pathD = linesToCompoundPath(layer.lines, 2)
+        pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="none" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
       })
 
-      // Then draw current working layer
+      // Then draw current working layer (as compound paths)
       fillPaths.forEach((path) => {
         const hatchData = hatchedPaths.find(h => h.pathInfo.id === path.id)
         if (hatchData && hatchData.lines.length > 0) {
           const currentColor = layerColor || path.color
-          const linesHtml = hatchData.lines.map(line =>
-            `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${currentColor}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round" />`
-          ).join('\n')
+          const pathD = linesToCompoundPath(hatchData.lines, 2)
 
-          pathElements.push(`<g class="current-layer">${linesHtml}</g>`)
+          pathElements.push(`<g class="current-layer"><path d="${pathD}" fill="none" stroke="${currentColor}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
         }
 
         // Add outline stroke if retaining strokes
@@ -2157,7 +2154,8 @@ export default function FillTab() {
     const uniqueColors = Array.from(colorsUsed)
 
     // For each original path, create child nodes for each color used
-    const newChildNodes: SVGNode[] = []
+    // If retainStrokes is enabled, weld the outline into the fill compound path
+    const fillNodes: SVGNode[] = []
 
     hatchedPaths.forEach(({ pathInfo }) => {
       // Find all color variations for this path
@@ -2166,9 +2164,17 @@ export default function FillTab() {
         const lines = allLinesByPathAndColor.get(key)
         if (!lines || lines.length === 0) return
 
-        const linesMarkup = lines.map(line =>
-          `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
-        ).join('\n')
+        // Convert lines to a single compound path (reduces element count for Cricut compatibility)
+        let pathD = linesToCompoundPath(lines, 2)
+
+        // If retainStrokes, append the original outline to the compound path
+        if (retainStrokes) {
+          const originalD = pathInfo.element.getAttribute('d')
+          if (originalD) {
+            // Weld the outline path into the fill compound path
+            pathD = pathD + ' ' + originalD
+          }
+        }
 
         const nodeId = uniqueColors.length > 1
           ? `hatch-${pathInfo.id}-${color.replace('#', '')}`
@@ -2177,47 +2183,29 @@ export default function FillTab() {
           ? `Fill ${color}`
           : `Fill`
 
-        const groupMarkup = `<g id="${nodeId}">\n${linesMarkup}\n</g>`
+        // Create as a path element (not a group) for proper display in layer tree
+        const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
 
-        // Create a dummy element for the node (customMarkup will be used for rendering)
+        // Create element for the node
         const parser = new DOMParser()
-        const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${groupMarkup}</svg>`, 'image/svg+xml')
-        const dummyElement = dummyDoc.querySelector('g') as Element
+        const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
+        const pathElement = dummyDoc.querySelector('path') as Element
 
-        newChildNodes.push({
+        fillNodes.push({
           id: nodeId,
           name: nodeName,
-          type: 'g',
-          element: dummyElement,
-          isGroup: true,
-          fillColor: color,
-          children: [],
-          customMarkup: groupMarkup,
-        })
-      })
-
-      // Add outline as separate node if retainStrokes
-      if (retainStrokes) {
-        const el = pathInfo.element.cloneNode(true) as Element
-        el.setAttribute('fill', 'none')
-        el.setAttribute('stroke', pathInfo.color)
-        el.setAttribute('stroke-width', String(penWidthPx.toFixed(2)))
-        el.removeAttribute('style')
-        const serializer = new XMLSerializer()
-        const outlineMarkup = serializer.serializeToString(el)
-
-        newChildNodes.push({
-          id: `outline-${pathInfo.id}`,
-          name: `Outline`,
-          type: pathInfo.type,
-          element: el,
+          type: 'path',
+          element: pathElement,
           isGroup: false,
           fillColor: undefined,
           children: [],
-          customMarkup: outlineMarkup,
+          customMarkup: pathMarkup,
         })
-      }
+      })
     })
+
+    // All fills (with outlines welded in if retainStrokes was enabled)
+    const newChildNodes = [...fillNodes]
 
     // Replace target node with a group containing the fill children
     const updateNodeWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
@@ -2508,15 +2496,15 @@ export default function FillTab() {
             </div>
 
             <div
-              className={`fill-control selectable ${selectedControl === 'angle' ? 'selected' : ''}`}
-              onClick={() => setSelectedControl('angle')}
+              className={`fill-control selectable ${selectedControl === 'angle' ? 'selected' : ''} ${fillPattern === 'concentric' || fillPattern === 'spiral' ? 'disabled' : ''}`}
+              onClick={() => fillPattern !== 'concentric' && fillPattern !== 'spiral' && setSelectedControl('angle')}
             >
               <label>Angle</label>
               <div className="control-row">
                 <span
                   className="angle-arrow"
-                  style={{ transform: `rotate(${draftAngle}deg)` }}
-                  title={`${draftAngle}° direction`}
+                  style={{ transform: `rotate(${draftAngle}deg)`, opacity: fillPattern === 'concentric' || fillPattern === 'spiral' ? 0.4 : 1 }}
+                  title={fillPattern === 'concentric' || fillPattern === 'spiral' ? 'Not applicable for this pattern' : `${draftAngle}° direction`}
                 >
                   →
                 </span>
@@ -2529,6 +2517,7 @@ export default function FillTab() {
                   onPointerUp={() => setAngle(draftAngle)}
                   onKeyUp={() => setAngle(draftAngle)}
                   className="fill-slider"
+                  disabled={fillPattern === 'concentric' || fillPattern === 'spiral'}
                 />
                 <span className="control-value">{draftAngle}°</span>
               </div>

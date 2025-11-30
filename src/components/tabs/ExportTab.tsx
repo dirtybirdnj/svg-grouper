@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import defaultPaperSizes from '../../config/paperSizes.json'
+import fontColorContrast from 'font-color-contrast'
 import './ExportTab.css'
 
 // Paper size type
@@ -44,13 +45,19 @@ function savePaperSizes(sizes: PaperSize[]): void {
   }
 }
 
+interface ColorStats {
+  color: string
+  paths: number
+  points: number
+}
+
 interface SVGStatistics {
   totalNodes: number
   totalPaths: number
   totalGroups: number
   totalShapes: number
   maxDepth: number
-  colorPalette: string[]
+  colorPalette: ColorStats[]
   operationCounts: Record<string, number>
   layerStats: { name: string; paths: number; depth: number; colors: string[] }[]
 }
@@ -67,7 +74,8 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
     layerStats: [],
   }
 
-  const colors = new Set<string>()
+  // Track paths and points per color
+  const colorStats = new Map<string, { paths: number; points: number }>()
 
   const countOperations = (element: Element) => {
     const d = element.getAttribute('d')
@@ -81,23 +89,48 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
     }
   }
 
-  const extractColors = (element: Element) => {
+  // Count points in a path's d attribute
+  const countPoints = (element: Element): number => {
+    const d = element.getAttribute('d')
+    if (!d) return 0
+    // Count all path commands (each represents a point or control point)
+    const commands = d.match(/[MLHVCSQTAZ]/gi) || []
+    return commands.length
+  }
+
+  const getElementColor = (element: Element, fillColor?: string): string | null => {
+    // Check for fillColor from line fill (customMarkup nodes)
+    if (fillColor) return fillColor
+
     const fill = element.getAttribute('fill')
     const stroke = element.getAttribute('stroke')
     const style = element.getAttribute('style')
 
-    if (fill && fill !== 'none' && fill !== 'transparent') {
-      colors.add(fill)
-    }
+    // Prefer stroke for paths (pen plotter context)
     if (stroke && stroke !== 'none' && stroke !== 'transparent') {
-      colors.add(stroke)
+      return stroke
+    }
+    if (fill && fill !== 'none' && fill !== 'transparent') {
+      return fill
     }
 
     if (style) {
-      const fillMatch = style.match(/fill:\s*([^;]+)/)
       const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-      if (fillMatch && fillMatch[1] !== 'none') colors.add(fillMatch[1].trim())
-      if (strokeMatch && strokeMatch[1] !== 'none') colors.add(strokeMatch[1].trim())
+      if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
+      const fillMatch = style.match(/fill:\s*([^;]+)/)
+      if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
+    }
+
+    return null
+  }
+
+  const addColorStats = (color: string, paths: number, points: number) => {
+    const existing = colorStats.get(color)
+    if (existing) {
+      existing.paths += paths
+      existing.points += points
+    } else {
+      colorStats.set(color, { paths, points })
     }
   }
 
@@ -113,18 +146,18 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
     if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) {
       stats.totalPaths++
       countOperations(node.element)
+
+      // Track color stats
+      const color = getElementColor(node.element, node.fillColor)
+      if (color) {
+        const points = countPoints(node.element)
+        addColorStats(color, 1, points)
+      }
     }
 
     if (['rect', 'circle', 'ellipse'].includes(tagName)) {
       stats.totalShapes++
     }
-
-    // Check for fillColor from line fill (customMarkup nodes)
-    if (node.fillColor) {
-      colors.add(node.fillColor)
-    }
-
-    extractColors(node.element)
 
     node.children.forEach(child => traverse(child, depth + 1))
   }
@@ -188,7 +221,10 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
     }
   })
 
-  stats.colorPalette = Array.from(colors)
+  // Convert colorStats map to sorted array (heaviest first by paths + points)
+  stats.colorPalette = Array.from(colorStats.entries())
+    .map(([color, data]) => ({ color, paths: data.paths, points: data.points }))
+    .sort((a, b) => (b.paths + b.points) - (a.paths + a.points))
 
   return stats
 }
@@ -326,6 +362,7 @@ export default function ExportTab() {
   const [normalizeStrokes, setNormalizeStrokes] = useState(false)
   const [strokeWidth, setStrokeWidth] = useState(1)
   const [convertFillsToStrokes, setConvertFillsToStrokes] = useState(false)
+  const [filePerLayer, setFilePerLayer] = useState(false)
 
   // Preview canvas ref
   const previewRef = useRef<HTMLDivElement>(null)
@@ -664,15 +701,44 @@ export default function ExportTab() {
     )
   }
 
-  const handleExport = () => {
-    // Use the live SVG element from the DOM (includes all modifications like hatching)
-    if (!svgElementRef.current || !pageDimensions || !pageLayout) return
+  // Helper to get element's color (stroke or fill)
+  const getElementColor = (el: Element): string | null => {
+    const stroke = el.getAttribute('stroke')
+    const fill = el.getAttribute('fill')
+    const style = el.getAttribute('style') || ''
 
-    // Clone the SVG element to avoid modifying the original
-    const originalSvg = svgElementRef.current.cloneNode(true) as SVGSVGElement
-    if (!originalSvg) return
+    // Prefer stroke for pen plotter context
+    if (stroke && stroke !== 'none' && stroke !== 'transparent') {
+      return stroke.toLowerCase()
+    }
 
-    // Create a new SVG with the page dimensions
+    const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+    if (strokeMatch && strokeMatch[1] !== 'none' && strokeMatch[1] !== 'transparent') {
+      return strokeMatch[1].trim().toLowerCase()
+    }
+
+    if (fill && fill !== 'none' && fill !== 'transparent') {
+      return fill.toLowerCase()
+    }
+
+    const fillMatch = style.match(/fill:\s*([^;]+)/)
+    if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1] !== 'transparent') {
+      return fillMatch[1].trim().toLowerCase()
+    }
+
+    return null
+  }
+
+  // Helper to create color name for filename
+  const colorToFileName = (color: string): string => {
+    // Remove # from hex colors, replace special chars
+    return color.replace('#', '').replace(/[^a-z0-9]/gi, '-')
+  }
+
+  // Helper to build export SVG with given content
+  const buildExportSvg = (contentSvg: SVGSVGElement): string => {
+    if (!pageDimensions || !pageLayout) return ''
+
     const svgNS = 'http://www.w3.org/2000/svg'
     const newSvg = document.createElementNS(svgNS, 'svg')
 
@@ -717,49 +783,48 @@ export default function ExportTab() {
     // Create inner group for transform
     const transformGroup = document.createElementNS(svgNS, 'g')
 
-    // The transform needs to:
-    // 1. Offset by the inset (crop into design) - in original SVG px coordinates
-    // 2. Scale from px to mm, applying the fit scale
-    // 3. Translate to the correct position on the page
-
     // Combined scale: px to mm conversion * fit scale
     const combinedScale = (1 / MM_TO_PX) * pageLayout.scale
 
-    // The inset shifts the content origin (in px, before scaling)
-    // After scaling, we translate to page position (in mm)
     transformGroup.setAttribute(
       'transform',
       `translate(${pageLayout.offsetX}, ${pageLayout.offsetY}) scale(${combinedScale}) translate(${-pageLayout.insetPx}, ${-pageLayout.insetPx})`
     )
 
+    // Move all children from content SVG to transform group
+    while (contentSvg.firstChild) {
+      transformGroup.appendChild(contentSvg.firstChild)
+    }
+
+    contentGroup.appendChild(transformGroup)
+    newSvg.appendChild(contentGroup)
+
+    const serializer = new XMLSerializer()
+    return serializer.serializeToString(newSvg)
+  }
+
+  // Apply export options (convert fills, normalize strokes) to an SVG element
+  const applyExportOptions = (svg: SVGSVGElement) => {
     // Convert fills to strokes if requested (for pen plotters)
     if (convertFillsToStrokes) {
-      const elements = originalSvg.querySelectorAll('path, polygon, rect, circle, ellipse')
+      const elements = svg.querySelectorAll('path, polygon, rect, circle, ellipse')
       elements.forEach(el => {
-        // Get fill color from attribute or style
         let fillColor = el.getAttribute('fill')
         const style = el.getAttribute('style') || ''
 
-        // Check style for fill
         const styleFillMatch = style.match(/fill:\s*([^;]+)/)
         if (styleFillMatch) {
           fillColor = styleFillMatch[1].trim()
         }
 
-        // If there's a valid fill color (not none/transparent), convert to stroke
         if (fillColor && fillColor !== 'none' && fillColor !== 'transparent') {
-          // Set stroke to the fill color
           el.setAttribute('stroke', fillColor)
-
-          // Set fill to none
           el.setAttribute('fill', 'none')
 
-          // If no stroke-width set, use a default
           if (!el.getAttribute('stroke-width') && !style.includes('stroke-width')) {
             el.setAttribute('stroke-width', '1')
           }
 
-          // Update style attribute if it has fill
           if (style.includes('fill:')) {
             const newStyle = style
               .replace(/fill:\s*[^;]+;?/g, 'fill:none;')
@@ -772,13 +837,12 @@ export default function ExportTab() {
 
     // Normalize stroke widths if requested
     if (normalizeStrokes) {
-      const elements = originalSvg.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
+      const elements = svg.querySelectorAll('path, line, polyline, polygon, rect, circle, ellipse')
       elements.forEach(el => {
         const currentStroke = el.getAttribute('stroke')
         if (currentStroke && currentStroke !== 'none') {
           el.setAttribute('stroke-width', String(strokeWidth))
         }
-        // Also check style attribute
         const style = el.getAttribute('style')
         if (style && style.includes('stroke:') && !style.includes('stroke:none')) {
           const newStyle = style.replace(/stroke-width:\s*[^;]+;?/g, '') + `stroke-width:${strokeWidth}px;`
@@ -786,27 +850,115 @@ export default function ExportTab() {
         }
       })
     }
+  }
 
-    // Move all children from original SVG to transform group
-    while (originalSvg.firstChild) {
-      transformGroup.appendChild(originalSvg.firstChild)
-    }
-
-    contentGroup.appendChild(transformGroup)
-    newSvg.appendChild(contentGroup)
-
-    const serializer = new XMLSerializer()
-    const svgString = serializer.serializeToString(newSvg)
-
+  // Download a file
+  const downloadFile = (svgString: string, downloadFileName: string) => {
     const blob = new Blob([svgString], { type: 'image/svg+xml' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = fileName?.replace('.svg', '-export.svg') || 'export.svg'
+    link.download = downloadFileName
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
     URL.revokeObjectURL(url)
+  }
+
+  const handleExport = async () => {
+    // Use the live SVG element from the DOM (includes all modifications like hatching)
+    if (!svgElementRef.current || !pageDimensions || !pageLayout) return
+
+    const baseName = fileName?.replace('.svg', '') || 'export'
+
+    if (filePerLayer && stats && stats.colorPalette.length > 0) {
+      // Export one file per color using Electron's file system
+      const colorMap = new Map<string, Element[]>()
+
+      // Collect all drawable elements grouped by color
+      const collectByColor = (el: Element) => {
+        const tagName = el.tagName.toLowerCase()
+        if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+          const color = getElementColor(el)
+          if (color) {
+            const existing = colorMap.get(color) || []
+            existing.push(el)
+            colorMap.set(color, existing)
+          }
+        }
+        // Recurse into children (but don't add groups themselves)
+        for (const child of Array.from(el.children)) {
+          collectByColor(child)
+        }
+      }
+
+      collectByColor(svgElementRef.current)
+
+      // Build all files
+      const files: { name: string; content: string }[] = []
+
+      for (const [color, elements] of colorMap.entries()) {
+        // Create a new SVG with just this color's elements
+        const svgNS = 'http://www.w3.org/2000/svg'
+        const colorSvg = document.createElementNS(svgNS, 'svg') as SVGSVGElement
+
+        // Copy viewBox and dimensions from original
+        const viewBox = svgElementRef.current.getAttribute('viewBox')
+        if (viewBox) colorSvg.setAttribute('viewBox', viewBox)
+
+        const width = svgElementRef.current.getAttribute('width')
+        const height = svgElementRef.current.getAttribute('height')
+        if (width) colorSvg.setAttribute('width', width)
+        if (height) colorSvg.setAttribute('height', height)
+
+        // Clone and add each element
+        for (const el of elements) {
+          const clone = el.cloneNode(true) as Element
+          colorSvg.appendChild(clone)
+        }
+
+        // Apply export options
+        applyExportOptions(colorSvg)
+
+        // Build the final export SVG
+        const svgString = buildExportSvg(colorSvg)
+
+        // Create filename: baseName-hexcode.svg (without #)
+        const colorName = colorToFileName(color)
+        const exportFileName = `${baseName}-${colorName}.svg`
+
+        files.push({ name: exportFileName, content: svgString })
+      }
+
+      // Use Electron to save all files to a directory
+      if (window.electron?.exportMultipleFiles) {
+        const result = await window.electron.exportMultipleFiles({ files, baseName })
+        if (result.success) {
+          console.log(`Exported ${files.length} files to ${result.exportDir}`)
+        } else if (result.error !== 'Export cancelled') {
+          alert(`Export failed: ${result.error}`)
+        }
+      } else {
+        // Fallback for browser (non-Electron) - download first file only with warning
+        alert('Multi-file export requires the desktop app. Only the first file will be downloaded.')
+        if (files.length > 0) {
+          downloadFile(files[0].content, files[0].name)
+        }
+      }
+    } else {
+      // Standard single file export
+      const originalSvg = svgElementRef.current.cloneNode(true) as SVGSVGElement
+      if (!originalSvg) return
+
+      // Apply export options
+      applyExportOptions(originalSvg)
+
+      // Build the final export SVG
+      const svgString = buildExportSvg(originalSvg)
+
+      // Download
+      downloadFile(svgString, `${baseName}-export.svg`)
+    }
   }
 
   return (
@@ -1061,6 +1213,17 @@ export default function ExportTab() {
               </label>
             </div>
 
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={filePerLayer}
+                  onChange={(e) => setFilePerLayer(e.target.checked)}
+                />
+                File per layer (by color)
+              </label>
+            </div>
+
             {normalizeStrokes && (
               <div className="export-control">
                 <label>Stroke Width (px)</label>
@@ -1202,67 +1365,65 @@ export default function ExportTab() {
         <div className="analysis-container">
           <h2>SVG Analysis</h2>
 
-          {/* Top row: Document Info & Dimensions, Content Statistics */}
-          <div className="analysis-top-row">
-            {/* Document Info & Dimensions */}
-            <section className="analysis-section compact">
-              <h3>Document</h3>
-              <div className="info-list">
-                <div className="info-item">
-                  <span className="info-label">File Name</span>
-                  <span className="info-value">{fileName || 'Untitled'}</span>
-                </div>
-                <div className="info-item">
-                  <span className="info-label">File Size</span>
-                  <span className="info-value">{formatBytes(svgSizeBytes)}</span>
-                </div>
-                {svgDimensions && (
-                  <>
-                    <div className="info-item">
-                      <span className="info-label">Pixels</span>
-                      <span className="info-value">
-                        {svgDimensions.width.toFixed(0)} × {svgDimensions.height.toFixed(0)} px
-                      </span>
-                    </div>
-                    <div className="info-item">
-                      <span className="info-label">Inches (96 DPI)</span>
-                      <span className="info-value">
-                        {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)}"
-                      </span>
-                    </div>
-                    <div className="info-item">
-                      <span className="info-label">Millimeters</span>
-                      <span className="info-value">
-                        {(svgDimensions.width / 3.78).toFixed(1)} × {(svgDimensions.height / 3.78).toFixed(1)} mm
-                      </span>
-                    </div>
-                    <div className="info-item">
-                      <span className="info-label">Aspect Ratio</span>
-                      <span className="info-value">
-                        {(svgDimensions.width / svgDimensions.height).toFixed(3)}:1
-                      </span>
-                    </div>
-                  </>
-                )}
+          {/* Combined Document, Content Statistics, and Path Operations */}
+          <section className="analysis-section">
+            {/* Document */}
+            <h3>Document</h3>
+            <div className="info-list">
+              <div className="info-item">
+                <span className="info-label">File Name</span>
+                <span className="info-value">{fileName || 'Untitled'}</span>
               </div>
-            </section>
+              <div className="info-item">
+                <span className="info-label">File Size</span>
+                <span className="info-value">{formatBytes(svgSizeBytes)}</span>
+              </div>
+              {svgDimensions && (
+                <>
+                  <div className="info-item">
+                    <span className="info-label">Pixels</span>
+                    <span className="info-value">
+                      {svgDimensions.width.toFixed(0)} × {svgDimensions.height.toFixed(0)} px
+                    </span>
+                  </div>
+                  <div className="info-item">
+                    <span className="info-label">Inches (96 DPI)</span>
+                    <span className="info-value">
+                      {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)}"
+                    </span>
+                  </div>
+                  <div className="info-item">
+                    <span className="info-label">Millimeters</span>
+                    <span className="info-value">
+                      {(svgDimensions.width / 3.78).toFixed(1)} × {(svgDimensions.height / 3.78).toFixed(1)} mm
+                    </span>
+                  </div>
+                  <div className="info-item">
+                    <span className="info-label">Aspect Ratio</span>
+                    <span className="info-value">
+                      {(svgDimensions.width / svgDimensions.height).toFixed(3)}:1
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
 
             {/* Content Statistics */}
             {stats && (
-              <section className="analysis-section compact">
-                <h3>Content Statistics</h3>
+              <>
+                <h3 className="subsection-header">Content Statistics</h3>
                 <div className="info-list">
                   <div className="info-item">
                     <span className="info-label">Total Elements</span>
-                    <span className="info-value">{stats.totalNodes.toLocaleString()}</span>
+                    <span className="info-value" style={{ color: '#e74c3c', fontWeight: 'bold' }}>{stats.totalNodes.toLocaleString()}</span>
                   </div>
                   <div className="info-item">
                     <span className="info-label">Groups</span>
-                    <span className="info-value">{stats.totalGroups.toLocaleString()}</span>
+                    <span className="info-value" style={{ color: '#27ae60', fontWeight: 'bold' }}>{stats.totalGroups.toLocaleString()}</span>
                   </div>
                   <div className="info-item">
                     <span className="info-label">Paths</span>
-                    <span className="info-value">{stats.totalPaths.toLocaleString()}</span>
+                    <span className="info-value" style={{ color: '#3498db', fontWeight: 'bold' }}>{stats.totalPaths.toLocaleString()}</span>
                   </div>
                   <div className="info-item">
                     <span className="info-label">Shapes</span>
@@ -1273,18 +1434,11 @@ export default function ExportTab() {
                     <span className="info-value">{stats.maxDepth}</span>
                   </div>
                 </div>
-              </section>
-            )}
-          </div>
 
-          {stats && (
-            <>
-              {/* Path Operations & Color Palette row */}
-              <div className="analysis-middle-row">
                 {/* Path Operations */}
                 {Object.keys(stats.operationCounts).length > 0 && (
-                  <section className="analysis-section compact">
-                    <h3>Path Operations</h3>
+                  <>
+                    <h3 className="subsection-header">Path Operations</h3>
                     <div className="operations-list">
                       {Object.entries(stats.operationCounts)
                         .sort((a, b) => b[1] - a[1])
@@ -1299,70 +1453,43 @@ export default function ExportTab() {
                     <div className="operations-total">
                       Total: {Object.values(stats.operationCounts).reduce((a, b) => a + b, 0).toLocaleString()} operations
                     </div>
-                  </section>
+                  </>
                 )}
+              </>
+            )}
+          </section>
 
-                {/* Color Palette */}
-                {stats.colorPalette.length > 0 && (
-                  <section className="analysis-section compact">
-                    <h3>Color Palette ({stats.colorPalette.length} colors)</h3>
-                    <div className="color-palette">
-                      {stats.colorPalette.map((color, index) => (
-                        <div key={index} className="color-item" title={color}>
-                          <span
-                            className="color-swatch"
-                            style={{ backgroundColor: color }}
-                          />
-                          <span className="color-value">{color}</span>
-                        </div>
-                      ))}
+          {/* Color Palette */}
+          {stats && stats.colorPalette.length > 0 && (
+            <section className="analysis-section">
+              <h3>Color Palette ({stats.colorPalette.length} colors)</h3>
+              <div className="color-palette">
+                {stats.colorPalette.map((colorData, index) => {
+                  // Get contrasting text color for readability
+                  let textColor = '#333'
+                  try {
+                    textColor = fontColorContrast(colorData.color)
+                  } catch {
+                    // If fontColorContrast fails (invalid color), default to dark
+                  }
+                  return (
+                    <div
+                      key={index}
+                      className="color-item"
+                      title={`${colorData.color} - ${colorData.paths} paths, ${colorData.points} points`}
+                      style={{
+                        backgroundColor: colorData.color,
+                        color: textColor,
+                        border: `1px solid ${textColor === '#000000' ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)'}`,
+                      }}
+                    >
+                      <span className="color-value">{colorData.color}</span>
+                      <span className="color-stats">{colorData.paths}/{colorData.points}</span>
                     </div>
-                  </section>
-                )}
+                  )
+                })}
               </div>
-
-              {/* Layer Summary */}
-              {stats.layerStats.length > 0 && (
-                <section className="analysis-section">
-                  <h3>Layer Summary ({stats.layerStats.length} groups)</h3>
-                  <div className="layer-summary">
-                    {stats.layerStats.slice(0, 20).map((layer, index) => (
-                      <div key={index} className="layer-summary-item">
-                        <span
-                          className="layer-name"
-                          style={{ paddingLeft: `${layer.depth * 12}px` }}
-                        >
-                          {layer.name}
-                        </span>
-                        <div className="layer-info">
-                          {layer.colors.length > 0 && (
-                            <div className="layer-colors">
-                              {layer.colors.slice(0, 5).map((color, colorIndex) => (
-                                <span
-                                  key={colorIndex}
-                                  className="layer-color-swatch"
-                                  style={{ backgroundColor: color }}
-                                  title={color}
-                                />
-                              ))}
-                              {layer.colors.length > 5 && (
-                                <span className="layer-colors-more">+{layer.colors.length - 5}</span>
-                              )}
-                            </div>
-                          )}
-                          <span className="layer-paths">{layer.paths} paths</span>
-                        </div>
-                      </div>
-                    ))}
-                    {stats.layerStats.length > 20 && (
-                      <div className="layer-summary-more">
-                        ... and {stats.layerStats.length - 20} more groups
-                      </div>
-                    )}
-                  </div>
-                </section>
-              )}
-            </>
+            </section>
           )}
         </div>
       </aside>

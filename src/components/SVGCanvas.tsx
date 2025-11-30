@@ -220,17 +220,38 @@ export default function SVGCanvas({
           const containerRect = containerRef.current?.getBoundingClientRect()
           if (!containerRect) return null
 
+          // Get the actual SVG element to calculate proper positioning
+          const svgElement = svgContainerRef.current?.querySelector('svg')
+          if (!svgElement) return null
+
           // Calculate viewport center
           const viewportCenterX = containerRect.width / 2
           const viewportCenterY = containerRect.height / 2
 
-          // Calculate scaled dimensions
-          const viewportWidth = dims.width * scale
-          const viewportHeight = dims.height * scale
+          // Calculate the effective scale (base CSS scale + user zoom)
+          const svgRect = svgElement.getBoundingClientRect()
+          const baseSvgWidth = svgRect.width / scale
+          const baseScale = baseSvgWidth / svgDimensions.width
+          const effectiveScale = baseScale * scale
 
-          // Position crop overlay at viewport center
-          const cropLeft = viewportCenterX - viewportWidth / 2
-          const cropTop = viewportCenterY - viewportHeight / 2
+          // Calculate crop position in SVG coordinates
+          const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
+          const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
+
+          let cropSvgX = svgCenterX - dims.width / 2
+          let cropSvgY = svgCenterY - dims.height / 2
+
+          // Clamp to SVG bounds
+          if (cropSvgX < 0) cropSvgX = 0
+          if (cropSvgY < 0) cropSvgY = 0
+          if (cropSvgX + dims.width > svgDimensions.width) cropSvgX = svgDimensions.width - dims.width
+          if (cropSvgY + dims.height > svgDimensions.height) cropSvgY = svgDimensions.height - dims.height
+
+          // Convert SVG coords to viewport coords for rendering the overlay
+          const cropLeft = viewportCenterX + offset.x + (cropSvgX - svgDimensions.width / 2) * effectiveScale
+          const cropTop = viewportCenterY + offset.y + (cropSvgY - svgDimensions.height / 2) * effectiveScale
+          const viewportWidth = dims.width * effectiveScale
+          const viewportHeight = dims.height * effectiveScale
 
           return (
             <>
@@ -285,73 +306,20 @@ export default function SVGCanvas({
                   {/* Center crosshairs */}
                   <line
                     x1={cropLeft}
-                    y1={viewportCenterY}
+                    y1={cropTop + viewportHeight / 2}
                     x2={cropLeft + viewportWidth}
-                    y2={viewportCenterY}
+                    y2={cropTop + viewportHeight / 2}
                     stroke="#4a90e2"
                     strokeWidth="1"
                   />
                   <line
-                    x1={viewportCenterX}
+                    x1={cropLeft + viewportWidth / 2}
                     y1={cropTop}
-                    x2={viewportCenterX}
+                    x2={cropLeft + viewportWidth / 2}
                     y2={cropTop + viewportHeight}
                     stroke="#4a90e2"
                     strokeWidth="1"
                   />
-
-                  {/* DEBUG: Red rect showing calculated crop area in SVG coords */}
-                  {(() => {
-                    // Replicate the crop calculation from SortTab to show where we THINK we're cropping
-                    const svgElement = svgContainerRef.current?.querySelector('svg')
-                    if (!svgElement) return null
-
-                    const svgRect = svgElement.getBoundingClientRect()
-                    const baseSvgWidth = svgRect.width / scale
-                    const baseSvgHeight = svgRect.height / scale
-                    const baseScale = baseSvgWidth / svgDimensions.width
-                    const effectiveScale = baseScale * scale
-
-                    // SVG coord at viewport center
-                    const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
-                    const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
-
-                    // Crop box in SVG coords
-                    let cropSvgX = svgCenterX - dims.width / 2
-                    let cropSvgY = svgCenterY - dims.height / 2
-
-                    // Clamp to bounds
-                    if (cropSvgX < 0) cropSvgX = 0
-                    if (cropSvgY < 0) cropSvgY = 0
-                    if (cropSvgX + dims.width > svgDimensions.width) cropSvgX = svgDimensions.width - dims.width
-                    if (cropSvgY + dims.height > svgDimensions.height) cropSvgY = svgDimensions.height - dims.height
-
-                    // Convert SVG coords back to viewport coords for drawing
-                    // The SVG is positioned with its center at (containerWidth/2 + offset.x, containerHeight/2 + offset.y)
-                    // A point at SVG coord (x,y) is at viewport position:
-                    //   viewportX = containerWidth/2 + offset.x + (x - svgWidth/2) * effectiveScale
-                    //   viewportY = containerHeight/2 + offset.y + (y - svgHeight/2) * effectiveScale
-                    const debugX = viewportCenterX + offset.x + (cropSvgX - svgDimensions.width / 2) * effectiveScale
-                    const debugY = viewportCenterY + offset.y + (cropSvgY - svgDimensions.height / 2) * effectiveScale
-                    const debugW = dims.width * effectiveScale
-                    const debugH = dims.height * effectiveScale
-
-                    console.log('[DEBUG OVERLAY] effectiveScale:', effectiveScale.toFixed(4),
-                      'cropSvg:', cropSvgX.toFixed(0), cropSvgY.toFixed(0),
-                      'debugViewport:', debugX.toFixed(0), debugY.toFixed(0))
-
-                    return (
-                      <rect
-                        x={debugX}
-                        y={debugY}
-                        width={debugW}
-                        height={debugH}
-                        fill="none"
-                        stroke="red"
-                        strokeWidth="2"
-                      />
-                    )
-                  })()}
                 </svg>
               </div>
             </>

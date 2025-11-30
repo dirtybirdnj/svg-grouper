@@ -8,6 +8,7 @@ import { SVGNode } from '../../types/svg'
 import { parseSVGProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
 import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
+import { linesToCompoundPath, HatchLine } from '../../utils/geometry'
 import './SortTab.css'
 
 export default function SortTab() {
@@ -43,9 +44,12 @@ export default function SortTab() {
     setStatusMessage,
     rebuildSvgFromLayers,
     skipNextParse,
+    isProcessing,
     setIsProcessing,
     setFillTargetNodeId,
     setOrderData,
+    flattenArmed,
+    setFlattenArmed,
   } = useAppContext()
 
   // Ref for the canvas container to get its dimensions
@@ -55,6 +59,10 @@ export default function SortTab() {
   const [isResizing, setIsResizing] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
   const [splitArmed, setSplitArmed] = useState(false)
+  const [weldArmed, setWeldArmed] = useState(false)
+  const [sizeSortAscending, setSizeSortAscending] = useState(false) // false = largest first
+  const [sizeSortFilter, setSizeSortFilter] = useState<'all' | 'fills' | 'strokes'>('all')
+  const [showFilterToolbar, setShowFilterToolbar] = useState(false)
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const [isIsolated, setIsIsolated] = useState(false)
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
@@ -137,6 +145,7 @@ export default function SortTab() {
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
     setSplitArmed(false)
+    setWeldArmed(false)
   }, [])
 
   // Helper function to count points in an element
@@ -1000,8 +1009,11 @@ export default function SortTab() {
     return colors.size > 1
   }
 
-  const handleGroupByColor = () => {
+  const handleGroupByColor = async () => {
     if (selectedNodeIds.size !== 1) return
+
+    setIsProcessing(true)
+    await new Promise(resolve => setTimeout(resolve, 50))
 
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
@@ -1090,11 +1102,18 @@ export default function SortTab() {
     setLayerNodes(updatedNodes)
     setSelectedNodeIds(new Set())
     rebuildSvgFromLayers(updatedNodes)
+    setIsProcessing(false)
   }
 
-  // Sort/reorder children by color - puts all elements of same color together
-  const handleSortByColor = () => {
+  // Sort children by color first, then by element type within each color
+  // If shift is held, group by type instead of just sorting
+  const handleSortByType = async (e?: React.MouseEvent) => {
     if (selectedNodeIds.size !== 1) return
+
+    const shouldGroup = e?.shiftKey ?? false
+
+    setIsProcessing(true)
+    await new Promise(resolve => setTimeout(resolve, 50))
 
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
@@ -1108,10 +1127,16 @@ export default function SortTab() {
     const selectedId = Array.from(selectedNodeIds)[0]
     const selectedNode = findNode(layerNodes, selectedId)
 
-    if (!selectedNode || selectedNode.children.length === 0) return
+    if (!selectedNode || selectedNode.children.length === 0) {
+      setIsProcessing(false)
+      return
+    }
 
-    const getElementColor = (element: Element): string => {
-      // Check for fillColor first (from line fill customMarkup nodes)
+    // Get color from element
+    const getColor = (node: SVGNode): string => {
+      if (node.fillColor) return normalizeColor(node.fillColor)
+
+      const element = node.element
       const fill = element.getAttribute('fill')
       const stroke = element.getAttribute('stroke')
       const style = element.getAttribute('style')
@@ -1126,32 +1151,133 @@ export default function SortTab() {
       if (fill && fill !== 'none' && fill !== 'transparent') return normalizeColor(fill)
       if (stroke && stroke !== 'none' && stroke !== 'transparent') return normalizeColor(stroke)
 
-      return '#000000' // default
+      return '#000000'
     }
 
-    const getNodeColor = (node: SVGNode): string => {
-      // Check fillColor first (from line fill)
-      if (node.fillColor) return normalizeColor(node.fillColor)
-      return getElementColor(node.element)
+    // Get element type - distinguish between fill paths and stroke paths
+    const getType = (node: SVGNode): string => {
+      if (node.isGroup) return 'g'
+
+      const element = node.element
+      const tagName = element?.tagName?.toLowerCase() || node.type || 'unknown'
+
+      if (tagName === 'path' || tagName === 'polygon' || tagName === 'rect' || tagName === 'circle' || tagName === 'ellipse') {
+        const fill = element?.getAttribute('fill')
+        const stroke = element?.getAttribute('stroke')
+        const style = element?.getAttribute('style') || ''
+
+        const hasFillStyle = style.includes('fill:') && !style.includes('fill:none') && !style.includes('fill: none')
+        const hasStrokeStyle = style.includes('stroke:') && !style.includes('stroke:none') && !style.includes('stroke: none')
+
+        const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
+        const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
+
+        if (hasFill && !hasStroke) return 'fill-shape'
+        if (hasStroke && !hasFill) return 'stroke-path'
+        if (hasFill && hasStroke) return 'fill+stroke'
+      }
+
+      return tagName
     }
 
-    // Sort children by color (reorder without creating new groups)
-    const sortedChildren = [...selectedNode.children].sort((a, b) => {
-      const colorA = getNodeColor(a)
-      const colorB = getNodeColor(b)
-      return colorA.localeCompare(colorB)
-    })
+    // Categorize as fills or lines for grouping
+    const getCategory = (node: SVGNode): 'fills' | 'lines' | 'other' => {
+      const type = getType(node)
+      if (type === 'fill-shape') return 'fills'
+      if (type === 'stroke-path' || type === 'line' || type === 'polyline') return 'lines'
+      if (type === 'fill+stroke') return 'fills' // Treat as fills
+      return 'other'
+    }
 
-    // Reorder DOM elements to match sorted order
-    sortedChildren.forEach(child => {
-      selectedNode.element.appendChild(child.element)
-    })
+    const typeOrder: Record<string, number> = {
+      'g': 0, 'fill-shape': 1, 'fill+stroke': 2, 'stroke-path': 3,
+      'path': 4, 'line': 5, 'polyline': 6, 'polygon': 7,
+      'rect': 8, 'circle': 9, 'ellipse': 10, 'text': 11, 'image': 12,
+    }
+
+    let newChildren: SVGNode[]
+
+    if (shouldGroup) {
+      // Group by type - create subgroups for fills and lines
+      const fills: SVGNode[] = []
+      const lines: SVGNode[] = []
+      const other: SVGNode[] = []
+
+      selectedNode.children.forEach(child => {
+        const category = getCategory(child)
+        if (category === 'fills') fills.push(child)
+        else if (category === 'lines') lines.push(child)
+        else other.push(child)
+      })
+
+      newChildren = []
+
+      // Create Fills group if there are fills
+      if (fills.length > 0) {
+        const fillGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+        const fillGroupId = `fills-${Date.now()}`
+        fillGroup.setAttribute('id', fillGroupId)
+
+        fills.forEach(node => fillGroup.appendChild(node.element))
+        selectedNode.element.appendChild(fillGroup)
+
+        newChildren.push({
+          id: fillGroupId,
+          type: 'g',
+          name: `Fills (${fills.length})`,
+          element: fillGroup,
+          isGroup: true,
+          children: fills
+        })
+      }
+
+      // Create Lines group if there are lines
+      if (lines.length > 0) {
+        const lineGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+        const lineGroupId = `lines-${Date.now()}`
+        lineGroup.setAttribute('id', lineGroupId)
+
+        lines.forEach(node => lineGroup.appendChild(node.element))
+        selectedNode.element.appendChild(lineGroup)
+
+        newChildren.push({
+          id: lineGroupId,
+          type: 'g',
+          name: `Lines (${lines.length})`,
+          element: lineGroup,
+          isGroup: true,
+          children: lines
+        })
+      }
+
+      // Add other elements ungrouped
+      newChildren.push(...other)
+
+      setStatusMessage(`Grouped into ${fills.length > 0 ? 'Fills' : ''}${fills.length > 0 && lines.length > 0 ? ' and ' : ''}${lines.length > 0 ? 'Lines' : ''}`)
+    } else {
+      // Sort children: first by color, then by type
+      newChildren = [...selectedNode.children].sort((a, b) => {
+        const colorA = getColor(a)
+        const colorB = getColor(b)
+        const colorCompare = colorA.localeCompare(colorB)
+        if (colorCompare !== 0) return colorCompare
+
+        const typeA = getType(a)
+        const typeB = getType(b)
+        return (typeOrder[typeA] ?? 99) - (typeOrder[typeB] ?? 99)
+      })
+
+      // Reorder DOM elements
+      newChildren.forEach(child => {
+        selectedNode.element.appendChild(child.element)
+      })
+    }
 
     // Update the node in the tree
     const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.map(node => {
         if (node.id === selectedId) {
-          return { ...node, children: sortedChildren }
+          return { ...node, children: newChildren }
         }
         if (node.children.length > 0) {
           return { ...node, children: updateNodeChildren(node.children) }
@@ -1163,10 +1289,274 @@ export default function SortTab() {
     const updatedNodes = updateNodeChildren(layerNodes)
     setLayerNodes(updatedNodes)
     rebuildSvgFromLayers(updatedNodes)
+    setIsProcessing(false)
   }
 
-  // Check if sorting by color would change the order
-  const canSortByColor = (): boolean => {
+  // Get element type for filtering - checks if element is fill or stroke
+  const getElementType = (node: SVGNode): 'fill' | 'stroke' | 'other' => {
+    if (node.isGroup) {
+      // For groups, determine based on children content
+      let hasFillChildren = false
+      let hasStrokeChildren = false
+
+      const checkChildren = (n: SVGNode) => {
+        if (!n.isGroup) {
+          const type = getLeafElementType(n)
+          if (type === 'fill') hasFillChildren = true
+          if (type === 'stroke') hasStrokeChildren = true
+        }
+        n.children.forEach(checkChildren)
+      }
+      checkChildren(node)
+
+      if (hasFillChildren && !hasStrokeChildren) return 'fill'
+      if (hasStrokeChildren && !hasFillChildren) return 'stroke'
+      return 'other' // Mixed or empty
+    }
+    return getLeafElementType(node)
+  }
+
+  // Get type for a leaf (non-group) element
+  const getLeafElementType = (node: SVGNode): 'fill' | 'stroke' | 'other' => {
+    const element = node.element
+    const fill = element?.getAttribute('fill')
+    const stroke = element?.getAttribute('stroke')
+    const style = element?.getAttribute('style') || ''
+
+    const hasFillStyle = style.includes('fill:') && !style.includes('fill:none') && !style.includes('fill: none')
+    const hasStrokeStyle = style.includes('stroke:') && !style.includes('stroke:none') && !style.includes('stroke: none')
+
+    const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
+    const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
+
+    if (hasFill && !hasStroke) return 'fill'
+    if (hasStroke && !hasFill) return 'stroke'
+    return 'other'
+  }
+
+  // Count fills and strokes in the selected node's children
+  const getFilterCounts = useCallback((): { fills: number; strokes: number } => {
+    if (selectedNodeIds.size !== 1) return { fills: 0, strokes: 0 }
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNode(layerNodes, selectedId)
+    if (!selectedNode) return { fills: 0, strokes: 0 }
+
+    let fills = 0
+    let strokes = 0
+
+    selectedNode.children.forEach(child => {
+      const type = getElementType(child)
+      if (type === 'fill') fills++
+      if (type === 'stroke') strokes++
+    })
+
+    return { fills, strokes }
+  }, [selectedNodeIds, layerNodes])
+
+  const filterCounts = getFilterCounts()
+
+  // Get total children count for the selected node
+  const getTotalChildrenCount = useCallback((): number => {
+    if (selectedNodeIds.size !== 1) return 0
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNode(layerNodes, selectedId)
+    return selectedNode?.children.length || 0
+  }, [selectedNodeIds, layerNodes])
+
+  const totalChildrenCount = getTotalChildrenCount()
+
+  // Sort children by size (bounding box area)
+  // When filter is applied, extract filtered items into a new sibling group
+  const handleSortBySize = async (ascendingOverride?: boolean) => {
+    if (selectedNodeIds.size !== 1) return
+
+    setIsProcessing(true)
+    await new Promise(resolve => setTimeout(resolve, 50))
+
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
+      for (const node of nodes) {
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
+        if (found) return found
+      }
+      return null
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNode(layerNodes, selectedId)
+
+    if (!selectedNode || selectedNode.children.length === 0) {
+      setIsProcessing(false)
+      return
+    }
+
+    // Calculate bounding box area for an element
+    const getElementArea = (node: SVGNode): number => {
+      const element = node.element
+      if (!element) return 0
+
+      try {
+        // Try to get bounding box from SVG element
+        if (element instanceof SVGGraphicsElement && typeof element.getBBox === 'function') {
+          const bbox = element.getBBox()
+          return bbox.width * bbox.height
+        }
+      } catch {
+        // getBBox can throw if element isn't rendered
+      }
+
+      // Fallback: count children or estimate from attributes
+      if (node.children.length > 0) {
+        return node.children.reduce((sum, child) => sum + getElementArea(child), 0)
+      }
+
+      // For paths, estimate from path data length as proxy for complexity/size
+      const d = element.getAttribute('d')
+      if (d) {
+        return d.length // Rough proxy - longer path data usually means larger/more complex shape
+      }
+
+      return 0
+    }
+
+    // Use override if provided, otherwise use current state
+    const ascending = ascendingOverride !== undefined ? ascendingOverride : sizeSortAscending
+
+    if (sizeSortFilter === 'all') {
+      // No filter - just sort children in place
+      const sortedChildren = [...selectedNode.children].sort((a, b) => {
+        const areaA = getElementArea(a)
+        const areaB = getElementArea(b)
+        return ascending ? areaA - areaB : areaB - areaA
+      })
+
+      // Reorder DOM elements
+      sortedChildren.forEach(child => {
+        selectedNode.element.appendChild(child.element)
+      })
+
+      // Update the node in the tree
+      const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (node.id === selectedId) {
+            return { ...node, children: sortedChildren }
+          }
+          if (node.children.length > 0) {
+            return { ...node, children: updateNodeChildren(node.children) }
+          }
+          return node
+        })
+      }
+
+      const updatedNodes = updateNodeChildren(layerNodes)
+      setLayerNodes(updatedNodes)
+      rebuildSvgFromLayers(updatedNodes)
+    } else {
+      // Filter applied - extract matching items into a new sibling group
+      const childrenToExtract: SVGNode[] = []
+      const childrenToKeep: SVGNode[] = []
+
+      selectedNode.children.forEach(child => {
+        const type = getElementType(child)
+        if ((sizeSortFilter === 'fills' && type === 'fill') ||
+            (sizeSortFilter === 'strokes' && type === 'stroke')) {
+          childrenToExtract.push(child)
+        } else {
+          childrenToKeep.push(child)
+        }
+      })
+
+      if (childrenToExtract.length === 0) {
+        setStatusMessage(`No ${sizeSortFilter === 'fills' ? 'fills' : 'lines'} found to extract`)
+        setIsProcessing(false)
+        return
+      }
+
+      // Sort extracted children by area
+      const sortedExtracted = childrenToExtract.sort((a, b) => {
+        const areaA = getElementArea(a)
+        const areaB = getElementArea(b)
+        return ascending ? areaA - areaB : areaB - areaA
+      })
+
+      // Create new group for extracted items
+      const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      const groupId = `${sizeSortFilter}-${Date.now()}`
+      const groupName = sizeSortFilter === 'fills' ? 'Fills' : 'Lines'
+      newGroup.setAttribute('id', groupId)
+
+      // Move extracted elements to the new group
+      sortedExtracted.forEach(node => {
+        newGroup.appendChild(node.element)
+      })
+
+      // Insert the new group as a sibling after the selected node
+      const parentElement = selectedNode.element.parentElement
+      if (parentElement) {
+        parentElement.insertBefore(newGroup, selectedNode.element.nextSibling)
+      }
+
+      // Create the new group node for the tree
+      const newGroupNode: SVGNode = {
+        id: groupId,
+        type: 'g',
+        name: `${groupName} (${sortedExtracted.length})`,
+        element: newGroup,
+        isGroup: true,
+        children: sortedExtracted
+      }
+
+      // Update the tree: modify selected node's children and add new sibling group
+      const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
+        const result: SVGNode[] = []
+        for (const node of nodes) {
+          if (node.id === selectedId) {
+            // Update original node with remaining children
+            result.push({ ...node, children: childrenToKeep })
+            // Add new group as sibling right after
+            result.push(newGroupNode)
+          } else if (node.children.length > 0) {
+            result.push({ ...node, children: updateNodes(node.children) })
+          } else {
+            result.push(node)
+          }
+        }
+        return result
+      }
+
+      const updatedNodes = updateNodes(layerNodes)
+      setLayerNodes(updatedNodes)
+      setSelectedNodeIds(new Set([groupId]))
+      setLastSelectedNodeId(groupId)
+      rebuildSvgFromLayers(updatedNodes)
+      setStatusMessage(`Extracted ${sortedExtracted.length} ${sizeSortFilter === 'fills' ? 'fills' : 'lines'} into new group`)
+      setShowFilterToolbar(false)
+    }
+
+    setIsProcessing(false)
+  }
+
+  const canSortBySize = (): boolean => {
     if (selectedNodeIds.size !== 1) return false
 
     const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
@@ -1181,8 +1571,7 @@ export default function SortTab() {
     const selectedId = Array.from(selectedNodeIds)[0]
     const selectedNode = findNode(layerNodes, selectedId)
 
-    if (!selectedNode || selectedNode.children.length < 2) return false
-    return true
+    return selectedNode !== null && selectedNode.children.length >= 2
   }
 
   const handleGroupUngroup = () => {
@@ -1411,168 +1800,529 @@ export default function SortTab() {
     }
   }
 
-  const canFlatten = (): boolean => {
-    if (selectedNodeIds.size !== 1) return false
+  // Check if weld is possible (need a selected group with paths)
+  const canWeld = (): boolean => {
+    if (selectedNodeIds.size === 0) return false
 
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const findNode = (nodes: SVGNode[]): SVGNode | null => {
+    // Check if any selected node has paths
+    const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
-        if (node.id === selectedId) return node
-        const found = findNode(node.children)
+        if (node.id === id) return node
+        const found = findNodeById(node.children, id)
         if (found) return found
       }
       return null
     }
 
-    const selectedNode = findNode(layerNodes)
-    if (!selectedNode || !selectedNode.isGroup) return false
+    for (const nodeId of selectedNodeIds) {
+      const node = findNodeById(layerNodes, nodeId)
+      if (!node) continue
 
-    const colors = new Set<string>()
-    const collectColors = (node: SVGNode) => {
-      const style = node.element.getAttribute('style') || ''
-      const fill = node.element.getAttribute('fill') || ''
-
-      let color = fill
-      if (style.includes('fill:')) {
-        const match = style.match(/fill:\s*([^;]+)/)
-        if (match) color = match[1].trim()
+      // Check if this node or its children have paths
+      const hasPaths = (n: SVGNode): boolean => {
+        const tagName = n.element.tagName.toLowerCase()
+        if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) return true
+        return n.children.some(hasPaths)
       }
 
-      if (color && color !== 'none') {
-        colors.add(color)
-      }
-
-      node.children.forEach(collectColors)
+      if (hasPaths(node)) return true
     }
-
-    selectedNode.children.forEach(collectColors)
-
-    return colors.size === 1
+    return false
   }
 
-  const handleFlatten = async () => {
-    if (!canFlatten() || !window.electron?.flattenShapes) {
+  // Handle weld - combine all paths in selected group(s) into a single compound path
+  const handleWeld = () => {
+    if (!canWeld()) return
+
+    if (!weldArmed) {
+      setWeldArmed(true)
+      setDeleteArmed(false)
+      setSplitArmed(false)
+      setFlattenArmed(false)
+      setStatusMessage('Click Weld again to confirm - will combine paths into compound path')
       return
     }
 
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const findNode = (nodes: SVGNode[]): SVGNode | null => {
+    setWeldArmed(false)
+    setStatusMessage('')
+
+    // Extract path d attribute as HatchLines
+    const pathToLines = (pathD: string): HatchLine[] => {
+      const lines: HatchLine[] = []
+      // Parse path d attribute to extract line segments
+      const commands = pathD.match(/[MLHVCSQTAZmlhvcsqtaz][^MLHVCSQTAZmlhvcsqtaz]*/gi) || []
+
+      let currentX = 0, currentY = 0
+      let startX = 0, startY = 0
+
+      for (const cmd of commands) {
+        const type = cmd[0]
+        const args = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n))
+
+        switch (type) {
+          case 'M':
+            currentX = args[0]
+            currentY = args[1]
+            startX = currentX
+            startY = currentY
+            // Process additional coordinates as implicit L commands
+            for (let i = 2; i < args.length; i += 2) {
+              const nextX = args[i]
+              const nextY = args[i + 1]
+              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
+              currentX = nextX
+              currentY = nextY
+            }
+            break
+          case 'm':
+            currentX += args[0]
+            currentY += args[1]
+            startX = currentX
+            startY = currentY
+            for (let i = 2; i < args.length; i += 2) {
+              const nextX = currentX + args[i]
+              const nextY = currentY + args[i + 1]
+              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
+              currentX = nextX
+              currentY = nextY
+            }
+            break
+          case 'L':
+            for (let i = 0; i < args.length; i += 2) {
+              const nextX = args[i]
+              const nextY = args[i + 1]
+              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
+              currentX = nextX
+              currentY = nextY
+            }
+            break
+          case 'l':
+            for (let i = 0; i < args.length; i += 2) {
+              const nextX = currentX + args[i]
+              const nextY = currentY + args[i + 1]
+              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
+              currentX = nextX
+              currentY = nextY
+            }
+            break
+          case 'H':
+            for (const x of args) {
+              lines.push({ x1: currentX, y1: currentY, x2: x, y2: currentY })
+              currentX = x
+            }
+            break
+          case 'h':
+            for (const dx of args) {
+              const nextX = currentX + dx
+              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: currentY })
+              currentX = nextX
+            }
+            break
+          case 'V':
+            for (const y of args) {
+              lines.push({ x1: currentX, y1: currentY, x2: currentX, y2: y })
+              currentY = y
+            }
+            break
+          case 'v':
+            for (const dy of args) {
+              const nextY = currentY + dy
+              lines.push({ x1: currentX, y1: currentY, x2: currentX, y2: nextY })
+              currentY = nextY
+            }
+            break
+          case 'Z':
+          case 'z':
+            if (currentX !== startX || currentY !== startY) {
+              lines.push({ x1: currentX, y1: currentY, x2: startX, y2: startY })
+            }
+            currentX = startX
+            currentY = startY
+            break
+          // For curves (C, S, Q, T, A), we approximate with the start and end points
+          case 'C':
+            for (let i = 0; i < args.length; i += 6) {
+              const endX = args[i + 4]
+              const endY = args[i + 5]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+          case 'c':
+            for (let i = 0; i < args.length; i += 6) {
+              const endX = currentX + args[i + 4]
+              const endY = currentY + args[i + 5]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+          case 'S':
+          case 's':
+            for (let i = 0; i < args.length; i += 4) {
+              const endX = type === 'S' ? args[i + 2] : currentX + args[i + 2]
+              const endY = type === 'S' ? args[i + 3] : currentY + args[i + 3]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+          case 'Q':
+          case 'q':
+            for (let i = 0; i < args.length; i += 4) {
+              const endX = type === 'Q' ? args[i + 2] : currentX + args[i + 2]
+              const endY = type === 'Q' ? args[i + 3] : currentY + args[i + 3]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+          case 'T':
+          case 't':
+            for (let i = 0; i < args.length; i += 2) {
+              const endX = type === 'T' ? args[i] : currentX + args[i]
+              const endY = type === 'T' ? args[i + 1] : currentY + args[i + 1]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+          case 'A':
+          case 'a':
+            // Arc - approximate with line to endpoint
+            for (let i = 0; i < args.length; i += 7) {
+              const endX = type === 'A' ? args[i + 5] : currentX + args[i + 5]
+              const endY = type === 'A' ? args[i + 6] : currentY + args[i + 6]
+              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
+              currentX = endX
+              currentY = endY
+            }
+            break
+        }
+      }
+
+      return lines
+    }
+
+    // Convert line element to HatchLine
+    const lineElementToLine = (el: Element): HatchLine | null => {
+      const x1 = parseFloat(el.getAttribute('x1') || '0')
+      const y1 = parseFloat(el.getAttribute('y1') || '0')
+      const x2 = parseFloat(el.getAttribute('x2') || '0')
+      const y2 = parseFloat(el.getAttribute('y2') || '0')
+      if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) return null
+      return { x1, y1, x2, y2 }
+    }
+
+    // Collect all lines from a node recursively
+    const collectLines = (node: SVGNode): HatchLine[] => {
+      const lines: HatchLine[] = []
+      const tagName = node.element.tagName.toLowerCase()
+
+      if (tagName === 'path') {
+        const d = node.element.getAttribute('d')
+        if (d) {
+          lines.push(...pathToLines(d))
+        }
+      } else if (tagName === 'line') {
+        const line = lineElementToLine(node.element)
+        if (line) lines.push(line)
+      } else if (tagName === 'polyline' || tagName === 'polygon') {
+        const points = node.element.getAttribute('points') || ''
+        const pairs = points.trim().split(/[\s,]+/).map(parseFloat)
+        for (let i = 0; i < pairs.length - 3; i += 2) {
+          lines.push({ x1: pairs[i], y1: pairs[i + 1], x2: pairs[i + 2], y2: pairs[i + 3] })
+        }
+        // Close polygon
+        if (tagName === 'polygon' && pairs.length >= 4) {
+          lines.push({
+            x1: pairs[pairs.length - 2],
+            y1: pairs[pairs.length - 1],
+            x2: pairs[0],
+            y2: pairs[1]
+          })
+        }
+      }
+
+      // Collect from children
+      for (const child of node.children) {
+        lines.push(...collectLines(child))
+      }
+
+      return lines
+    }
+
+    // Get color from an element
+    const getElementColor = (el: Element): string | null => {
+      const stroke = el.getAttribute('stroke')
+      const fill = el.getAttribute('fill')
+      const style = el.getAttribute('style') || ''
+
+      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+      if (strokeMatch && strokeMatch[1] !== 'none' && strokeMatch[1] !== 'transparent') {
+        return strokeMatch[1].trim()
+      }
+      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
+
+      const fillMatch = style.match(/fill:\s*([^;]+)/)
+      if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1] !== 'transparent') {
+        return fillMatch[1].trim()
+      }
+      if (fill && fill !== 'none' && fill !== 'transparent') return fill
+
+      return null
+    }
+
+    // Get stroke color from node - recursively search children if needed
+    const getStrokeColor = (node: SVGNode): string => {
+      // First try the node's own element
+      const color = getElementColor(node.element)
+      if (color) return color
+
+      // If it's a group, search children recursively for first color
+      for (const child of node.children) {
+        const childColor = getStrokeColor(child)
+        if (childColor !== '#000000') return childColor
+      }
+
+      return '#000000'
+    }
+
+    // Get stroke width from an element
+    const getElementStrokeWidth = (el: Element): string | null => {
+      const strokeWidth = el.getAttribute('stroke-width')
+      const style = el.getAttribute('style') || ''
+
+      const widthMatch = style.match(/stroke-width:\s*([^;]+)/)
+      if (widthMatch) return widthMatch[1].trim()
+      if (strokeWidth) return strokeWidth
+      return null
+    }
+
+    // Get stroke width from node - recursively search children if needed
+    const getStrokeWidth = (node: SVGNode): string => {
+      const width = getElementStrokeWidth(node.element)
+      if (width) return width
+
+      // If it's a group, search children recursively
+      for (const child of node.children) {
+        const childWidth = getStrokeWidth(child)
+        if (childWidth !== '1') return childWidth
+      }
+
+      return '1'
+    }
+
+    // Find node by id
+    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
       for (const node of nodes) {
-        if (node.id === selectedId) return node
-        const found = findNode(node.children)
+        if (node.id === id) return node
+        const found = findNode(node.children, id)
         if (found) return found
       }
       return null
     }
 
-    const selectedNode = findNode(layerNodes)
-    if (!selectedNode) return
+    // Process each selected node
+    let totalBefore = 0
+    let totalAfter = 0
 
-    let color = ''
-    const findColor = (node: SVGNode): string => {
-      const style = node.element.getAttribute('style') || ''
-      const fill = node.element.getAttribute('fill') || ''
+    const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.map(node => {
+        if (selectedNodeIds.has(node.id)) {
+          // Collect all lines from this node
+          const lines = collectLines(node)
+          totalBefore += lines.length
 
-      let c = fill
-      if (style.includes('fill:')) {
-        const match = style.match(/fill:\s*([^;]+)/)
-        if (match) c = match[1].trim()
-      }
+          if (lines.length === 0) return node
 
-      if (c && c !== 'none') return c
+          // Get color and stroke width from first drawable child
+          const color = getStrokeColor(node)
+          const strokeWidth = getStrokeWidth(node)
 
-      for (const child of node.children) {
-        const childColor = findColor(child)
-        if (childColor) return childColor
-      }
+          // Create compound path
+          const pathD = linesToCompoundPath(lines, 2)
+          totalAfter++
 
-      return ''
+          // Create new path element
+          const nodeId = `welded-${node.id}`
+          const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round"/>`
+
+          // Parse to create element
+          const parser = new DOMParser()
+          const doc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
+          const pathElement = doc.querySelector('path') as Element
+
+          // Return new node with compound path
+          return {
+            ...node,
+            id: nodeId,
+            name: `Welded (${lines.length} lines)`,
+            type: 'path',
+            element: pathElement,
+            isGroup: false,
+            children: [],
+            customMarkup: pathMarkup,
+          }
+        }
+
+        // Process children recursively
+        if (node.children.length > 0) {
+          return { ...node, children: updateNodes(node.children) }
+        }
+
+        return node
+      })
     }
 
-    color = findColor(selectedNode)
+    const updatedNodes = updateNodes(layerNodes)
+    setLayerNodes(updatedNodes)
+    rebuildSvgFromLayers(updatedNodes)
 
-    if (!color) {
+    setStatusMessage(`Welded: ${totalBefore} segments → ${totalAfter} compound path(s)`)
+  }
+
+  // Handle flatten all - remove empty layers, ungroup all, group by color
+  const handleFlattenAll = () => {
+    if (!flattenArmed) {
+      setFlattenArmed(true)
+      setDeleteArmed(false)
+      setSplitArmed(false)
+      setStatusMessage('Click Flatten again to confirm')
       return
     }
 
-    try {
-      const groupSVG = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgDimensions?.width || 1000}" height="${svgDimensions?.height || 1000}" viewBox="0 0 ${svgDimensions?.width || 1000} ${svgDimensions?.height || 1000}">
-  ${selectedNode.element.outerHTML}
-</svg>`
+    setFlattenArmed(false)
+    setStatusMessage('')
 
-      console.log(`Flattening group "${selectedNode.name}" with color: ${color}`)
+    const getElementColor = (element: Element): string | null => {
+      const fill = element.getAttribute('fill')
+      const stroke = element.getAttribute('stroke')
+      const style = element.getAttribute('style')
 
-      const flattenedSVG = await window.electron.flattenShapes({
-        svg: groupSVG,
-        color: color
-      })
-
-      const parser = new DOMParser()
-      const doc = parser.parseFromString(flattenedSVG, 'image/svg+xml')
-      const flattenedGroup = doc.querySelector('g')
-
-      if (!flattenedGroup) {
-        throw new Error('Failed to parse flattened SVG')
+      if (style) {
+        const fillMatch = style.match(/fill:\s*([^;]+)/)
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
+        if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
       }
 
-      // Parse the flattened group into new child nodes
-      const parseElement = (element: Element, parentId: string): SVGNode[] => {
-        const nodes: SVGNode[] = []
-        const children = Array.from(element.children)
+      if (fill && fill !== 'none' && fill !== 'transparent') return fill
+      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
 
-        children.forEach((child, index) => {
-          const tagName = child.tagName.toLowerCase()
-          const id = child.getAttribute('id') || `${parentId}-${tagName}-${index}`
+      return null
+    }
 
-          const node: SVGNode = {
-            id,
-            name: id,
-            type: tagName,
-            element: child,
-            isGroup: tagName === 'g',
-            children: tagName === 'g' ? parseElement(child, id) : []
+    const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
+      return nodes.filter(node => {
+        if (node.customMarkup) {
+          return true
+        }
+        if (node.isGroup && node.children.length === 0) {
+          node.element.remove()
+          return false
+        }
+        if (node.children.length > 0) {
+          node.children = deleteEmptyLayers(node.children)
+          if (node.isGroup && node.children.length === 0 && !node.customMarkup) {
+            node.element.remove()
+            return false
           }
-          nodes.push(node)
-        })
+        }
+        return true
+      })
+    }
 
-        return nodes
-      }
+    const ungroupAll = (nodes: SVGNode[]): SVGNode[] => {
+      let result: SVGNode[] = []
 
-      // Import the flattened group into the document
-      const parent = selectedNode.element.parentElement
-      if (parent) {
-        const importedGroup = document.importNode(flattenedGroup, true) as SVGGElement
-        parent.replaceChild(importedGroup, selectedNode.element)
-
-        // Parse new children from the flattened group
-        const newChildren = parseElement(importedGroup, selectedNode.id)
-
-        // Update the node tree with the new flattened structure
-        const updateNode = (nodes: SVGNode[]): SVGNode[] => {
-          return nodes.map(node => {
-            if (node.id === selectedId) {
-              return {
-                ...node,
-                element: importedGroup,
-                children: newChildren
+      for (const node of nodes) {
+        if (node.customMarkup) {
+          result.push(node)
+        } else if (node.isGroup && node.children.length > 0) {
+          const ungroupedChildren = ungroupAll(node.children)
+          const parent = node.element.parentElement
+          if (parent) {
+            for (const child of ungroupedChildren) {
+              if (!child.customMarkup) {
+                parent.insertBefore(child.element, node.element)
               }
             }
-            if (node.children.length > 0) {
-              return { ...node, children: updateNode(node.children) }
-            }
-            return node
-          })
+            node.element.remove()
+          }
+          for (const child of ungroupedChildren) {
+            result.push(child)
+          }
+        } else if (!node.isGroup) {
+          result.push(node)
         }
-
-        const updatedNodes = updateNode(layerNodes)
-        setLayerNodes(updatedNodes)
-        rebuildSvgFromLayers(updatedNodes)
-        setSelectedNodeIds(new Set())
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error'
-      console.error('Flatten error:', error, message)
+
+      return result
     }
+
+    const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
+      const colorGroups = new Map<string, SVGNode[]>()
+      nodes.forEach(node => {
+        let color: string | null = null
+        if (node.customMarkup && node.fillColor) {
+          color = node.fillColor
+        } else {
+          color = getElementColor(node.element)
+        }
+        const colorKey = color || 'no-color'
+        if (!colorGroups.has(colorKey)) {
+          colorGroups.set(colorKey, [])
+        }
+        colorGroups.get(colorKey)!.push(node)
+      })
+
+      if (colorGroups.size <= 1) return nodes
+
+      const svgElement = document.querySelector('.canvas-content svg')
+      if (!svgElement) return nodes
+
+      const newNodes: SVGNode[] = []
+      colorGroups.forEach((groupNodes, color) => {
+        if (groupNodes.length === 1) {
+          newNodes.push(groupNodes[0])
+        } else {
+          const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+          const groupId = `color-group-${color.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+          newGroup.setAttribute('id', groupId)
+
+          groupNodes.forEach(node => {
+            newGroup.appendChild(node.element)
+          })
+
+          svgElement.appendChild(newGroup)
+
+          const groupNode: SVGNode = {
+            id: groupId,
+            type: 'g',
+            name: `color-${color}`,
+            element: newGroup,
+            isGroup: true,
+            children: groupNodes
+          }
+
+          newNodes.push(groupNode)
+        }
+      })
+
+      return newNodes
+    }
+
+    // Execute flatten operations
+    let currentNodes = deleteEmptyLayers([...layerNodes])
+    currentNodes = ungroupAll(currentNodes)
+    currentNodes = groupByColor(currentNodes)
+
+    setLayerNodes(currentNodes)
+    setSelectedNodeIds(new Set())
+    rebuildSvgFromLayers(currentNodes)
+    setStatusMessage('Flattened: removed empty layers, ungrouped all, grouped by color')
   }
 
   const getCropDimensions = (): { width: number; height: number } => {
@@ -1948,9 +2698,9 @@ export default function SortTab() {
           }
           break
         case 's':
-          if (canSortByColor()) {
+          if (canSortBySize()) {
             e.preventDefault()
-            handleSortByColor()
+            setShowFilterToolbar(!showFilterToolbar)
             disarmActions()
           }
           break
@@ -1961,7 +2711,7 @@ export default function SortTab() {
     return () => {
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [selectedNodeIds, layerNodes, deleteArmed, splitArmed, disarmActions])
+  }, [selectedNodeIds, layerNodes, deleteArmed, splitArmed, disarmActions, showFilterToolbar])
 
   return (
     <div className="sort-tab">
@@ -1970,12 +2720,11 @@ export default function SortTab() {
           <h2>Layers</h2>
           <div className="sidebar-actions">
             <button
-              className="action-button"
-              onClick={handleFlatten}
-              disabled={!canFlatten()}
-              title="Flatten - Merge touching shapes of same color"
+              className={`action-button ${showFilterToolbar ? 'active' : ''}`}
+              onClick={() => setShowFilterToolbar(!showFilterToolbar)}
+              disabled={!canSortBySize()}
             >
-              🥞
+              ▼
             </button>
             <button
               className="action-button"
@@ -1987,52 +2736,43 @@ export default function SortTab() {
             </button>
             <button
               className="action-button"
-              onClick={handleSortByColor}
-              disabled={!canSortByColor()}
-              title="Shape Type Sort (S) - Reorder children by color"
-            >
-              ⇅
-            </button>
-            <button
-              className="action-button group-button"
-              onClick={handleGroupUngroup}
-              disabled={selectedNodeIds.size === 0}
-              style={{
-                background: splitArmed ? '#e74c3c' : undefined,
-                color: splitArmed ? 'white' : undefined,
-              }}
-              title={
-                (selectedNodeIds.size === 1 &&
-                Array.from(selectedNodeIds).some(id => {
-                  const findNode = (nodes: SVGNode[]): SVGNode | null => {
-                    for (const node of nodes) {
-                      if (node.id === id) return node
-                      const found = findNode(node.children)
-                      if (found) return found
-                    }
-                    return null
-                  }
-                  const node = findNode(layerNodes)
-                  return node?.isGroup
-                })
-                  ? "Ungroup (G) - Press again to confirm"
-                  : "Group (G)")
-              }
-            >
-              G
-            </button>
-            <button
-              className="action-button"
               onClick={handleSimplifyPaths}
               disabled={!canSimplify()}
               title={`Simplify Paths - Reduce points (tolerance: ${simplifyTolerance})`}
             >
               ✂
             </button>
+            <button
+              className="action-button"
+              onClick={handleWeld}
+              disabled={!canWeld()}
+              style={{
+                background: weldArmed ? '#e74c3c' : undefined,
+                color: weldArmed ? 'white' : undefined,
+              }}
+              title={weldArmed ? "Click again to confirm weld" : "Weld - Combine paths into compound path (reduces path count)"}
+            >
+              ⚡
+            </button>
+            <button
+              className="action-button"
+              onClick={handleFlattenAll}
+              disabled={layerNodes.length === 0}
+              style={{
+                background: flattenArmed ? '#e74c3c' : undefined,
+                color: flattenArmed ? 'white' : undefined,
+              }}
+              title={flattenArmed ? "Click again to confirm flatten" : "Flatten - Remove empty layers, ungroup all, group by color"}
+            >
+              🗄️
+            </button>
 {/* Visibility and delete buttons hidden - use keyboard shortcuts V and D instead */}
           </div>
         </div>
         <div className="sidebar-content">
+          {isProcessing && (
+            <div className="sidebar-processing-overlay" />
+          )}
           {!svgContent ? (
             <p style={{ padding: '1rem', color: '#999', fontSize: '0.9rem' }}>
               Upload an SVG to see layers
@@ -2131,6 +2871,82 @@ export default function SortTab() {
                 ↻
               </button>
             </div>
+          </div>
+        )}
+        {showFilterToolbar && canSortBySize() && (
+          <div className="filter-options-bar">
+            <div className="filter-section">
+              <span className="filter-label">Filter:</span>
+              <div className="filter-buttons">
+                <button
+                  className={`filter-button ${sizeSortFilter === 'all' ? 'active' : ''}`}
+                  onClick={() => setSizeSortFilter('all')}
+                >
+                  All ({totalChildrenCount})
+                </button>
+                <button
+                  className={`filter-button ${sizeSortFilter === 'fills' ? 'active' : ''}`}
+                  onClick={() => setSizeSortFilter('fills')}
+                  disabled={filterCounts.fills === 0}
+                >
+                  Fills ({filterCounts.fills})
+                </button>
+                <button
+                  className={`filter-button ${sizeSortFilter === 'strokes' ? 'active' : ''}`}
+                  onClick={() => setSizeSortFilter('strokes')}
+                  disabled={filterCounts.strokes === 0}
+                >
+                  Lines ({filterCounts.strokes})
+                </button>
+              </div>
+            </div>
+            <div className="filter-divider" />
+            <div className="filter-section">
+              <span className="filter-label">Size:</span>
+              <div className="filter-buttons">
+                <button
+                  className={`filter-button ${!sizeSortAscending ? 'active' : ''}`}
+                  onClick={() => {
+                    setSizeSortAscending(false)
+                    handleSortBySize(false)
+                  }}
+                  title="Sort largest first"
+                >
+                  ↓ Lg
+                </button>
+                <button
+                  className={`filter-button ${sizeSortAscending ? 'active' : ''}`}
+                  onClick={() => {
+                    setSizeSortAscending(true)
+                    handleSortBySize(true)
+                  }}
+                  title="Sort smallest first"
+                >
+                  ↑ Sm
+                </button>
+              </div>
+              <button
+                className="filter-button"
+                onClick={(e) => handleSortByType(e)}
+                title="Sort by color, then by type (fills before lines). Shift+click to group into Fills and Lines"
+              >
+                Type Sort
+              </button>
+            </div>
+            {sizeSortFilter !== 'all' && (
+              <div className="filter-actions">
+                <button
+                  className="filter-apply-button"
+                  onClick={() => handleSortBySize()}
+                  disabled={
+                    (sizeSortFilter === 'fills' && filterCounts.fills === 0) ||
+                    (sizeSortFilter === 'strokes' && filterCounts.strokes === 0)
+                  }
+                >
+                  Extract {sizeSortFilter === 'fills' ? filterCounts.fills : filterCounts.strokes} {sizeSortFilter === 'fills' ? 'fills' : 'lines'}
+                </button>
+              </div>
+            )}
           </div>
         )}
         <div ref={canvasContainerRef} className="canvas-container">

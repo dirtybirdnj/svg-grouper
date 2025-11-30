@@ -651,3 +651,136 @@ export function offsetPolygon(polygon: Point[], offsetDistance: number): Point[]
   }
   return offsetPolygonInward(polygon, -offsetDistance)
 }
+
+/**
+ * Convert an array of HatchLines to a compound path d attribute string.
+ * This combines multiple line segments into a single path with M/L commands,
+ * reducing element count significantly (important for Cricut compatibility).
+ *
+ * @param lines Array of line segments to combine
+ * @param precision Number of decimal places for coordinates (default: 2)
+ * @returns SVG path d attribute string
+ */
+export function linesToCompoundPath(lines: HatchLine[], precision: number = 2): string {
+  if (lines.length === 0) return ''
+
+  const commands: string[] = []
+
+  for (const line of lines) {
+    // Each line segment becomes M(move to start) L(line to end)
+    commands.push(
+      `M${line.x1.toFixed(precision)},${line.y1.toFixed(precision)} L${line.x2.toFixed(precision)},${line.y2.toFixed(precision)}`
+    )
+  }
+
+  return commands.join(' ')
+}
+
+/**
+ * Optimize lines into continuous chains where endpoints connect.
+ * Lines that share endpoints are connected into single M...L...L... chains.
+ * This further reduces path commands by avoiding redundant M commands.
+ *
+ * @param lines Array of line segments
+ * @param tolerance Distance tolerance for considering points as connected (default: 0.1)
+ * @param precision Decimal precision for output (default: 2)
+ * @returns SVG path d attribute string with optimized chains
+ */
+export function linesToOptimizedCompoundPath(
+  lines: HatchLine[],
+  tolerance: number = 0.1,
+  precision: number = 2
+): string {
+  if (lines.length === 0) return ''
+
+  // Build chains of connected lines
+  const remaining = [...lines]
+  const chains: Point[][] = []
+
+  while (remaining.length > 0) {
+    // Start a new chain with the first remaining line
+    const first = remaining.shift()!
+    const chain: Point[] = [
+      { x: first.x1, y: first.y1 },
+      { x: first.x2, y: first.y2 }
+    ]
+
+    let extended = true
+    while (extended && remaining.length > 0) {
+      extended = false
+      const chainStart = chain[0]
+      const chainEnd = chain[chain.length - 1]
+
+      for (let i = 0; i < remaining.length; i++) {
+        const line = remaining[i]
+        const lineStart = { x: line.x1, y: line.y1 }
+        const lineEnd = { x: line.x2, y: line.y2 }
+
+        // Check if line connects to chain end
+        const distEndToStart = Math.sqrt(
+          Math.pow(chainEnd.x - lineStart.x, 2) + Math.pow(chainEnd.y - lineStart.y, 2)
+        )
+        if (distEndToStart < tolerance) {
+          chain.push(lineEnd)
+          remaining.splice(i, 1)
+          extended = true
+          break
+        }
+
+        // Check if line connects to chain end (reversed)
+        const distEndToEnd = Math.sqrt(
+          Math.pow(chainEnd.x - lineEnd.x, 2) + Math.pow(chainEnd.y - lineEnd.y, 2)
+        )
+        if (distEndToEnd < tolerance) {
+          chain.push(lineStart)
+          remaining.splice(i, 1)
+          extended = true
+          break
+        }
+
+        // Check if line connects to chain start
+        const distStartToEnd = Math.sqrt(
+          Math.pow(chainStart.x - lineEnd.x, 2) + Math.pow(chainStart.y - lineEnd.y, 2)
+        )
+        if (distStartToEnd < tolerance) {
+          chain.unshift(lineStart)
+          remaining.splice(i, 1)
+          extended = true
+          break
+        }
+
+        // Check if line connects to chain start (reversed)
+        const distStartToStart = Math.sqrt(
+          Math.pow(chainStart.x - lineStart.x, 2) + Math.pow(chainStart.y - lineStart.y, 2)
+        )
+        if (distStartToStart < tolerance) {
+          chain.unshift(lineEnd)
+          remaining.splice(i, 1)
+          extended = true
+          break
+        }
+      }
+    }
+
+    chains.push(chain)
+  }
+
+  // Convert chains to path commands
+  const commands: string[] = []
+
+  for (const chain of chains) {
+    if (chain.length < 2) continue
+
+    // Start with M command
+    let pathStr = `M${chain[0].x.toFixed(precision)},${chain[0].y.toFixed(precision)}`
+
+    // Add L commands for remaining points
+    for (let i = 1; i < chain.length; i++) {
+      pathStr += ` L${chain[i].x.toFixed(precision)},${chain[i].y.toFixed(precision)}`
+    }
+
+    commands.push(pathStr)
+  }
+
+  return commands.join(' ')
+}

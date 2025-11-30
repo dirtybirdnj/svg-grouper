@@ -18,4 +18,8 @@ contextBridge.exposeInMainWorld('electron', {
   onFileOpened: (callback: (data: { content: string; fileName: string; filePath: string }) => void) => {
     ipcRenderer.on('file-opened', (_event, data) => callback(data))
   },
+  // Export multiple files to a directory
+  exportMultipleFiles: (args: { files: { name: string; content: string }[]; baseName: string }) => {
+    return ipcRenderer.invoke('export-multiple-files', args)
+  },
 })

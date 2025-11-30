@@ -227,6 +227,53 @@ ipcMain.handle('crop-svg', async (_event, args: { svg: string; x: number; y: num
   })
 })
 
+// IPC Handler for exporting multiple files to a directory
+ipcMain.handle('export-multiple-files', async (_event, args: { files: { name: string; content: string }[]; baseName: string }) => {
+  try {
+    const { files, baseName } = args
+
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return { success: false, error: 'No files to export' }
+    }
+
+    // Show directory picker dialog
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Select Export Folder',
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Export Here'
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, error: 'Export cancelled' }
+    }
+
+    const selectedDir = result.filePaths[0]
+
+    // Create a subfolder with the base name
+    const exportDir = path.join(selectedDir, baseName)
+
+    // Create the directory if it doesn't exist
+    if (!fs.existsSync(exportDir)) {
+      fs.mkdirSync(exportDir, { recursive: true })
+    }
+
+    // Save each file
+    const savedFiles: string[] = []
+    for (const file of files) {
+      const filePath = path.join(exportDir, file.name)
+      fs.writeFileSync(filePath, file.content, 'utf-8')
+      savedFiles.push(filePath)
+    }
+
+    console.log(`[export-multiple-files] Exported ${savedFiles.length} files to ${exportDir}`)
+
+    return { success: true, exportDir, savedFiles }
+  } catch (err) {
+    console.error(`[export-multiple-files] Error:`, err)
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+})
+
 // Send menu command to renderer
 function sendMenuCommand(command: string) {
   if (win) {
