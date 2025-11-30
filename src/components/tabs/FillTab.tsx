@@ -541,7 +541,7 @@ export default function FillTab() {
                 case 'spiral':
                   if (singleSpiral) {
                     // Single spiral mode: clip the global spiral to this shape
-                    // Uses finer angle step (0.02 rad) to ensure small shapes are intersected
+                    // The clipping now properly handles lines entirely inside shapes
                     lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
                   } else {
                     // Per-shape spiral: generate unique spiral for each shape

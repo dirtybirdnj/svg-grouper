@@ -659,19 +659,80 @@ export function clipLinesToPolygon(
   })
 
   for (const line of lines) {
+    const p1 = { x: line.x1, y: line.y1 }
+    const p2 = { x: line.x2, y: line.y2 }
+    const p1Inside = pointInPolygon(p1, workingOuter)
+    const p2Inside = pointInPolygon(p2, workingOuter)
+
     const outerIntersections = linePolygonIntersections(line, workingOuter)
 
-    for (let j = 0; j < outerIntersections.length - 1; j += 2) {
-      if (j + 1 < outerIntersections.length) {
-        const segment = {
-          x1: outerIntersections[j].x,
-          y1: outerIntersections[j].y,
-          x2: outerIntersections[j + 1].x,
-          y2: outerIntersections[j + 1].y
-        }
-
+    if (outerIntersections.length === 0) {
+      // No intersections - either entirely inside or entirely outside
+      if (p1Inside && p2Inside) {
+        // Line is entirely inside the polygon - keep it!
+        const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
         const finalSegments = clipSegmentAroundHoles(segment, workingHoles)
         clippedLines.push(...finalSegments)
+      }
+      // If both outside, skip the line
+    } else if (outerIntersections.length === 1) {
+      // One intersection - line enters or exits the polygon
+      const intersection = outerIntersections[0]
+      if (p1Inside) {
+        // p1 inside, exits at intersection
+        const segment = { x1: p1.x, y1: p1.y, x2: intersection.x, y2: intersection.y }
+        const finalSegments = clipSegmentAroundHoles(segment, workingHoles)
+        clippedLines.push(...finalSegments)
+      } else if (p2Inside) {
+        // p2 inside, enters at intersection
+        const segment = { x1: intersection.x, y1: intersection.y, x2: p2.x, y2: p2.y }
+        const finalSegments = clipSegmentAroundHoles(segment, workingHoles)
+        clippedLines.push(...finalSegments)
+      }
+    } else {
+      // Multiple intersections - process in pairs
+      // Add endpoints if they're inside
+      const allPoints: { point: Point; t: number }[] = []
+
+      // Calculate t parameter for sorting along line
+      const dx = p2.x - p1.x
+      const dy = p2.y - p1.y
+      const len = Math.sqrt(dx * dx + dy * dy)
+
+      if (p1Inside) {
+        allPoints.push({ point: p1, t: 0 })
+      }
+
+      for (const intersection of outerIntersections) {
+        const t = len > 0.001
+          ? (Math.abs(dx) > Math.abs(dy)
+              ? (intersection.x - p1.x) / dx
+              : (intersection.y - p1.y) / dy)
+          : 0
+        allPoints.push({ point: intersection, t })
+      }
+
+      if (p2Inside) {
+        allPoints.push({ point: p2, t: 1 })
+      }
+
+      // Sort by t parameter
+      allPoints.sort((a, b) => a.t - b.t)
+
+      // Process in pairs - segments between consecutive points that are inside
+      for (let j = 0; j < allPoints.length - 1; j++) {
+        const segStart = allPoints[j].point
+        const segEnd = allPoints[j + 1].point
+        // Check if midpoint is inside (to determine if this segment is inside)
+        const midpoint = {
+          x: (segStart.x + segEnd.x) / 2,
+          y: (segStart.y + segEnd.y) / 2
+        }
+        if (pointInPolygon(midpoint, workingOuter)) {
+          const segment = { x1: segStart.x, y1: segStart.y, x2: segEnd.x, y2: segEnd.y }
+          const finalSegments = clipSegmentAroundHoles(segment, workingHoles)
+          clippedLines.push(...finalSegments)
+        }
       }
     }
   }
