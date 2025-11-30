@@ -22,7 +22,7 @@ export interface OrderedLine extends HatchLine {
   reversed: boolean
 }
 
-export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'crosshatch' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert' | 'fermat' | 'wave'
+export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'crosshatch' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert' | 'fermat' | 'wave' | 'scribble' | 'custom'
 
 // Generate concentric fill lines (snake pattern from outside in)
 export function generateConcentricLines(
@@ -1153,6 +1153,281 @@ export function generateWaveLines(
   }
 
   return clipLinesToPolygon(allLines, polygonData, inset)
+}
+
+// Seeded random number generator for reproducible scribble patterns
+function seededRandom(seed: number): () => number {
+  return function() {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff
+    return seed / 0x7fffffff
+  }
+}
+
+// Generate scribble/random fill pattern
+export function generateScribbleLines(
+  polygonData: PolygonWithHoles,
+  spacing: number,
+  inset: number = 0,
+  density: number = 1.0, // Multiplier for number of scribbles
+  seed: number = 12345
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  let workingPolygon = outer
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(outer, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const width = maxX - minX
+  const height = maxY - minY
+  const area = width * height
+
+  // Calculate number of scribble segments based on area and spacing
+  const numSegments = Math.floor((area / (spacing * spacing)) * density * 2)
+
+  const random = seededRandom(seed)
+  const lines: HatchLine[] = []
+
+  for (let i = 0; i < numSegments; i++) {
+    // Random start point within bounding box
+    const x1 = minX + random() * width
+    const y1 = minY + random() * height
+
+    // Random direction and length
+    const angle = random() * Math.PI * 2
+    const length = spacing * (0.5 + random() * 1.5) // Variable length
+
+    const x2 = x1 + Math.cos(angle) * length
+    const y2 = y1 + Math.sin(angle) * length
+
+    // Check if both points are inside the polygon
+    const p1Inside = pointInPolygon({ x: x1, y: y1 }, workingPolygon)
+    const p2Inside = pointInPolygon({ x: x2, y: y2 }, workingPolygon)
+
+    if (p1Inside && p2Inside) {
+      lines.push({ x1, y1, x2, y2 })
+    } else if (p1Inside || p2Inside) {
+      // Clip to polygon boundary
+      const intersections = linePolygonIntersections({ x1, y1, x2, y2 }, workingPolygon)
+      if (intersections.length > 0) {
+        const inside = p1Inside ? { x: x1, y: y1 } : { x: x2, y: y2 }
+        const clip = intersections[0]
+        lines.push({ x1: inside.x, y1: inside.y, x2: clip.x, y2: clip.y })
+      }
+    }
+  }
+
+  return lines
+}
+
+// Custom shape definition for tiling
+export interface CustomTileShape {
+  // Path data as array of points (closed polygon)
+  points: Point[]
+  // Scale factor (1.0 = use spacing as size)
+  scale: number
+}
+
+// Predefined tile shapes
+export const TILE_SHAPES: Record<string, Point[]> = {
+  // Triangle pointing up
+  triangle: [
+    { x: 0, y: -0.5 },
+    { x: 0.433, y: 0.25 },
+    { x: -0.433, y: 0.25 }
+  ],
+  // Square
+  square: [
+    { x: -0.5, y: -0.5 },
+    { x: 0.5, y: -0.5 },
+    { x: 0.5, y: 0.5 },
+    { x: -0.5, y: 0.5 }
+  ],
+  // Diamond
+  diamond: [
+    { x: 0, y: -0.5 },
+    { x: 0.5, y: 0 },
+    { x: 0, y: 0.5 },
+    { x: -0.5, y: 0 }
+  ],
+  // Hexagon
+  hexagon: [
+    { x: 0.5, y: 0 },
+    { x: 0.25, y: 0.433 },
+    { x: -0.25, y: 0.433 },
+    { x: -0.5, y: 0 },
+    { x: -0.25, y: -0.433 },
+    { x: 0.25, y: -0.433 }
+  ],
+  // Star (5-pointed)
+  star: [
+    { x: 0, y: -0.5 },
+    { x: 0.118, y: -0.154 },
+    { x: 0.476, y: -0.154 },
+    { x: 0.191, y: 0.059 },
+    { x: 0.294, y: 0.405 },
+    { x: 0, y: 0.191 },
+    { x: -0.294, y: 0.405 },
+    { x: -0.191, y: 0.059 },
+    { x: -0.476, y: -0.154 },
+    { x: -0.118, y: -0.154 }
+  ],
+  // Plus/Cross
+  plus: [
+    { x: -0.167, y: -0.5 },
+    { x: 0.167, y: -0.5 },
+    { x: 0.167, y: -0.167 },
+    { x: 0.5, y: -0.167 },
+    { x: 0.5, y: 0.167 },
+    { x: 0.167, y: 0.167 },
+    { x: 0.167, y: 0.5 },
+    { x: -0.167, y: 0.5 },
+    { x: -0.167, y: 0.167 },
+    { x: -0.5, y: 0.167 },
+    { x: -0.5, y: -0.167 },
+    { x: -0.167, y: -0.167 }
+  ],
+  // Circle approximation (12-sided)
+  circle: Array.from({ length: 12 }, (_, i) => ({
+    x: 0.5 * Math.cos((i / 12) * Math.PI * 2),
+    y: 0.5 * Math.sin((i / 12) * Math.PI * 2)
+  }))
+}
+
+// Generate custom tile pattern
+export function generateCustomTileLines(
+  polygonData: PolygonWithHoles,
+  spacing: number,
+  tileShape: Point[],
+  inset: number = 0,
+  angleDegrees: number = 0,
+  fillTiles: boolean = false // If true, fill tiles; if false, just outline
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3 || tileShape.length < 3) return []
+
+  let workingPolygon = outer
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(outer, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const angleRad = (angleDegrees * Math.PI) / 180
+
+  const lines: HatchLine[] = []
+  const padding = spacing * 2
+
+  // Grid of tile positions
+  for (let y = minY - padding; y <= maxY + padding; y += spacing) {
+    for (let x = minX - padding; x <= maxX + padding; x += spacing) {
+      // Transform tile points to this position
+      const transformedPoints: Point[] = tileShape.map(p => {
+        // Scale
+        const sx = p.x * spacing
+        const sy = p.y * spacing
+        // Rotate around origin
+        const rx = sx * Math.cos(angleRad) - sy * Math.sin(angleRad)
+        const ry = sx * Math.sin(angleRad) + sy * Math.cos(angleRad)
+        // Translate
+        return { x: x + rx, y: y + ry }
+      })
+
+      // Check if tile center is inside polygon
+      const tileCenterX = x
+      const tileCenterY = y
+
+      // Rotate center check point
+      const rcx = centerX + (tileCenterX - centerX) * Math.cos(0) - (tileCenterY - centerY) * Math.sin(0)
+      const rcy = centerY + (tileCenterX - centerX) * Math.sin(0) + (tileCenterY - centerY) * Math.cos(0)
+
+      if (!pointInPolygon({ x: rcx, y: rcy }, workingPolygon)) {
+        // Check if any vertex is inside
+        const anyInside = transformedPoints.some(p => pointInPolygon(p, workingPolygon))
+        if (!anyInside) continue
+      }
+
+      // Draw tile edges
+      for (let i = 0; i < transformedPoints.length; i++) {
+        const p1 = transformedPoints[i]
+        const p2 = transformedPoints[(i + 1) % transformedPoints.length]
+
+        const p1Inside = pointInPolygon(p1, workingPolygon)
+        const p2Inside = pointInPolygon(p2, workingPolygon)
+
+        if (p1Inside && p2Inside) {
+          lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+        } else if (p1Inside || p2Inside) {
+          // Clip to polygon
+          const intersections = linePolygonIntersections(
+            { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
+            workingPolygon
+          )
+          if (intersections.length > 0) {
+            const inside = p1Inside ? p1 : p2
+            lines.push({ x1: inside.x, y1: inside.y, x2: intersections[0].x, y2: intersections[0].y })
+          }
+        }
+      }
+
+      // If fillTiles, add diagonal lines inside each tile
+      if (fillTiles) {
+        // Simple diagonal fill for the tile
+        const tileMinX = Math.min(...transformedPoints.map(p => p.x))
+        const tileMaxX = Math.max(...transformedPoints.map(p => p.x))
+        const tileMinY = Math.min(...transformedPoints.map(p => p.y))
+        const tileMaxY = Math.max(...transformedPoints.map(p => p.y))
+
+        const step = spacing / 4
+        for (let ty = tileMinY; ty <= tileMaxY; ty += step) {
+          const lineStart = { x: tileMinX, y: ty }
+          const lineEnd = { x: tileMaxX, y: ty }
+
+          // Clip to both tile shape and main polygon
+          if (pointInPolygon(lineStart, workingPolygon) && pointInPolygon(lineEnd, workingPolygon)) {
+            lines.push({ x1: lineStart.x, y1: lineStart.y, x2: lineEnd.x, y2: lineEnd.y })
+          }
+        }
+      }
+    }
+  }
+
+  // Remove duplicate lines
+  const uniqueLines: HatchLine[] = []
+  const seen = new Set<string>()
+
+  for (const line of lines) {
+    const key1 = `${line.x1.toFixed(1)},${line.y1.toFixed(1)}-${line.x2.toFixed(1)},${line.y2.toFixed(1)}`
+    const key2 = `${line.x2.toFixed(1)},${line.y2.toFixed(1)}-${line.x1.toFixed(1)},${line.y1.toFixed(1)}`
+
+    if (!seen.has(key1) && !seen.has(key2)) {
+      seen.add(key1)
+      uniqueLines.push(line)
+    }
+  }
+
+  return uniqueLines
 }
 
 // distance() is now imported from geometry.ts

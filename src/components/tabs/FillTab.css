@@ -994,6 +994,46 @@
   border-color: #357abd;
 }
 
+/* Tile shape selector for custom pattern */
+.tile-shape-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.tile-shape-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #f8f8f8;
+  color: #555;
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tile-shape-btn:hover {
+  background: #eee;
+  border-color: #ccc;
+}
+
+.tile-shape-btn.active {
+  background: #4a90e2;
+  border-color: #4a90e2;
+  color: white;
+}
+
+.tile-shape-btn.active:hover {
+  background: #357abd;
+  border-color: #357abd;
+}
+
 /* Fill Again button - secondary style for layering */
 .fill-again-btn {
   background: #9b59b6 !important;

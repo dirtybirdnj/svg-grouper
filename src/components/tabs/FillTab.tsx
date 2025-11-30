@@ -29,6 +29,9 @@ import {
   clipHilbertToPolygon,
   generateFermatLines,
   generateWaveLines,
+  generateScribbleLines,
+  generateCustomTileLines,
+  TILE_SHAPES,
   optimizeLineOrderMultiPass,
   calculateTravelDistance,
 } from '../../utils/fillPatterns'
@@ -191,6 +194,7 @@ export default function FillTab() {
   const [singleSpiral, setSingleSpiral] = useState(false) // Use one giant spiral for all shapes
   const [singleHilbert, setSingleHilbert] = useState(true) // Use one Hilbert curve for all shapes (default true)
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
+  const [customTileShape, setCustomTileShape] = useState<keyof typeof TILE_SHAPES>('triangle') // Selected tile shape for custom pattern
 
   // Accumulated fill layers - each layer has lines with a color
   interface FillLayer {
@@ -598,6 +602,12 @@ export default function FillTab() {
                 case 'wave':
                   lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
                   break
+                case 'scribble':
+                  lines = generateScribbleLines(polygonData, lineSpacing, inset)
+                  break
+                case 'custom':
+                  lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle)
+                  break
                 case 'lines':
                 default:
                   lines = clipLinesToPolygon(globalLines, polygonData, inset)
@@ -660,7 +670,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, customTileShape, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -1278,6 +1288,20 @@ export default function FillTab() {
               >
                 Hilbert
               </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'scribble' ? 'active' : ''}`}
+                onClick={() => setFillPattern('scribble')}
+                title="Random scribble pattern"
+              >
+                Scribble
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'custom' ? 'active' : ''}`}
+                onClick={() => setFillPattern('custom')}
+                title="Custom shape tiling"
+              >
+                Custom
+              </button>
             </div>
           </div>
 
@@ -1445,7 +1469,31 @@ export default function FillTab() {
               </div>
             )}
 
-            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'crosshatch' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid' || fillPattern === 'fermat' || fillPattern === 'wave') && (
+            {fillPattern === 'custom' && (
+              <div className="fill-control">
+                <label>Tile Shape</label>
+                <div className="tile-shape-selector">
+                  {(Object.keys(TILE_SHAPES) as Array<keyof typeof TILE_SHAPES>).map(shape => (
+                    <button
+                      key={shape}
+                      className={`tile-shape-btn ${customTileShape === shape ? 'active' : ''}`}
+                      onClick={() => setCustomTileShape(shape)}
+                      title={shape.charAt(0).toUpperCase() + shape.slice(1)}
+                    >
+                      {shape === 'triangle' && '△'}
+                      {shape === 'square' && '□'}
+                      {shape === 'diamond' && '◇'}
+                      {shape === 'hexagon' && '⬡'}
+                      {shape === 'star' && '☆'}
+                      {shape === 'plus' && '+'}
+                      {shape === 'circle' && '○'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'crosshatch' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid' || fillPattern === 'fermat' || fillPattern === 'wave' || fillPattern === 'scribble' || fillPattern === 'custom') && (
               <div
                 className={`fill-control selectable ${selectedControl === 'inset' ? 'selected' : ''}`}
                 onClick={() => setSelectedControl('inset')}
