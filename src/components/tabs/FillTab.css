@@ -316,6 +316,48 @@
   font-size: 0.85rem;
 }
 
+/* Clickable fill path items */
+.fill-path-item.clickable {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.fill-path-item.clickable:hover {
+  background: rgba(74, 144, 226, 0.1);
+}
+
+.fill-path-item.highlighted {
+  background: rgba(255, 0, 0, 0.15) !important;
+  border-left: 3px solid #ff0000;
+}
+
+.fill-path-item.no-fill {
+  background: rgba(255, 0, 0, 0.05);
+}
+
+.fill-path-item.no-fill .path-type,
+.fill-path-item.no-fill .path-id {
+  color: #cc0000;
+}
+
+/* Line count badge */
+.path-line-count {
+  margin-left: auto;
+  padding: 0.15rem 0.4rem;
+  background: #e0e0e0;
+  color: #666;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  min-width: 24px;
+  text-align: center;
+}
+
+.path-line-count.zero {
+  background: #ffcdd2;
+  color: #c62828;
+}
+
 .fill-control.checkbox label {
   display: flex;
   align-items: center;

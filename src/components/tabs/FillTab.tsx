@@ -190,6 +190,7 @@ export default function FillTab() {
   }
   const [accumulatedLayers, setAccumulatedLayers] = useState<FillLayer[]>([])
   const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
+  const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
 
   // Draft states for sliders - show value during drag, commit on release
   const [draftLineSpacing, setDraftLineSpacing] = useState(15)
@@ -540,6 +541,7 @@ export default function FillTab() {
                 case 'spiral':
                   if (singleSpiral) {
                     // Single spiral mode: clip the global spiral to this shape
+                    // Uses finer angle step (0.02 rad) to ensure small shapes are intersected
                     lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
                   } else {
                     // Per-shape spiral: generate unique spiral for each shape
@@ -567,9 +569,22 @@ export default function FillTab() {
 
             if (allLines.length > 0 && firstValidPolygon) {
               results.push({ pathInfo: path, lines: allLines, polygon: firstValidPolygon })
+            } else if (firstValidPolygon) {
+              // Debug: shape has valid polygon but no fill lines generated
+              // Calculate bounding box for more useful debug info
+              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+              for (const p of firstValidPolygon) {
+                minX = Math.min(minX, p.x)
+                minY = Math.min(minY, p.y)
+                maxX = Math.max(maxX, p.x)
+                maxY = Math.max(maxY, p.y)
+              }
+              const width = maxX - minX
+              const height = maxY - minY
+              console.warn(`Shape ${path.id}: ${firstValidPolygon.length} pts, bbox ${width.toFixed(1)}x${height.toFixed(1)} at (${minX.toFixed(1)},${minY.toFixed(1)}), pattern: ${fillPattern}, singleSpiral: ${singleSpiral}, got ${allPolygons.length} polygon(s)`)
             }
-          } catch {
-            // Failed to generate hatch for this path
+          } catch (err) {
+            console.error(`Failed to generate hatch for path ${path.id}:`, err)
           }
         }
 
@@ -583,6 +598,14 @@ export default function FillTab() {
         setHatchedPaths(results)
         setIsGeneratingHatch(false)
         setIsProcessing(false)
+
+        // Debug summary
+        const filledCount = results.length
+        const totalCount = pathsToProcess.length
+        const unfilledCount = totalCount - filledCount
+        if (unfilledCount > 0) {
+          console.log(`Fill summary: ${filledCount}/${totalCount} shapes filled. ${unfilledCount} shapes have no fill lines.`)
+        }
       }
     }
 
@@ -607,6 +630,15 @@ export default function FillTab() {
       lines: simplifyLines(lines, simplifyTolerance)
     }))
   }, [hatchedPaths, simplifyTolerance])
+
+  // Create lookup map from path ID to line count (using simplified paths)
+  const pathLineCountMap = useMemo(() => {
+    const map = new Map<string, number>()
+    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
+      map.set(pathInfo.id, lines.length)
+    })
+    return map
+  }, [simplifiedHatchedPaths])
 
   // Compute ordered lines using multi-pass optimization:
   // 1. Order shapes by proximity (starting from top-left)
@@ -702,7 +734,9 @@ export default function FillTab() {
 
       // Then draw current working layer (as compound paths, using simplified paths)
       fillPaths.forEach((path) => {
+        const isHighlighted = path.id === highlightedPathId
         const hatchData = simplifiedHatchedPaths.find(h => h.pathInfo.id === path.id)
+
         if (hatchData && hatchData.lines.length > 0) {
           const currentColor = layerColor || path.color
           const pathD = linesToCompoundPath(hatchData.lines, 2)
@@ -719,6 +753,16 @@ export default function FillTab() {
           outlineEl.removeAttribute('style')
           pathElements.push(outlineEl.outerHTML)
         }
+
+        // Add highlight overlay for selected path
+        if (isHighlighted) {
+          const highlightEl = path.element.cloneNode(true) as Element
+          highlightEl.setAttribute('fill', 'rgba(255, 0, 0, 0.3)')
+          highlightEl.setAttribute('stroke', '#ff0000')
+          highlightEl.setAttribute('stroke-width', '3')
+          highlightEl.removeAttribute('style')
+          pathElements.push(highlightEl.outerHTML)
+        }
       })
     } else {
       // Show original shapes with semi-transparent fill
@@ -733,7 +777,7 @@ export default function FillTab() {
     }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx])
+  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, highlightedPathId])
 
   const handleBack = () => {
     setFillTargetNodeIds([])
@@ -1025,18 +1069,33 @@ export default function FillTab() {
         </div>
         <div className="sidebar-content fill-paths-full">
           <div className="fill-paths-list expanded">
-            {fillPaths.map((path, index) => (
-              <div key={path.id} className="fill-path-item">
-                <span
-                  className="path-color-swatch"
-                  style={{ backgroundColor: path.color }}
-                />
-                <span className="path-info">
-                  <span className="path-type">{path.type}</span>
-                  <span className="path-id">{path.id || `path-${index + 1}`}</span>
-                </span>
-              </div>
-            ))}
+            {fillPaths.map((path, index) => {
+              const lineCount = pathLineCountMap.get(path.id) ?? 0
+              const isHighlighted = path.id === highlightedPathId
+              const hasNoLines = showHatchPreview && lineCount === 0
+              return (
+                <div
+                  key={path.id}
+                  className={`fill-path-item clickable ${isHighlighted ? 'highlighted' : ''} ${hasNoLines ? 'no-fill' : ''}`}
+                  onClick={() => setHighlightedPathId(isHighlighted ? null : path.id)}
+                  title={`Click to highlight. ${showHatchPreview ? `${lineCount} lines` : ''}`}
+                >
+                  <span
+                    className="path-color-swatch"
+                    style={{ backgroundColor: path.color }}
+                  />
+                  <span className="path-info">
+                    <span className="path-type">{path.type}</span>
+                    <span className="path-id">{path.id || `path-${index + 1}`}</span>
+                  </span>
+                  {showHatchPreview && (
+                    <span className={`path-line-count ${hasNoLines ? 'zero' : ''}`}>
+                      {lineCount}
+                    </span>
+                  )}
+                </div>
+              )
+            })}
             {fillPaths.length === 0 && (
               <div className="no-paths-message">
                 No fill paths found in selection

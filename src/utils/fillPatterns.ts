@@ -416,7 +416,10 @@ export function generateGlobalSpiralLines(
 
   // Generate spiral points
   const spiralPoints: Point[] = []
-  const angleStep = 0.1 // radians per step
+  // Use smaller angle step for finer segments that intersect more shapes
+  // At radius r, arc length = r * angleStep. We want arc length ~= spacing/2
+  // So angleStep should adapt, but for simplicity use a small fixed value
+  const angleStep = 0.02 // radians per step (was 0.1, now 5x finer)
   const radiusPerTurn = spacing
   let angle = 0
 
@@ -433,8 +436,8 @@ export function generateGlobalSpiralLines(
 
     angle += angleStep
 
-    // Safety limit
-    if (spiralPoints.length > 50000) break
+    // Safety limit (increased for finer angle step)
+    if (spiralPoints.length > 250000) break
   }
 
   // Convert to lines (not clipped)
