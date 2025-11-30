@@ -39,12 +39,16 @@
   color: white;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   display: flex;
   align-items: center;
   gap: 0.25rem;
   transition: all 0.2s;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .function-button:hover {
@@ -53,6 +57,17 @@
 
 .function-button:active {
   transform: scale(0.95);
+}
+
+.header-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-family: 'Monaco', 'Consolas', monospace;
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
 }
 
 .header-zoom-controls {
@@ -239,6 +254,76 @@
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem;
+  position: relative;
+}
+
+/* Breathing overlay for processing state */
+.sidebar-processing-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  pointer-events: all;
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Dropdown button container */
+.dropdown-button-container {
+  position: relative;
+  display: inline-flex;
+}
+
+.dropdown-button-container .dropdown-toggle {
+  padding: 0.25rem 0.35rem;
+  min-width: auto;
+  font-size: 0.7rem;
+  border-left: 1px solid rgba(0,0,0,0.1);
+  margin-left: -1px;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  z-index: 1000;
+  min-width: 120px;
+  margin-top: 2px;
+}
+
+.dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.dropdown-item:hover {
+  background: #f0f0f0;
+}
+
+.dropdown-item.active {
+  background: #e3f2fd;
+  font-weight: 500;
 }
 
 .main-panel {
@@ -440,6 +525,143 @@
 
 .crop-toggle-button:active {
   transform: scale(0.95);
+}
+
+/* Filter toolbar */
+.filter-options-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: #f5f0ff;
+  border-bottom: 1px solid #d4c4e8;
+}
+
+.filter-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: #666;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.filter-button {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #d4c4e8;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+  color: #666;
+}
+
+.filter-button:hover {
+  border-color: #8e44ad;
+  background: #faf5ff;
+}
+
+.filter-button.active {
+  background: #8e44ad;
+  color: white;
+  border-color: #8e44ad;
+}
+
+.filter-apply-button {
+  padding: 0.4rem 1rem;
+  border: 1px solid #8e44ad;
+  background: #8e44ad;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s;
+  margin-left: auto;
+}
+
+.filter-apply-button:hover:not(:disabled) {
+  background: #7d3c98;
+  border-color: #7d3c98;
+}
+
+.filter-apply-button:disabled {
+  background: #ccc;
+  border-color: #ccc;
+  cursor: not-allowed;
+}
+
+.filter-apply-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.filter-section {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter-divider {
+  width: 1px;
+  height: 24px;
+  background: #d4c4e8;
+  margin: 0 0.5rem;
+}
+
+.filter-action-button {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #d4c4e8;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+  color: #666;
+}
+
+.filter-action-button:hover {
+  border-color: #8e44ad;
+  background: #faf5ff;
+  color: #8e44ad;
+}
+
+.filter-action-button:active {
+  transform: scale(0.98);
+}
+
+.filter-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.filter-sort-button {
+  padding: 0.4rem 1rem;
+  border: 1px solid #27ae60;
+  background: #27ae60;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.filter-sort-button:hover {
+  background: #229954;
+  border-color: #229954;
+}
+
+.filter-sort-button:active {
+  transform: scale(0.98);
+}
+
+.filter-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .zoom-controls {

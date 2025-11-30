@@ -38,8 +38,16 @@ function shouldIncludeElement(element: Element): boolean {
 }
 
 function parseNode(element: Element): SVGNode {
+  // Use existing ID if present, otherwise generate one
+  let nodeId = element.getAttribute('id')
+  if (!nodeId) {
+    nodeId = generateNodeId()
+    // Set the ID on the DOM element so we can find it later for highlighting
+    element.setAttribute('id', nodeId)
+  }
+
   const node: SVGNode = {
-    id: generateNodeId(),
+    id: nodeId,
     type: element.tagName.toLowerCase(),
     name: getElementName(element),
     element,
@@ -112,8 +120,16 @@ async function parseNodeProgressively(
   totalElements: number,
   onElementProcessed: (count: number) => void
 ): Promise<SVGNode> {
+  // Use existing ID if present, otherwise generate one
+  let nodeId = element.getAttribute('id')
+  if (!nodeId) {
+    nodeId = generateNodeId()
+    // Set the ID on the DOM element so we can find it later for highlighting
+    element.setAttribute('id', nodeId)
+  }
+
   const node: SVGNode = {
-    id: generateNodeId(),
+    id: nodeId,
     type: element.tagName.toLowerCase(),
     name: getElementName(element),
     element,

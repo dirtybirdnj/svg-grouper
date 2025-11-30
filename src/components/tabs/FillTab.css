@@ -374,6 +374,15 @@
   margin-bottom: 1rem;
 }
 
+.fill-control.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.fill-control.disabled .fill-slider {
+  cursor: not-allowed;
+}
+
 .fill-control > label {
   display: block;
   font-size: 0.85rem;

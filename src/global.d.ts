@@ -8,6 +8,7 @@ declare global {
       flattenShapes: (args: { svg: string; color: string }) => Promise<string>
       onMenuCommand: (callback: (command: string) => void) => void
       onFileOpened: (callback: (data: { content: string; fileName: string; filePath: string }) => void) => void
+      exportMultipleFiles: (args: { files: { name: string; content: string }[]; baseName: string }) => Promise<{ success: boolean; exportDir?: string; savedFiles?: string[]; error?: string }>
     }
   }
 }

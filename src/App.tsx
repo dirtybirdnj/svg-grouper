@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import './App.css'
 import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
 import TabNavigation from './components/TabNavigation'
@@ -31,6 +31,30 @@ function AppContent() {
     setOrderData,
     isProcessing,
   } = useAppContext()
+
+  // Calculate SVG stats from layer nodes
+  const svgStats = useMemo(() => {
+    let totalElements = 0
+    let groups = 0
+    let paths = 0
+
+    const countNodes = (nodes: SVGNode[]) => {
+      for (const node of nodes) {
+        totalElements++
+        if (node.isGroup) {
+          groups++
+        } else {
+          paths++
+        }
+        if (node.children.length > 0) {
+          countNodes(node.children)
+        }
+      }
+    }
+
+    countNodes(layerNodes)
+    return { totalElements, groups, paths }
+  }, [layerNodes])
 
   // Stroke panel state
   const [showStrokePanel, setShowStrokePanel] = useState(false)
@@ -610,6 +634,15 @@ function AppContent() {
           <h1>SVG Grouper</h1>
           <span className={`processing-gear ${isProcessing ? 'spinning' : ''}`} title={isProcessing ? 'Processing...' : ''}>⚙</span>
         </div>
+        {svgStats.totalElements > 0 && (
+          <div className="header-stats" title="Total Elements / Groups / Paths">
+            <span style={{ color: '#e74c3c', fontWeight: 'bold' }}>{svgStats.totalElements.toLocaleString()}</span>
+            <span style={{ color: '#666' }}>/</span>
+            <span style={{ color: '#27ae60', fontWeight: 'bold' }}>{svgStats.groups.toLocaleString()}</span>
+            <span style={{ color: '#666' }}>/</span>
+            <span style={{ color: '#3498db', fontWeight: 'bold' }}>{svgStats.paths.toLocaleString()}</span>
+          </div>
+        )}
         <TabNavigation />
         {svgContent && (
           <div className="header-right-controls">
@@ -717,28 +750,17 @@ function AppContent() {
                   opacity: selectedNodeIds.size === 1 ? 1 : 0.7,
                 }}
               >
-                🔀 Order
-              </button>
-              <button
-                onClick={handleFlattenAll}
-                className="function-button"
-                title={flattenArmed ? "Click again to confirm flatten" : "Flatten: Remove empty layers, ungroup all, group by color"}
-                style={{
-                  background: flattenArmed ? '#e67e22' : '#3498db',
-                  borderColor: flattenArmed ? '#e67e22' : '#3498db',
-                }}
-              >
-                🗄️ Flatten
+                ⇄ Order
               </button>
               <button
                 className="function-button"
                 onClick={handleToggleCrop}
                 title={showCrop ? "Hide Crop" : "Show Crop"}
                 style={{
-                  background: showCrop ? '#e74c3c' : '#e67e22',
+                  background: showCrop ? '#c0392b' : '#e74c3c',
                 }}
               >
-                {showCrop ? '✕ Crop' : '◯ Crop'}
+                {showCrop ? '✕ Crop' : '◫ Crop'}
               </button>
             </div>
             <div className="header-zoom-controls">

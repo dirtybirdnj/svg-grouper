@@ -516,9 +516,5 @@
 
 .layer-node-content {
   position: relative;
-  cursor: grab;
-}
-
-.layer-node-content:active {
-  cursor: grabbing;
+  cursor: default;
 }
