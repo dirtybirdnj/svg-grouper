@@ -367,7 +367,8 @@ export function generateSpiralLines(
   const angleOffset = (angleDegrees * Math.PI) / 180
 
   const spiralPoints: Point[] = []
-  const angleStep = 0.1
+  // Use finer angle step (0.02 rad) for better coverage, matching global spiral
+  const angleStep = 0.02
   const radiusPerTurn = spacing
   let angle = 0
 
@@ -382,7 +383,8 @@ export function generateSpiralLines(
     })
 
     angle += angleStep
-    if (spiralPoints.length > 10000) break
+    // Increased limit for finer angle step
+    if (spiralPoints.length > 50000) break
   }
 
   const lines: HatchLine[] = []
@@ -720,12 +722,36 @@ function getShapeTopLeft(lines: HatchLine[]): Point {
   return { x: minX, y: minY }
 }
 
-// Multi-pass optimization for line ordering
+// Get the entry and exit points of a shape's optimized lines
+function getShapeEndpoints(lines: HatchLine[]): { entry: Point; exit: Point } {
+  if (lines.length === 0) {
+    return { entry: { x: 0, y: 0 }, exit: { x: 0, y: 0 } }
+  }
+  return {
+    entry: { x: lines[0].x1, y: lines[0].y1 },
+    exit: { x: lines[lines.length - 1].x2, y: lines[lines.length - 1].y2 }
+  }
+}
+
+// Reverse all lines in a shape (for traversing in opposite direction)
+function reverseShapeLines(lines: OrderedLine[]): OrderedLine[] {
+  return lines.map(line => ({
+    ...line,
+    x1: line.x2,
+    y1: line.y2,
+    x2: line.x1,
+    y2: line.y1,
+    reversed: !line.reversed
+  })).reverse()
+}
+
+// Multi-pass optimization for line ordering with 2-opt improvement
 export function optimizeLineOrderMultiPass(
   hatchedPaths: { pathInfo: { id: string; color: string }; lines: HatchLine[] }[]
 ): OrderedLine[] {
   if (hatchedPaths.length === 0) return []
 
+  // ===== PASS 1: Initial ordering with nearest-neighbor =====
   const shapes = hatchedPaths.map(({ pathInfo, lines }) => ({
     pathId: pathInfo.id,
     color: pathInfo.color,
@@ -734,6 +760,7 @@ export function optimizeLineOrderMultiPass(
     topLeft: getShapeTopLeft(lines)
   }))
 
+  // Order shapes by nearest-neighbor starting from origin
   const orderedShapes: typeof shapes = []
   const remainingShapes = [...shapes]
   let currentPoint: Point = { x: 0, y: 0 }
@@ -755,7 +782,17 @@ export function optimizeLineOrderMultiPass(
     currentPoint = chosen.centroid
   }
 
-  let result: OrderedLine[] = []
+  // Optimize lines within each shape and track endpoints
+  interface OptimizedShape {
+    pathId: string
+    color: string
+    lines: OrderedLine[]
+    entry: Point
+    exit: Point
+    reversed: boolean
+  }
+
+  const optimizedShapes: OptimizedShape[] = []
   let penPosition: Point = { x: 0, y: 0 }
   let globalIndex = 0
 
@@ -768,12 +805,95 @@ export function optimizeLineOrderMultiPass(
       globalIndex
     )
 
-    for (const line of orderedLines) {
-      line.originalIndex = globalIndex++
-    }
+    const endpoints = getShapeEndpoints(orderedLines)
+    optimizedShapes.push({
+      pathId: shape.pathId,
+      color: shape.color,
+      lines: orderedLines,
+      entry: endpoints.entry,
+      exit: endpoints.exit,
+      reversed: false
+    })
 
-    result = result.concat(orderedLines)
+    globalIndex += orderedLines.length
     penPosition = endPoint
+  }
+
+  // ===== PASS 2: 2-opt style improvement =====
+  // Try reversing individual shapes and swapping adjacent pairs
+
+  if (optimizedShapes.length > 1) {
+    let improved = true
+    let iterations = 0
+    const maxIterations = optimizedShapes.length * 2 // Limit iterations
+
+    while (improved && iterations < maxIterations) {
+      improved = false
+      iterations++
+
+      // Try reversing each shape
+      for (let i = 0; i < optimizedShapes.length; i++) {
+        const shape = optimizedShapes[i]
+        const prevExit = i === 0 ? { x: 0, y: 0 } : optimizedShapes[i - 1].exit
+        const nextEntry = i < optimizedShapes.length - 1 ? optimizedShapes[i + 1].entry : null
+
+        // Current distances
+        const currentEntryDist = distance(prevExit, shape.entry)
+        const currentExitDist = nextEntry ? distance(shape.exit, nextEntry) : 0
+
+        // If reversed
+        const reversedEntryDist = distance(prevExit, shape.exit)
+        const reversedExitDist = nextEntry ? distance(shape.entry, nextEntry) : 0
+
+        if (reversedEntryDist + reversedExitDist < currentEntryDist + currentExitDist - 0.01) {
+          // Reverse this shape
+          shape.lines = reverseShapeLines(shape.lines)
+          const temp = shape.entry
+          shape.entry = shape.exit
+          shape.exit = temp
+          shape.reversed = !shape.reversed
+          improved = true
+        }
+      }
+
+      // Try swapping adjacent pairs
+      for (let i = 0; i < optimizedShapes.length - 1; i++) {
+        const shapeA = optimizedShapes[i]
+        const shapeB = optimizedShapes[i + 1]
+        const prevExit = i === 0 ? { x: 0, y: 0 } : optimizedShapes[i - 1].exit
+        const nextEntry = i < optimizedShapes.length - 2 ? optimizedShapes[i + 2].entry : null
+
+        // Current: prev -> A -> B -> next
+        const currentDist = distance(prevExit, shapeA.entry) +
+                           distance(shapeA.exit, shapeB.entry) +
+                           (nextEntry ? distance(shapeB.exit, nextEntry) : 0)
+
+        // Swapped: prev -> B -> A -> next
+        const swappedDist = distance(prevExit, shapeB.entry) +
+                           distance(shapeB.exit, shapeA.entry) +
+                           (nextEntry ? distance(shapeA.exit, nextEntry) : 0)
+
+        if (swappedDist < currentDist - 0.01) {
+          // Swap shapes
+          optimizedShapes[i] = shapeB
+          optimizedShapes[i + 1] = shapeA
+          improved = true
+        }
+      }
+    }
+  }
+
+  // ===== Reassemble final result with updated indices =====
+  const result: OrderedLine[] = []
+  globalIndex = 0
+
+  for (const shape of optimizedShapes) {
+    for (const line of shape.lines) {
+      result.push({
+        ...line,
+        originalIndex: globalIndex++
+      })
+    }
   }
 
   return result
