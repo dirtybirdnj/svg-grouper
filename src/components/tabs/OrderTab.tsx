@@ -1,22 +1,11 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppContext, OrderLine } from '../../context/AppContext'
+import { Point, distance } from '../../utils/geometry'
 import './OrderTab.css'
-
-interface Point {
-  x: number
-  y: number
-}
 
 interface OrderedLine extends OrderLine {
   originalIndex: number
   reversed: boolean
-}
-
-// Calculate distance between two points
-function distance(p1: Point, p2: Point): number {
-  const dx = p2.x - p1.x
-  const dy = p2.y - p1.y
-  return Math.sqrt(dx * dx + dy * dy)
 }
 
 // Optimize lines using nearest-neighbor algorithm

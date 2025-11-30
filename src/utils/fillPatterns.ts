@@ -4,6 +4,7 @@ import {
   Point,
   HatchLine,
   PolygonWithHoles,
+  distance,
   pointInPolygon,
   linePolygonIntersections,
   clipLinesToPolygon,
@@ -401,6 +402,64 @@ export function generateSpiralLines(
   return lines
 }
 
+// Generate a single spiral from a given center point, returning raw lines (not clipped)
+// This is used for "single spiral" mode where we generate one spiral for all shapes
+export function generateGlobalSpiralLines(
+  centerX: number,
+  centerY: number,
+  maxRadius: number,
+  spacing: number,
+  angleDegrees: number = 0
+): HatchLine[] {
+  // Convert angle offset to radians
+  const angleOffset = (angleDegrees * Math.PI) / 180
+
+  // Generate spiral points
+  const spiralPoints: Point[] = []
+  const angleStep = 0.1 // radians per step
+  const radiusPerTurn = spacing
+  let angle = 0
+
+  while (true) {
+    const radius = (angle / (2 * Math.PI)) * radiusPerTurn
+    if (radius > maxRadius) break
+
+    // Apply angle offset to rotate the entire spiral
+    const rotatedAngle = angle + angleOffset
+    spiralPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+
+    // Safety limit
+    if (spiralPoints.length > 50000) break
+  }
+
+  // Convert to lines (not clipped)
+  const lines: HatchLine[] = []
+  for (let i = 0; i < spiralPoints.length - 1; i++) {
+    const p1 = spiralPoints[i]
+    const p2 = spiralPoints[i + 1]
+    lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+  }
+
+  return lines
+}
+
+// Clip spiral lines to a specific polygon (used for single spiral mode)
+// This properly clips lines at polygon boundaries, not just checking endpoints
+export function clipSpiralToPolygon(
+  spiralLines: HatchLine[],
+  polygonData: PolygonWithHoles,
+  inset: number = 0
+): HatchLine[] {
+  // Reuse the existing clipLinesToPolygon which properly handles
+  // line-polygon intersections for correct clipping
+  return clipLinesToPolygon(spiralLines, polygonData, inset)
+}
+
 // Generate gyroid infill pattern
 export function generateGyroidLines(
   polygonData: PolygonWithHoles,
@@ -555,12 +614,7 @@ export function generateGyroidLines(
   return lines
 }
 
-// Calculate distance between two points
-function distance(p1: Point, p2: Point): number {
-  const dx = p2.x - p1.x
-  const dy = p2.y - p1.y
-  return Math.sqrt(dx * dx + dy * dy)
-}
+// distance() is now imported from geometry.ts
 
 // Optimize lines within a single shape using nearest-neighbor algorithm
 function optimizeLinesWithinShape(
