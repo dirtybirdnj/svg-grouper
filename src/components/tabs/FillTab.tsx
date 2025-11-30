@@ -20,6 +20,11 @@ import {
   generateGlobalSpiralLines,
   clipSpiralToPolygon,
   generateGyroidLines,
+  generateBrickLines,
+  generateZigzagLines,
+  generateRadialLines,
+  generateCrossSpiralLines,
+  generateHilbertLines,
   optimizeLineOrderMultiPass,
   calculateTravelDistance,
 } from '../../utils/fillPatterns'
@@ -553,6 +558,23 @@ export default function FillTab() {
                   break
                 case 'gyroid':
                   lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+                  break
+                case 'brick':
+                  lines = generateBrickLines(polygonData, boundingBox, lineSpacing, angle, inset)
+                  break
+                case 'zigzag':
+                  lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+                  break
+                case 'radial':
+                  lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
+                  break
+                case 'crossspiral':
+                  lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  break
+                case 'hilbert':
+                  // Calculate order based on spacing - higher spacing = lower order
+                  const hilbertOrder = Math.max(2, Math.min(6, Math.floor(6 - lineSpacing / 10)))
+                  lines = generateHilbertLines(polygonData, lineSpacing, inset, hilbertOrder)
                   break
                 case 'lines':
                 default:
@@ -1185,6 +1207,41 @@ export default function FillTab() {
               >
                 Gyroid
               </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'brick' ? 'active' : ''}`}
+                onClick={() => setFillPattern('brick')}
+                title="Brick/offset lines pattern"
+              >
+                Brick
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'zigzag' ? 'active' : ''}`}
+                onClick={() => setFillPattern('zigzag')}
+                title="Zigzag/sawtooth lines"
+              >
+                Zigzag
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'radial' ? 'active' : ''}`}
+                onClick={() => setFillPattern('radial')}
+                title="Lines radiating from center"
+              >
+                Radial
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'crossspiral' ? 'active' : ''}`}
+                onClick={() => setFillPattern('crossspiral')}
+                title="Clockwise and counter-clockwise spirals overlaid"
+              >
+                X-Spiral
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'hilbert' ? 'active' : ''}`}
+                onClick={() => setFillPattern('hilbert')}
+                title="Hilbert space-filling curve"
+              >
+                Hilbert
+              </button>
             </div>
           </div>
 
@@ -1252,87 +1309,89 @@ export default function FillTab() {
               </div>
             )}
 
+            {(fillPattern === 'wiggle' || fillPattern === 'zigzag') && (
+              <div
+                className={`fill-control selectable ${selectedControl === 'wiggleAmplitude' ? 'selected' : ''}`}
+                onClick={() => setSelectedControl('wiggleAmplitude')}
+              >
+                <label>Amplitude</label>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="1"
+                    max="20"
+                    value={draftWiggleAmplitude}
+                    onChange={(e) => setDraftWiggleAmplitude(Number(e.target.value))}
+                    onPointerUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
+                    onKeyUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
+                    className="fill-slider"
+                  />
+                  <span className="control-value">{draftWiggleAmplitude}px</span>
+                </div>
+              </div>
+            )}
+
             {fillPattern === 'wiggle' && (
-              <>
-                <div
-                  className={`fill-control selectable ${selectedControl === 'wiggleAmplitude' ? 'selected' : ''}`}
-                  onClick={() => setSelectedControl('wiggleAmplitude')}
-                >
-                  <label>Amplitude</label>
-                  <div className="control-row">
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={draftWiggleAmplitude}
-                      onChange={(e) => setDraftWiggleAmplitude(Number(e.target.value))}
-                      onPointerUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
-                      onKeyUp={() => setWiggleAmplitude(draftWiggleAmplitude)}
-                      className="fill-slider"
-                    />
-                    <span className="control-value">{draftWiggleAmplitude}px</span>
-                  </div>
+              <div
+                className={`fill-control selectable ${selectedControl === 'wiggleFrequency' ? 'selected' : ''}`}
+                onClick={() => setSelectedControl('wiggleFrequency')}
+              >
+                <label>Frequency</label>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="5"
+                    step="0.5"
+                    value={draftWiggleFrequency}
+                    onChange={(e) => setDraftWiggleFrequency(Number(e.target.value))}
+                    onPointerUp={() => setWiggleFrequency(draftWiggleFrequency)}
+                    onKeyUp={() => setWiggleFrequency(draftWiggleFrequency)}
+                    className="fill-slider"
+                  />
+                  <span className="control-value">{draftWiggleFrequency}</span>
                 </div>
-                <div
-                  className={`fill-control selectable ${selectedControl === 'wiggleFrequency' ? 'selected' : ''}`}
-                  onClick={() => setSelectedControl('wiggleFrequency')}
-                >
-                  <label>Frequency</label>
-                  <div className="control-row">
-                    <input
-                      type="range"
-                      min="0.5"
-                      max="5"
-                      step="0.5"
-                      value={draftWiggleFrequency}
-                      onChange={(e) => setDraftWiggleFrequency(Number(e.target.value))}
-                      onPointerUp={() => setWiggleFrequency(draftWiggleFrequency)}
-                      onKeyUp={() => setWiggleFrequency(draftWiggleFrequency)}
-                      className="fill-slider"
-                    />
-                    <span className="control-value">{draftWiggleFrequency}</span>
-                  </div>
-                </div>
-              </>
+              </div>
             )}
 
             {fillPattern === 'spiral' && (
-              <>
-                <div className="fill-control checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={singleSpiral}
-                      onChange={(e) => setSingleSpiral(e.target.checked)}
-                    />
-                    Single spiral pattern
-                  </label>
-                  <p className="control-hint">
-                    {singleSpiral
-                      ? 'One spiral across all shapes'
-                      : 'Individual spiral per shape'}
-                  </p>
-                </div>
-                <div className="fill-control">
-                  <label>Over Diameter</label>
-                  <div className="control-row">
-                    <input
-                      type="number"
-                      min="1"
-                      max="5"
-                      step="0.1"
-                      value={spiralOverDiameter}
-                      onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
-                      className="fill-input"
-                      style={{ width: '80px' }}
-                    />
-                    <span className="control-value">× radius</span>
-                  </div>
-                </div>
-              </>
+              <div className="fill-control checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={singleSpiral}
+                    onChange={(e) => setSingleSpiral(e.target.checked)}
+                  />
+                  Single spiral pattern
+                </label>
+                <p className="control-hint">
+                  {singleSpiral
+                    ? 'One spiral across all shapes'
+                    : 'Individual spiral per shape'}
+                </p>
+              </div>
             )}
 
-            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb') && (
+            {(fillPattern === 'spiral' || fillPattern === 'crossspiral') && (
+              <div className="fill-control">
+                <label>Over Diameter</label>
+                <div className="control-row">
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    step="0.1"
+                    value={spiralOverDiameter}
+                    onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
+                    className="fill-input"
+                    style={{ width: '80px' }}
+                  />
+                  <span className="control-value">× radius</span>
+                </div>
+              </div>
+            )}
+
+            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'brick' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid') && (
               <div
                 className={`fill-control selectable ${selectedControl === 'inset' ? 'selected' : ''}`}
                 onClick={() => setSelectedControl('inset')}

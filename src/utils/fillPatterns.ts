@@ -22,7 +22,7 @@ export interface OrderedLine extends HatchLine {
   reversed: boolean
 }
 
-export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid'
+export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'brick' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert'
 
 // Generate concentric fill lines (snake pattern from outside in)
 export function generateConcentricLines(
@@ -617,6 +617,295 @@ export function generateGyroidLines(
   }
 
   return lines
+}
+
+// Generate brick/offset lines pattern (like lines but with alternating row offsets)
+export function generateBrickLines(
+  polygonData: PolygonWithHoles,
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number,
+  angleDegrees: number,
+  inset: number = 0,
+  offsetRatio: number = 0.5 // How much to offset alternating rows (0.5 = half)
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  const angleRad = (angleDegrees * Math.PI) / 180
+  const cos = Math.cos(angleRad)
+  const sin = Math.sin(angleRad)
+
+  // Calculate bounding box diagonal for line length
+  const diagonal = Math.sqrt(
+    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
+  )
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
+
+  const lines: HatchLine[] = []
+  const numLines = Math.ceil(diagonal / spacing) + 2
+
+  for (let i = -numLines; i <= numLines; i++) {
+    // Perpendicular offset from center
+    const perpOffset = i * spacing
+    // Offset along the line direction for alternating rows
+    const alongOffset = (i % 2 === 0) ? 0 : (spacing * offsetRatio)
+
+    // Line start and end (extended beyond bounding box)
+    const lineStart = {
+      x: centerX + perpOffset * (-sin) + (-diagonal / 2 + alongOffset) * cos,
+      y: centerY + perpOffset * cos + (-diagonal / 2 + alongOffset) * sin
+    }
+    const lineEnd = {
+      x: centerX + perpOffset * (-sin) + (diagonal / 2 + alongOffset) * cos,
+      y: centerY + perpOffset * cos + (diagonal / 2 + alongOffset) * sin
+    }
+
+    lines.push({ x1: lineStart.x, y1: lineStart.y, x2: lineEnd.x, y2: lineEnd.y })
+  }
+
+  return clipLinesToPolygon(lines, polygonData, inset)
+}
+
+// Generate zigzag/sawtooth pattern
+export function generateZigzagLines(
+  polygonData: PolygonWithHoles,
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number,
+  angleDegrees: number,
+  amplitude: number,
+  inset: number = 0
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  const angleRad = (angleDegrees * Math.PI) / 180
+  const cos = Math.cos(angleRad)
+  const sin = Math.sin(angleRad)
+
+  const diagonal = Math.sqrt(
+    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
+  )
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
+
+  const allLines: HatchLine[] = []
+  const numRows = Math.ceil(diagonal / spacing) + 2
+
+  for (let row = -numRows; row <= numRows; row++) {
+    const perpOffset = row * spacing
+    const numZigs = Math.ceil(diagonal / amplitude)
+
+    for (let zig = -numZigs; zig < numZigs; zig++) {
+      // Create zigzag points
+      const t1 = zig * amplitude
+      const t2 = (zig + 0.5) * amplitude
+      const t3 = (zig + 1) * amplitude
+
+      // Alternate direction
+      const zigOffset = (zig % 2 === 0) ? spacing / 4 : -spacing / 4
+
+      const p1 = {
+        x: centerX + perpOffset * (-sin) + t1 * cos,
+        y: centerY + perpOffset * cos + t1 * sin
+      }
+      const p2 = {
+        x: centerX + (perpOffset + zigOffset) * (-sin) + t2 * cos,
+        y: centerY + (perpOffset + zigOffset) * cos + t2 * sin
+      }
+      const p3 = {
+        x: centerX + perpOffset * (-sin) + t3 * cos,
+        y: centerY + perpOffset * cos + t3 * sin
+      }
+
+      allLines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+      allLines.push({ x1: p2.x, y1: p2.y, x2: p3.x, y2: p3.y })
+    }
+  }
+
+  return clipLinesToPolygon(allLines, polygonData, inset)
+}
+
+// Generate radial lines pattern (lines emanating from center)
+export function generateRadialLines(
+  polygonData: PolygonWithHoles,
+  spacing: number,
+  inset: number = 0,
+  startAngle: number = 0
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  let workingPolygon = outer
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(outer, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find center and max radius
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const maxRadius = Math.sqrt(
+    Math.pow(maxX - minX, 2) + Math.pow(maxY - minY, 2)
+  ) / 2 * 1.5
+
+  // Calculate number of radial lines based on spacing at the perimeter
+  const circumference = 2 * Math.PI * maxRadius
+  const numLines = Math.max(8, Math.floor(circumference / spacing))
+  const angleStep = (2 * Math.PI) / numLines
+  const startAngleRad = (startAngle * Math.PI) / 180
+
+  const allLines: HatchLine[] = []
+
+  for (let i = 0; i < numLines; i++) {
+    const angle = startAngleRad + i * angleStep
+    const endX = centerX + maxRadius * Math.cos(angle)
+    const endY = centerY + maxRadius * Math.sin(angle)
+
+    allLines.push({
+      x1: centerX,
+      y1: centerY,
+      x2: endX,
+      y2: endY
+    })
+  }
+
+  return clipLinesToPolygon(allLines, polygonData, inset)
+}
+
+// Generate cross-spiral pattern (two spirals at different angles)
+export function generateCrossSpiralLines(
+  polygonData: PolygonWithHoles,
+  spacing: number,
+  inset: number = 0,
+  angleDegrees: number = 0,
+  overDiameter: number = 1.5
+): HatchLine[] {
+  // Generate two spirals at 90 degree offset
+  const spiral1 = generateSpiralLines(polygonData, spacing, inset, angleDegrees, overDiameter)
+  const spiral2 = generateSpiralLines(polygonData, spacing, inset, angleDegrees + 90, overDiameter)
+
+  return [...spiral1, ...spiral2]
+}
+
+// Generate Hilbert curve pattern (space-filling curve)
+export function generateHilbertLines(
+  polygonData: PolygonWithHoles,
+  _spacing: number,
+  inset: number = 0,
+  order: number = 4 // Recursion depth (4-6 typical)
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  let workingPolygon = outer
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(outer, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  // Find bounding box
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const width = maxX - minX
+  const height = maxY - minY
+  const size = Math.max(width, height)
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+
+  // Determine order based on spacing
+  const gridSize = Math.pow(2, order)
+  const cellSize = size / gridSize
+
+  // Generate Hilbert curve points
+  const points: Point[] = []
+
+  function hilbert(x: number, y: number, ax: number, ay: number, bx: number, by: number): void {
+    const w = Math.abs(ax + ay)
+    const h = Math.abs(bx + by)
+
+    const dax = ax > 0 ? 1 : ax < 0 ? -1 : 0
+    const day = ay > 0 ? 1 : ay < 0 ? -1 : 0
+    const dbx = bx > 0 ? 1 : bx < 0 ? -1 : 0
+    const dby = by > 0 ? 1 : by < 0 ? -1 : 0
+
+    if (h === 1) {
+      for (let i = 0; i < w; i++) {
+        points.push({
+          x: centerX - size / 2 + (x + 0.5) * cellSize,
+          y: centerY - size / 2 + (y + 0.5) * cellSize
+        })
+        x += dax
+        y += day
+      }
+      return
+    }
+
+    if (w === 1) {
+      for (let i = 0; i < h; i++) {
+        points.push({
+          x: centerX - size / 2 + (x + 0.5) * cellSize,
+          y: centerY - size / 2 + (y + 0.5) * cellSize
+        })
+        x += dbx
+        y += dby
+      }
+      return
+    }
+
+    const ax2 = Math.floor(ax / 2)
+    const ay2 = Math.floor(ay / 2)
+    const bx2 = Math.floor(bx / 2)
+    const by2 = Math.floor(by / 2)
+
+    const w2 = Math.abs(ax2 + ay2)
+    const h2 = Math.abs(bx2 + by2)
+
+    if (2 * w > 3 * h) {
+      if ((ax2 & 1) !== 0 && (w2 & 1) === 0) {
+        // Prefer even steps
+      }
+      hilbert(x, y, ax2, ay2, bx, by)
+      hilbert(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by)
+    } else {
+      if ((bx2 & 1) !== 0 && (h2 & 1) === 0) {
+        // Prefer even steps
+      }
+      hilbert(x, y, bx2, by2, ax2, ay2)
+      hilbert(x + bx2, y + by2, ax, ay, bx - bx2, by - by2)
+      hilbert(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby), -bx2, -by2, -(ax - ax2), -(ay - ay2))
+    }
+  }
+
+  // Generate the curve
+  hilbert(0, 0, gridSize, 0, 0, gridSize)
+
+  // Convert points to lines
+  const allLines: HatchLine[] = []
+  for (let i = 0; i < points.length - 1; i++) {
+    allLines.push({
+      x1: points[i].x,
+      y1: points[i].y,
+      x2: points[i + 1].x,
+      y2: points[i + 1].y
+    })
+  }
+
+  return clipLinesToPolygon(allLines, polygonData, inset)
 }
 
 // distance() is now imported from geometry.ts
