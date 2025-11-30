@@ -260,31 +260,122 @@ export function calcPolygonArea(polygon: Point[]): number {
   return area / 2
 }
 
+// Calculate centroid of a polygon
+function polygonCentroid(polygon: Point[]): Point {
+  if (polygon.length === 0) return { x: 0, y: 0 }
+  const sumX = polygon.reduce((sum, p) => sum + p.x, 0)
+  const sumY = polygon.reduce((sum, p) => sum + p.y, 0)
+  return { x: sumX / polygon.length, y: sumY / polygon.length }
+}
+
+// Simple point-in-polygon test (ray casting) - used before pointInPolygon is defined
+function isPointInsidePolygon(point: Point, polygon: Point[]): boolean {
+  let inside = false
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i].x, yi = polygon[i].y
+    const xj = polygon[j].x, yj = polygon[j].y
+    if (((yi > point.y) !== (yj > point.y)) &&
+        (point.x < (xj - xi) * (point.y - yi) / (yj - yi) + xi)) {
+      inside = !inside
+    }
+  }
+  return inside
+}
+
 // Identify which subpath is the outer boundary and which are holes
+// Key insight: holes are INSIDE the outer boundary, disconnected regions are OUTSIDE
 export function identifyOuterAndHoles(subpaths: Point[][]): PolygonWithHoles {
   if (subpaths.length === 0) return { outer: [], holes: [] }
   if (subpaths.length === 1) return { outer: subpaths[0], holes: [] }
 
   const areasWithIndex = subpaths.map((subpath, index) => ({
     index,
-    area: Math.abs(calcPolygonArea(subpath))
+    subpath,
+    area: Math.abs(calcPolygonArea(subpath)),
+    centroid: polygonCentroid(subpath)
   }))
 
+  // Sort by area descending - largest first
   areasWithIndex.sort((a, b) => b.area - a.area)
 
-  const outerIndex = areasWithIndex[0].index
-  const outer = subpaths[outerIndex]
+  const largest = areasWithIndex[0]
+  const outer = largest.subpath
   const holes: Point[][] = []
+  const disconnectedRegions: Point[][] = []
 
+  // Check each smaller subpath - is its centroid inside the largest?
   for (let i = 1; i < areasWithIndex.length; i++) {
-    holes.push(subpaths[areasWithIndex[i].index])
+    const item = areasWithIndex[i]
+    if (isPointInsidePolygon(item.centroid, outer)) {
+      // This subpath is inside the outer - it's a hole
+      holes.push(item.subpath)
+    } else {
+      // This subpath is outside the outer - it's a disconnected region
+      disconnectedRegions.push(item.subpath)
+    }
   }
+
+  // If there are disconnected regions, we have a problem:
+  // The current PolygonWithHoles structure only supports one outer + holes
+  // For now, we return just the largest region with its actual holes
+  // The disconnected regions will be lost - this is a limitation
+  // TODO: Consider returning multiple PolygonWithHoles for compound paths with disconnected regions
 
   return { outer, holes }
 }
 
-// Get polygon points from an SVG element
+// Get all subpaths as separate polygons (for compound paths with disconnected regions)
+export function getPolygonsFromSubpaths(subpaths: Point[][]): PolygonWithHoles[] {
+  if (subpaths.length === 0) return []
+  if (subpaths.length === 1) return [{ outer: subpaths[0], holes: [] }]
+
+  const areasWithIndex = subpaths.map((subpath, index) => ({
+    index,
+    subpath,
+    area: Math.abs(calcPolygonArea(subpath)),
+    centroid: polygonCentroid(subpath)
+  }))
+
+  // Sort by area descending
+  areasWithIndex.sort((a, b) => b.area - a.area)
+
+  const results: PolygonWithHoles[] = []
+  const usedIndices = new Set<number>()
+
+  // Process each potential outer boundary
+  for (let i = 0; i < areasWithIndex.length; i++) {
+    if (usedIndices.has(areasWithIndex[i].index)) continue
+
+    const candidate = areasWithIndex[i]
+    const holes: Point[][] = []
+
+    // Find holes for this outer (smaller subpaths whose centroids are inside)
+    for (let j = i + 1; j < areasWithIndex.length; j++) {
+      if (usedIndices.has(areasWithIndex[j].index)) continue
+
+      const smaller = areasWithIndex[j]
+      if (isPointInsidePolygon(smaller.centroid, candidate.subpath)) {
+        holes.push(smaller.subpath)
+        usedIndices.add(smaller.index)
+      }
+    }
+
+    usedIndices.add(candidate.index)
+    results.push({ outer: candidate.subpath, holes })
+  }
+
+  return results
+}
+
+// Get polygon points from an SVG element (returns first/largest polygon only)
+// For compound paths with disconnected regions, use getAllPolygonsFromElement instead
 export function getPolygonPoints(element: Element): PolygonWithHoles {
+  const polygons = getAllPolygonsFromElement(element)
+  return polygons.length > 0 ? polygons[0] : { outer: [], holes: [] }
+}
+
+// Get ALL polygons from an SVG element (handles compound paths with disconnected regions)
+export function getAllPolygonsFromElement(element: Element): PolygonWithHoles[] {
   const tagName = element.tagName.toLowerCase()
 
   if (tagName === 'polygon') {
@@ -294,7 +385,7 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
     for (let i = 0; i < pairs.length - 1; i += 2) {
       points.push({ x: parseFloat(pairs[i]), y: parseFloat(pairs[i + 1]) })
     }
-    return { outer: points, holes: [] }
+    return [{ outer: points, holes: [] }]
   }
 
   if (tagName === 'polyline') {
@@ -312,7 +403,7 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
         points.push({ x: first.x, y: first.y })
       }
     }
-    return { outer: points, holes: [] }
+    return [{ outer: points, holes: [] }]
   }
 
   if (tagName === 'rect') {
@@ -320,15 +411,16 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
     const y = parseFloat(element.getAttribute('y') || '0')
     const w = parseFloat(element.getAttribute('width') || '0')
     const h = parseFloat(element.getAttribute('height') || '0')
-    return { outer: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], holes: [] }
+    return [{ outer: [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }], holes: [] }]
   }
 
   if (tagName === 'path') {
     const d = element.getAttribute('d') || ''
     const subpaths = parsePathIntoSubpaths(d)
-    if (subpaths.length === 0) return { outer: [], holes: [] }
-    if (subpaths.length === 1) return { outer: subpaths[0], holes: [] }
-    return identifyOuterAndHoles(subpaths)
+    if (subpaths.length === 0) return []
+    if (subpaths.length === 1) return [{ outer: subpaths[0], holes: [] }]
+    // Use the new function that properly handles disconnected regions
+    return getPolygonsFromSubpaths(subpaths)
   }
 
   if (tagName === 'circle') {
@@ -341,7 +433,7 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
       const angle = (i / segments) * Math.PI * 2
       points.push({ x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) })
     }
-    return { outer: points, holes: [] }
+    return [{ outer: points, holes: [] }]
   }
 
   if (tagName === 'ellipse') {
@@ -355,10 +447,10 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
       const angle = (i / segments) * Math.PI * 2
       points.push({ x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) })
     }
-    return { outer: points, holes: [] }
+    return [{ outer: points, holes: [] }]
   }
 
-  return { outer: [], holes: [] }
+  return []
 }
 
 // Check if a point is inside a polygon using ray casting

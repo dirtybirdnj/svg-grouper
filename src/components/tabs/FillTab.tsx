@@ -5,7 +5,7 @@ import {
   Point,
   HatchLine,
   PolygonWithHoles,
-  getPolygonPoints,
+  getAllPolygonsFromElement,
   generateGlobalHatchLines,
   clipLinesToPolygon,
   linesToCompoundPath,
@@ -410,22 +410,23 @@ export default function FillTab() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
 
     fillPaths.forEach(path => {
-      // Use getPolygonPoints which parses element attributes directly
-      // This works even if the element isn't in the live DOM
-      const polygonData = getPolygonPoints(path.element)
-      for (const p of polygonData.outer) {
-        minX = Math.min(minX, p.x)
-        minY = Math.min(minY, p.y)
-        maxX = Math.max(maxX, p.x)
-        maxY = Math.max(maxY, p.y)
-      }
-      // Also check hole boundaries for complete bounding box
-      for (const hole of polygonData.holes) {
-        for (const p of hole) {
+      // Use getAllPolygonsFromElement to handle compound paths with disconnected regions
+      const allPolygons = getAllPolygonsFromElement(path.element)
+      for (const polygonData of allPolygons) {
+        for (const p of polygonData.outer) {
           minX = Math.min(minX, p.x)
           minY = Math.min(minY, p.y)
           maxX = Math.max(maxX, p.x)
           maxY = Math.max(maxY, p.y)
+        }
+        // Also check hole boundaries for complete bounding box
+        for (const hole of polygonData.holes) {
+          for (const p of hole) {
+            minX = Math.min(minX, p.x)
+            minY = Math.min(minY, p.y)
+            maxX = Math.max(maxX, p.x)
+            maxY = Math.max(maxY, p.y)
+          }
         }
       }
     })
@@ -508,16 +509,24 @@ export default function FillTab() {
           if (abortController.aborted) return
 
           try {
-            // Use preserved polygon data if available, otherwise compute from element
-            let polygonData: PolygonWithHoles
+            // Get ALL polygons from the element (handles compound paths with disconnected regions)
+            let allPolygons: PolygonWithHoles[]
             if (preservedFillData) {
               const preserved = preservedFillData.find(p => p.pathInfo.id === path.id)
-              polygonData = preserved ? preserved.polygon : getPolygonPoints(path.element)
+              // For preserved data, we only have one polygon stored
+              allPolygons = preserved ? [preserved.polygon] : getAllPolygonsFromElement(path.element)
             } else {
-              polygonData = getPolygonPoints(path.element)
+              allPolygons = getAllPolygonsFromElement(path.element)
             }
 
-            if (polygonData.outer.length >= 3) {
+            // Process each polygon in the element (for compound paths with disconnected regions)
+            let allLines: HatchLine[] = []
+            let firstValidPolygon: Point[] | null = null
+
+            for (const polygonData of allPolygons) {
+              if (polygonData.outer.length < 3) continue
+              if (!firstValidPolygon) firstValidPolygon = polygonData.outer
+
               let lines: HatchLine[] = []
 
               switch (fillPattern) {
@@ -553,7 +562,11 @@ export default function FillTab() {
                   break
               }
 
-              results.push({ pathInfo: path, lines, polygon: polygonData.outer })
+              allLines = allLines.concat(lines)
+            }
+
+            if (allLines.length > 0 && firstValidPolygon) {
+              results.push({ pathInfo: path, lines: allLines, polygon: firstValidPolygon })
             }
           } catch {
             // Failed to generate hatch for this path
