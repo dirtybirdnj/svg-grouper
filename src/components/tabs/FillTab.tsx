@@ -20,11 +20,15 @@ import {
   generateGlobalSpiralLines,
   clipSpiralToPolygon,
   generateGyroidLines,
-  generateBrickLines,
+  generateCrosshatchLines,
   generateZigzagLines,
   generateRadialLines,
   generateCrossSpiralLines,
   generateHilbertLines,
+  generateGlobalHilbertLines,
+  clipHilbertToPolygon,
+  generateFermatLines,
+  generateWaveLines,
   optimizeLineOrderMultiPass,
   calculateTravelDistance,
 } from '../../utils/fillPatterns'
@@ -185,6 +189,7 @@ export default function FillTab() {
   const [wiggleFrequency, setWiggleFrequency] = useState(2)
   const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
   const [singleSpiral, setSingleSpiral] = useState(false) // Use one giant spiral for all shapes
+  const [singleHilbert, setSingleHilbert] = useState(true) // Use one Hilbert curve for all shapes (default true)
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
 
   // Accumulated fill layers - each layer has lines with a color
@@ -495,6 +500,12 @@ export default function FillTab() {
         globalSpiralLines = generateGlobalSpiralLines(centerX, centerY, maxRadius, lineSpacing, angle)
       }
 
+      // Generate global Hilbert curve if in single Hilbert mode
+      let globalHilbertLines: HatchLine[] = []
+      if (fillPattern === 'hilbert' && singleHilbert && boundingBox) {
+        globalHilbertLines = generateGlobalHilbertLines(boundingBox, lineSpacing)
+      }
+
       const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
       // Use smaller batch size for expensive patterns
       const isExpensivePattern = fillPattern === 'gyroid' || fillPattern === 'honeycomb'
@@ -559,8 +570,8 @@ export default function FillTab() {
                 case 'gyroid':
                   lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
                   break
-                case 'brick':
-                  lines = generateBrickLines(polygonData, boundingBox, lineSpacing, angle, inset)
+                case 'crosshatch':
+                  lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
                   break
                 case 'zigzag':
                   lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
@@ -572,9 +583,20 @@ export default function FillTab() {
                   lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
                   break
                 case 'hilbert':
-                  // Calculate order based on spacing - higher spacing = lower order
-                  const hilbertOrder = Math.max(2, Math.min(6, Math.floor(6 - lineSpacing / 10)))
-                  lines = generateHilbertLines(polygonData, lineSpacing, inset, hilbertOrder)
+                  if (singleHilbert) {
+                    // Single Hilbert mode: clip the global curve to this shape
+                    lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+                  } else {
+                    // Per-shape Hilbert: generate unique curve for each shape
+                    const hilbertOrder = Math.max(2, Math.min(6, Math.floor(6 - lineSpacing / 10)))
+                    lines = generateHilbertLines(polygonData, lineSpacing, inset, hilbertOrder)
+                  }
+                  break
+                case 'fermat':
+                  lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                  break
+                case 'wave':
+                  lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
                   break
                 case 'lines':
                 default:
@@ -638,7 +660,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -1208,11 +1230,11 @@ export default function FillTab() {
                 Gyroid
               </button>
               <button
-                className={`pattern-btn ${fillPattern === 'brick' ? 'active' : ''}`}
-                onClick={() => setFillPattern('brick')}
-                title="Brick/offset lines pattern"
+                className={`pattern-btn ${fillPattern === 'crosshatch' ? 'active' : ''}`}
+                onClick={() => setFillPattern('crosshatch')}
+                title="Automatic crosshatch (two line sets at 90°)"
               >
-                Brick
+                Crosshatch
               </button>
               <button
                 className={`pattern-btn ${fillPattern === 'zigzag' ? 'active' : ''}`}
@@ -1220,6 +1242,13 @@ export default function FillTab() {
                 title="Zigzag/sawtooth lines"
               >
                 Zigzag
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'wave' ? 'active' : ''}`}
+                onClick={() => setFillPattern('wave')}
+                title="Smooth sine wave pattern"
+              >
+                Wave
               </button>
               <button
                 className={`pattern-btn ${fillPattern === 'radial' ? 'active' : ''}`}
@@ -1234,6 +1263,13 @@ export default function FillTab() {
                 title="Clockwise and counter-clockwise spirals overlaid"
               >
                 X-Spiral
+              </button>
+              <button
+                className={`pattern-btn ${fillPattern === 'fermat' ? 'active' : ''}`}
+                onClick={() => setFillPattern('fermat')}
+                title="Fermat spiral (sunflower pattern)"
+              >
+                Fermat
               </button>
               <button
                 className={`pattern-btn ${fillPattern === 'hilbert' ? 'active' : ''}`}
@@ -1309,7 +1345,7 @@ export default function FillTab() {
               </div>
             )}
 
-            {(fillPattern === 'wiggle' || fillPattern === 'zigzag') && (
+            {(fillPattern === 'wiggle' || fillPattern === 'zigzag' || fillPattern === 'wave') && (
               <div
                 className={`fill-control selectable ${selectedControl === 'wiggleAmplitude' ? 'selected' : ''}`}
                 onClick={() => setSelectedControl('wiggleAmplitude')}
@@ -1331,7 +1367,7 @@ export default function FillTab() {
               </div>
             )}
 
-            {fillPattern === 'wiggle' && (
+            {(fillPattern === 'wiggle' || fillPattern === 'wave') && (
               <div
                 className={`fill-control selectable ${selectedControl === 'wiggleFrequency' ? 'selected' : ''}`}
                 onClick={() => setSelectedControl('wiggleFrequency')}
@@ -1372,7 +1408,7 @@ export default function FillTab() {
               </div>
             )}
 
-            {(fillPattern === 'spiral' || fillPattern === 'crossspiral') && (
+            {(fillPattern === 'spiral' || fillPattern === 'crossspiral' || fillPattern === 'fermat') && (
               <div className="fill-control">
                 <label>Over Diameter</label>
                 <div className="control-row">
@@ -1391,7 +1427,25 @@ export default function FillTab() {
               </div>
             )}
 
-            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'brick' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid') && (
+            {fillPattern === 'hilbert' && (
+              <div className="fill-control checkbox">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={singleHilbert}
+                    onChange={(e) => setSingleHilbert(e.target.checked)}
+                  />
+                  Single Hilbert pattern
+                </label>
+                <p className="control-hint">
+                  {singleHilbert
+                    ? 'One curve across all shapes'
+                    : 'Individual curve per shape'}
+                </p>
+              </div>
+            )}
+
+            {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'crosshatch' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid' || fillPattern === 'fermat' || fillPattern === 'wave') && (
               <div
                 className={`fill-control selectable ${selectedControl === 'inset' ? 'selected' : ''}`}
                 onClick={() => setSelectedControl('inset')}

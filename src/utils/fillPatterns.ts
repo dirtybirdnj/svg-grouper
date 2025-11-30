@@ -22,7 +22,7 @@ export interface OrderedLine extends HatchLine {
   reversed: boolean
 }
 
-export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'brick' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert'
+export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'crosshatch' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert' | 'fermat' | 'wave'
 
 // Generate concentric fill lines (snake pattern from outside in)
 export function generateConcentricLines(
@@ -619,52 +619,24 @@ export function generateGyroidLines(
   return lines
 }
 
-// Generate brick/offset lines pattern (like lines but with alternating row offsets)
-export function generateBrickLines(
+// Generate crosshatch pattern (two sets of lines at different angles)
+export function generateCrosshatchLines(
   polygonData: PolygonWithHoles,
   globalBbox: { x: number; y: number; width: number; height: number },
   spacing: number,
   angleDegrees: number,
   inset: number = 0,
-  offsetRatio: number = 0.5 // How much to offset alternating rows (0.5 = half)
+  crossAngle: number = 90 // Angle between the two line sets
 ): HatchLine[] {
-  const { outer } = polygonData
-  if (outer.length < 3) return []
+  // Generate first set of lines
+  const lines1 = generateGlobalHatchLines(globalBbox, spacing, angleDegrees)
+  const clipped1 = clipLinesToPolygon(lines1, polygonData, inset)
 
-  const angleRad = (angleDegrees * Math.PI) / 180
-  const cos = Math.cos(angleRad)
-  const sin = Math.sin(angleRad)
+  // Generate second set of lines at crossAngle offset
+  const lines2 = generateGlobalHatchLines(globalBbox, spacing, angleDegrees + crossAngle)
+  const clipped2 = clipLinesToPolygon(lines2, polygonData, inset)
 
-  // Calculate bounding box diagonal for line length
-  const diagonal = Math.sqrt(
-    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
-  )
-  const centerX = globalBbox.x + globalBbox.width / 2
-  const centerY = globalBbox.y + globalBbox.height / 2
-
-  const lines: HatchLine[] = []
-  const numLines = Math.ceil(diagonal / spacing) + 2
-
-  for (let i = -numLines; i <= numLines; i++) {
-    // Perpendicular offset from center
-    const perpOffset = i * spacing
-    // Offset along the line direction for alternating rows
-    const alongOffset = (i % 2 === 0) ? 0 : (spacing * offsetRatio)
-
-    // Line start and end (extended beyond bounding box)
-    const lineStart = {
-      x: centerX + perpOffset * (-sin) + (-diagonal / 2 + alongOffset) * cos,
-      y: centerY + perpOffset * cos + (-diagonal / 2 + alongOffset) * sin
-    }
-    const lineEnd = {
-      x: centerX + perpOffset * (-sin) + (diagonal / 2 + alongOffset) * cos,
-      y: centerY + perpOffset * cos + (diagonal / 2 + alongOffset) * sin
-    }
-
-    lines.push({ x1: lineStart.x, y1: lineStart.y, x2: lineEnd.x, y2: lineEnd.y })
-  }
-
-  return clipLinesToPolygon(lines, polygonData, inset)
+  return [...clipped1, ...clipped2]
 }
 
 // Generate zigzag/sawtooth pattern
@@ -903,6 +875,281 @@ export function generateHilbertLines(
       x2: points[i + 1].x,
       y2: points[i + 1].y
     })
+  }
+
+  return clipLinesToPolygon(allLines, polygonData, inset)
+}
+
+// Generate a global Hilbert curve that spans the entire bounding box
+// Used for "single pattern" mode where one curve covers all shapes
+export function generateGlobalHilbertLines(
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number
+): HatchLine[] {
+  const size = Math.max(globalBbox.width, globalBbox.height) * 1.1 // Slight padding
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
+
+  // Calculate order based on spacing - higher spacing = lower order
+  // Target cell size approximately equals spacing
+  const targetCellSize = spacing
+  const order = Math.max(2, Math.min(7, Math.ceil(Math.log2(size / targetCellSize))))
+  const gridSize = Math.pow(2, order)
+  const cellSize = size / gridSize
+
+  const points: Point[] = []
+
+  function hilbert(x: number, y: number, ax: number, ay: number, bx: number, by: number): void {
+    const w = Math.abs(ax + ay)
+    const h = Math.abs(bx + by)
+
+    const dax = ax > 0 ? 1 : ax < 0 ? -1 : 0
+    const day = ay > 0 ? 1 : ay < 0 ? -1 : 0
+    const dbx = bx > 0 ? 1 : bx < 0 ? -1 : 0
+    const dby = by > 0 ? 1 : by < 0 ? -1 : 0
+
+    if (h === 1) {
+      for (let i = 0; i < w; i++) {
+        points.push({
+          x: centerX - size / 2 + (x + 0.5) * cellSize,
+          y: centerY - size / 2 + (y + 0.5) * cellSize
+        })
+        x += dax
+        y += day
+      }
+      return
+    }
+
+    if (w === 1) {
+      for (let i = 0; i < h; i++) {
+        points.push({
+          x: centerX - size / 2 + (x + 0.5) * cellSize,
+          y: centerY - size / 2 + (y + 0.5) * cellSize
+        })
+        x += dbx
+        y += dby
+      }
+      return
+    }
+
+    const ax2 = Math.floor(ax / 2)
+    const ay2 = Math.floor(ay / 2)
+    const bx2 = Math.floor(bx / 2)
+    const by2 = Math.floor(by / 2)
+
+    const w2 = Math.abs(ax2 + ay2)
+    const h2 = Math.abs(bx2 + by2)
+
+    if (2 * w > 3 * h) {
+      if ((ax2 & 1) !== 0 && (w2 & 1) === 0) { /* prefer even */ }
+      hilbert(x, y, ax2, ay2, bx, by)
+      hilbert(x + ax2, y + ay2, ax - ax2, ay - ay2, bx, by)
+    } else {
+      if ((bx2 & 1) !== 0 && (h2 & 1) === 0) { /* prefer even */ }
+      hilbert(x, y, bx2, by2, ax2, ay2)
+      hilbert(x + bx2, y + by2, ax, ay, bx - bx2, by - by2)
+      hilbert(x + (ax - dax) + (bx2 - dbx), y + (ay - day) + (by2 - dby), -bx2, -by2, -(ax - ax2), -(ay - ay2))
+    }
+  }
+
+  hilbert(0, 0, gridSize, 0, 0, gridSize)
+
+  // Convert points to lines
+  const lines: HatchLine[] = []
+  for (let i = 0; i < points.length - 1; i++) {
+    lines.push({
+      x1: points[i].x,
+      y1: points[i].y,
+      x2: points[i + 1].x,
+      y2: points[i + 1].y
+    })
+  }
+
+  return lines
+}
+
+// Clip global Hilbert lines to a polygon
+export function clipHilbertToPolygon(
+  hilbertLines: HatchLine[],
+  polygonData: PolygonWithHoles,
+  inset: number = 0
+): HatchLine[] {
+  return clipLinesToPolygon(hilbertLines, polygonData, inset)
+}
+
+// Generate Fermat spiral (parabolic spiral - tighter, more organic than Archimedean)
+export function generateFermatLines(
+  polygonData: PolygonWithHoles,
+  spacing: number,
+  inset: number = 0,
+  angleDegrees: number = 0,
+  overDiameter: number = 1.5
+): HatchLine[] {
+  const { outer, holes } = polygonData
+  if (outer.length < 3) return []
+
+  let workingPolygon = outer
+  if (inset > 0) {
+    workingPolygon = offsetPolygon(outer, -inset)
+    if (workingPolygon.length < 3) return []
+  }
+
+  const workingHoles = holes.map(hole => {
+    if (inset > 0) {
+      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
+      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
+      return hole.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        const scale = (dist + inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return hole
+  })
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of workingPolygon) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+
+  let maxRadius = 0
+  for (const p of workingPolygon) {
+    const dist = Math.sqrt(Math.pow(p.x - centerX, 2) + Math.pow(p.y - centerY, 2))
+    maxRadius = Math.max(maxRadius, dist)
+  }
+  maxRadius *= overDiameter
+
+  const angleOffset = (angleDegrees * Math.PI) / 180
+
+  // Fermat spiral: r = a * sqrt(theta)
+  // We want spacing between arms, so a = spacing / sqrt(2*PI)
+  const a = spacing / Math.sqrt(2 * Math.PI)
+
+  const spiralPoints: Point[] = []
+  const angleStep = 0.05
+  let angle = 0
+
+  while (true) {
+    const radius = a * Math.sqrt(angle)
+    if (radius > maxRadius) break
+
+    const rotatedAngle = angle + angleOffset
+    spiralPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+    if (spiralPoints.length > 50000) break
+  }
+
+  // Also generate the mirror spiral (Fermat has two arms)
+  const mirrorPoints: Point[] = []
+  angle = 0
+  while (true) {
+    const radius = a * Math.sqrt(angle)
+    if (radius > maxRadius) break
+
+    const rotatedAngle = angle + angleOffset + Math.PI // 180 degree offset
+    mirrorPoints.push({
+      x: centerX + radius * Math.cos(rotatedAngle),
+      y: centerY + radius * Math.sin(rotatedAngle)
+    })
+
+    angle += angleStep
+    if (mirrorPoints.length > 50000) break
+  }
+
+  const lines: HatchLine[] = []
+
+  // Process main spiral
+  for (let i = 0; i < spiralPoints.length - 1; i++) {
+    const p1 = spiralPoints[i]
+    const p2 = spiralPoints[i + 1]
+
+    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
+      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
+      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
+      lines.push(...clippedSegments)
+    }
+  }
+
+  // Process mirror spiral
+  for (let i = 0; i < mirrorPoints.length - 1; i++) {
+    const p1 = mirrorPoints[i]
+    const p2 = mirrorPoints[i + 1]
+
+    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
+      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
+      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
+      lines.push(...clippedSegments)
+    }
+  }
+
+  return lines
+}
+
+// Generate smooth wave/sine pattern
+export function generateWaveLines(
+  polygonData: PolygonWithHoles,
+  globalBbox: { x: number; y: number; width: number; height: number },
+  spacing: number,
+  angleDegrees: number,
+  amplitude: number,
+  frequency: number,
+  inset: number = 0
+): HatchLine[] {
+  const { outer } = polygonData
+  if (outer.length < 3) return []
+
+  const angleRad = (angleDegrees * Math.PI) / 180
+  const cos = Math.cos(angleRad)
+  const sin = Math.sin(angleRad)
+
+  const diagonal = Math.sqrt(
+    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
+  )
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
+
+  const allLines: HatchLine[] = []
+  const numRows = Math.ceil(diagonal / spacing) + 2
+
+  for (let row = -numRows; row <= numRows; row++) {
+    const perpOffset = row * spacing
+
+    // Generate smooth sine wave points along this row
+    const wavePoints: Point[] = []
+    const numPoints = Math.ceil(diagonal / 2) // Point every 2 units for smoothness
+
+    for (let i = 0; i <= numPoints; i++) {
+      const t = -diagonal / 2 + (i / numPoints) * diagonal
+      // Sine wave displacement perpendicular to line direction
+      const waveOffset = Math.sin(t * frequency * 0.1) * amplitude
+
+      const x = centerX + (perpOffset + waveOffset) * (-sin) + t * cos
+      const y = centerY + (perpOffset + waveOffset) * cos + t * sin
+
+      wavePoints.push({ x, y })
+    }
+
+    // Convert wave points to line segments
+    for (let i = 0; i < wavePoints.length - 1; i++) {
+      allLines.push({
+        x1: wavePoints[i].x,
+        y1: wavePoints[i].y,
+        x2: wavePoints[i + 1].x,
+        y2: wavePoints[i + 1].y
+      })
+    }
   }
 
   return clipLinesToPolygon(allLines, polygonData, inset)
