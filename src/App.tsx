@@ -30,6 +30,7 @@ function AppContent() {
     rebuildSvgFromLayers,
     setOrderData,
     isProcessing,
+    arrangeHandlers,
   } = useAppContext()
 
   // Calculate SVG stats from layer nodes
@@ -583,6 +584,19 @@ function AppContent() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showStrokePanel])
 
+  // Handle Escape key to cancel crop
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showCrop) {
+        setShowCrop(false)
+        setCropArmed(false)
+        setStatusMessage('')
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [showCrop, setShowCrop, setCropArmed, setStatusMessage])
+
   // Handle menu commands from Electron
   useEffect(() => {
     if (!window.electron) return
@@ -625,6 +639,24 @@ function AppContent() {
           break
         case 'zoom-fit':
           handleFitToScreen()
+          break
+        case 'arrange-move-up':
+          arrangeHandlers.current?.moveUp()
+          break
+        case 'arrange-move-down':
+          arrangeHandlers.current?.moveDown()
+          break
+        case 'arrange-bring-front':
+          arrangeHandlers.current?.bringToFront()
+          break
+        case 'arrange-send-back':
+          arrangeHandlers.current?.sendToBack()
+          break
+        case 'arrange-group':
+          arrangeHandlers.current?.group()
+          break
+        case 'arrange-ungroup':
+          arrangeHandlers.current?.ungroup()
           break
       }
     })

@@ -347,6 +347,45 @@ function createMenu() {
       ]
     },
 
+    // Arrange menu
+    {
+      label: 'Arrange',
+      submenu: [
+        {
+          label: 'Move Up',
+          accelerator: 'CmdOrCtrl+[',
+          click: () => sendMenuCommand('arrange-move-up')
+        },
+        {
+          label: 'Move Down',
+          accelerator: 'CmdOrCtrl+]',
+          click: () => sendMenuCommand('arrange-move-down')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Bring to Front',
+          accelerator: 'CmdOrCtrl+Shift+[',
+          click: () => sendMenuCommand('arrange-bring-front')
+        },
+        {
+          label: 'Send to Back',
+          accelerator: 'CmdOrCtrl+Shift+]',
+          click: () => sendMenuCommand('arrange-send-back')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Group',
+          accelerator: 'CmdOrCtrl+G',
+          click: () => sendMenuCommand('arrange-group')
+        },
+        {
+          label: 'Ungroup',
+          accelerator: 'CmdOrCtrl+Shift+G',
+          click: () => sendMenuCommand('arrange-ungroup')
+        }
+      ]
+    },
+
     // Tools menu
     {
       label: 'Tools',

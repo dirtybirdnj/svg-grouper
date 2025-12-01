@@ -800,7 +800,8 @@ export function generateHilbertLines(
 
   // Calculate order so that cell size approximately equals spacing
   // cellSize = size / 2^order, so order = log2(size / spacing)
-  const order = Math.max(2, Math.min(7, Math.round(Math.log2(size / spacing))))
+  // Max order 9 allows denser patterns (2^9 = 512 grid cells)
+  const order = Math.max(2, Math.min(9, Math.round(Math.log2(size / spacing))))
   const gridSize = Math.pow(2, order)
   const cellSize = size / gridSize
 
@@ -893,7 +894,8 @@ export function generateGlobalHilbertLines(
 
   // Calculate order so that cell size approximately equals spacing
   // cellSize = size / 2^order, so order = log2(size / spacing)
-  const order = Math.max(2, Math.min(7, Math.round(Math.log2(size / spacing))))
+  // Max order 9 allows denser patterns (2^9 = 512 grid cells)
+  const order = Math.max(2, Math.min(9, Math.round(Math.log2(size / spacing))))
   const gridSize = Math.pow(2, order)
   const cellSize = size / gridSize
 

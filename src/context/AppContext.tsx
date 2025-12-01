@@ -48,8 +48,20 @@ interface AppContextType {
   rebuildSvgFromLayers: (nodes?: SVGNode[]) => void
   // Flag to skip re-parsing when SVG is updated programmatically
   skipNextParse: React.MutableRefObject<boolean>
+  // Original SVG attributes to preserve during rebuilds
+  originalSvgAttrs: React.MutableRefObject<string[] | null>
   // Refresh element references after SVG rebuild
   refreshElementRefs: () => void
+
+  // Arrange handlers (set by SortTab, called from App menu)
+  arrangeHandlers: React.MutableRefObject<{
+    moveUp: () => void
+    moveDown: () => void
+    bringToFront: () => void
+    sendToBack: () => void
+    group: () => void
+    ungroup: () => void
+  } | null>
 
   // Layer state
   layerNodes: SVGNode[]
@@ -133,6 +145,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const svgElementRef = useRef<SVGSVGElement | null>(null)
   // Flag to skip re-parsing when SVG is updated programmatically
   const skipNextParse = useRef(false)
+  // Store original SVG attributes (viewBox, width, height) to preserve during rebuilds
+  const originalSvgAttrs = useRef<string[] | null>(null)
+  // Arrange handlers (set by SortTab, called from App menu)
+  const arrangeHandlers = useRef<{
+    moveUp: () => void
+    moveDown: () => void
+    bringToFront: () => void
+    sendToBack: () => void
+    group: () => void
+    ungroup: () => void
+  } | null>(null)
 
   const syncSvgContent = useCallback(() => {
     if (svgElementRef.current) {
@@ -149,11 +172,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const nodesToUse = nodes ?? layerNodes
     if (!svgElementRef.current || nodesToUse.length === 0) return
 
-    // Get the root SVG element's attributes
-    const rootSvg = svgElementRef.current
-    const svgAttrs: string[] = []
-    for (const attr of Array.from(rootSvg.attributes)) {
-      svgAttrs.push(`${attr.name}="${attr.value}"`)
+    // Use original SVG attributes if available (preserves dimensions during DOM manipulation)
+    // Otherwise fall back to reading from current element
+    let svgAttrs: string[]
+    if (originalSvgAttrs.current && originalSvgAttrs.current.length > 0) {
+      svgAttrs = originalSvgAttrs.current
+      console.log('[rebuildSvgFromLayers] Using preserved original attributes:', svgAttrs.join(' '))
+    } else {
+      // Get the root SVG element's attributes
+      const rootSvg = svgElementRef.current
+      svgAttrs = []
+      for (const attr of Array.from(rootSvg.attributes)) {
+        svgAttrs.push(`${attr.name}="${attr.value}"`)
+      }
+      // Store for future rebuilds
+      originalSvgAttrs.current = svgAttrs
+      console.log('[rebuildSvgFromLayers] Captured attributes from current SVG:', svgAttrs.join(' '))
     }
 
     // Build content from layer nodes
@@ -360,6 +394,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     syncSvgContent,
     rebuildSvgFromLayers,
     skipNextParse,
+    originalSvgAttrs,
+    arrangeHandlers,
     refreshElementRefs,
     layerNodes,
     setLayerNodes,

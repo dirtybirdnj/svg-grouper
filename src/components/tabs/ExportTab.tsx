@@ -3,6 +3,7 @@ import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import defaultPaperSizes from '../../config/paperSizes.json'
 import fontColorContrast from 'font-color-contrast'
+import { optimizeForPlotter } from '../../utils/geometry'
 import './ExportTab.css'
 
 // Paper size type
@@ -396,6 +397,11 @@ export default function ExportTab() {
   const [strokeWidth, setStrokeWidth] = useState(1)
   const [convertFillsToStrokes, setConvertFillsToStrokes] = useState(false)
   const [filePerLayer, setFilePerLayer] = useState(false)
+
+  // Plotter optimization options
+  const [optimizePaths, setOptimizePaths] = useState(true)
+  const [joinPaths, setJoinPaths] = useState(true)
+  const [joinTolerance, setJoinTolerance] = useState(0.5)
 
   // Preview canvas ref
   const previewRef = useRef<HTMLDivElement>(null)
@@ -1010,8 +1016,18 @@ export default function ExportTab() {
         if (width) colorSvg.setAttribute('width', width)
         if (height) colorSvg.setAttribute('height', height)
 
-        // Clone and add each element
-        for (const el of elements) {
+        // Apply plotter optimization: join connecting paths and optimize order
+        let optimizedElements = elements
+        if (optimizePaths || joinPaths) {
+          optimizedElements = optimizeForPlotter(elements, {
+            optimize: optimizePaths,
+            join: joinPaths,
+            joinTolerance
+          })
+        }
+
+        // Clone and add each element (in optimized order)
+        for (const el of optimizedElements) {
           const clone = el.cloneNode(true) as Element
           colorSvg.appendChild(clone)
         }
@@ -1048,6 +1064,54 @@ export default function ExportTab() {
       // Standard single file export
       const originalSvg = svgElementRef.current.cloneNode(true) as SVGSVGElement
       if (!originalSvg) return
+
+      // Apply plotter optimization if enabled
+      if (optimizePaths || joinPaths) {
+        // Collect all drawable elements from the cloned SVG
+        const allElements: Element[] = []
+        const collectElements = (el: Element) => {
+          const tagName = el.tagName.toLowerCase()
+          if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+            allElements.push(el)
+          }
+          for (const child of Array.from(el.children)) {
+            collectElements(child)
+          }
+        }
+        collectElements(originalSvg)
+
+        // Optimize the elements
+        const optimizedElements = optimizeForPlotter(allElements, {
+          optimize: optimizePaths,
+          join: joinPaths,
+          joinTolerance
+        })
+
+        // Clear the SVG and re-add optimized elements
+        // First, preserve non-drawable elements (defs, style, etc.)
+        const preservedElements: Element[] = []
+        for (const child of Array.from(originalSvg.children)) {
+          const tagName = child.tagName.toLowerCase()
+          if (['defs', 'style', 'title', 'desc', 'metadata'].includes(tagName)) {
+            preservedElements.push(child.cloneNode(true) as Element)
+          }
+        }
+
+        // Clear and rebuild
+        while (originalSvg.firstChild) {
+          originalSvg.removeChild(originalSvg.firstChild)
+        }
+
+        // Re-add preserved elements
+        for (const el of preservedElements) {
+          originalSvg.appendChild(el)
+        }
+
+        // Add optimized elements
+        for (const el of optimizedElements) {
+          originalSvg.appendChild(el)
+        }
+      }
 
       // Apply export options
       applyExportOptions(originalSvg)
@@ -1338,6 +1402,54 @@ export default function ExportTab() {
                   />
                   <span className="control-value">{strokeWidth}px</span>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Plotter Optimization Section */}
+          <div className="export-section">
+            <h3>Plotter Optimization</h3>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={optimizePaths}
+                  onChange={(e) => setOptimizePaths(e.target.checked)}
+                />
+                Optimize path order
+              </label>
+              <p className="control-hint">Reorder paths to minimize pen travel</p>
+            </div>
+
+            <div className="export-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={joinPaths}
+                  onChange={(e) => setJoinPaths(e.target.checked)}
+                />
+                Join connecting paths
+              </label>
+              <p className="control-hint">Merge paths that share endpoints</p>
+            </div>
+
+            {joinPaths && (
+              <div className="export-control">
+                <label>Join Tolerance (px)</label>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="5"
+                    step="0.1"
+                    value={joinTolerance}
+                    onChange={(e) => setJoinTolerance(Number(e.target.value))}
+                    className="export-slider"
+                  />
+                  <span className="control-value">{joinTolerance}px</span>
+                </div>
+                <p className="control-hint">Max distance between endpoints to join</p>
               </div>
             )}
           </div>

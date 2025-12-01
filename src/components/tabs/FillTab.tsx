@@ -5,9 +5,12 @@ import {
   Point,
   HatchLine,
   PolygonWithHoles,
+  Rect,
   getAllPolygonsFromElement,
   generateGlobalHatchLines,
   clipLinesToPolygon,
+  clipLinesToRect,
+  clipPolygonWithHolesToRect,
   linesToCompoundPath,
 } from '../../utils/geometry'
 import {
@@ -199,6 +202,11 @@ export default function FillTab() {
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
   const [customTileShape, setCustomTileShape] = useState<keyof typeof TILE_SHAPES>('triangle') // Selected tile shape for custom pattern
 
+  // Crop support for fill patterns
+  const [enableCrop, setEnableCrop] = useState(false)
+  const [cropInset, setCropInset] = useState(0) // Percentage of bounding box to crop from edges (0-50%)
+  const [draftCropInset, setDraftCropInset] = useState(0)
+
   // Accumulated fill layers - each layer has lines with a color
   interface FillLayer {
     lines: HatchLine[]
@@ -226,6 +234,7 @@ export default function FillTab() {
   useEffect(() => { setDraftWiggleFrequency(wiggleFrequency) }, [wiggleFrequency])
   useEffect(() => { setDraftPenWidth(penWidth) }, [penWidth])
   useEffect(() => { setDraftSimplifyTolerance(simplifyTolerance) }, [simplifyTolerance])
+  useEffect(() => { setDraftCropInset(cropInset) }, [cropInset])
 
   // Selected control for keyboard nudge
   type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
@@ -491,6 +500,19 @@ export default function FillTab() {
 
     // Process paths asynchronously in batches
     const processAsync = async () => {
+      // Calculate crop rectangle if enabled
+      let cropRect: Rect | null = null
+      if (enableCrop && cropInset > 0 && boundingBox) {
+        const insetX = boundingBox.width * (cropInset / 100)
+        const insetY = boundingBox.height * (cropInset / 100)
+        cropRect = {
+          x: boundingBox.x + insetX,
+          y: boundingBox.y + insetY,
+          width: boundingBox.width - insetX * 2,
+          height: boundingBox.height - insetY * 2
+        }
+      }
+
       // Generate global hatch lines for line-based patterns
       const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
       const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
@@ -547,6 +569,13 @@ export default function FillTab() {
               allPolygons = preserved ? [preserved.polygon] : getAllPolygonsFromElement(path.element)
             } else {
               allPolygons = getAllPolygonsFromElement(path.element)
+            }
+
+            // Apply crop to polygons if enabled
+            if (cropRect) {
+              allPolygons = allPolygons
+                .map(p => clipPolygonWithHolesToRect(p, cropRect!))
+                .filter(p => p.outer.length >= 3)
             }
 
             // Process each polygon in the element (for compound paths with disconnected regions)
@@ -635,6 +664,11 @@ export default function FillTab() {
               allLines = allLines.concat(lines)
             }
 
+            // Apply crop clipping to all generated lines if enabled
+            if (cropRect && allLines.length > 0) {
+              allLines = clipLinesToRect(allLines, cropRect)
+            }
+
             if (allLines.length > 0 && firstValidPolygon) {
               results.push({ pathInfo: path, lines: allLines, polygon: firstValidPolygon })
             } else if (firstValidPolygon) {
@@ -684,7 +718,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, enableCrop, cropInset, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -844,8 +878,27 @@ export default function FillTab() {
       })
     }
 
+    // Add crop rectangle indicator if crop is enabled
+    if (enableCrop && cropInset > 0) {
+      const insetX = boundingBox.width * (cropInset / 100)
+      const insetY = boundingBox.height * (cropInset / 100)
+      const cropX = boundingBox.x + insetX
+      const cropY = boundingBox.y + insetY
+      const cropW = boundingBox.width - insetX * 2
+      const cropH = boundingBox.height - insetY * 2
+
+      // Draw crop border rectangle
+      pathElements.push(`<rect x="${cropX}" y="${cropY}" width="${cropW}" height="${cropH}" fill="none" stroke="#ff6600" stroke-width="2" stroke-dasharray="8,4" opacity="0.8"/>`)
+
+      // Dim the area outside the crop (using a mask effect with rects)
+      pathElements.push(`<rect x="${boundingBox.x - padding}" y="${boundingBox.y - padding}" width="${boundingBox.width + padding * 2}" height="${insetY + padding}" fill="rgba(0,0,0,0.3)"/>`)
+      pathElements.push(`<rect x="${boundingBox.x - padding}" y="${cropY + cropH}" width="${boundingBox.width + padding * 2}" height="${insetY + padding}" fill="rgba(0,0,0,0.3)"/>`)
+      pathElements.push(`<rect x="${boundingBox.x - padding}" y="${cropY}" width="${insetX + padding}" height="${cropH}" fill="rgba(0,0,0,0.3)"/>`)
+      pathElements.push(`<rect x="${cropX + cropW}" y="${cropY}" width="${insetX + padding}" height="${cropH}" fill="rgba(0,0,0,0.3)"/>`)
+    }
+
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, highlightedPathId])
+  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, highlightedPathId, enableCrop, cropInset])
 
   const handleBack = () => {
     setFillTargetNodeIds([])
@@ -1642,6 +1695,43 @@ export default function FillTab() {
               </div>
             </div>
           )}
+
+          <div className="fill-section">
+            <h3>Crop</h3>
+            <div className="fill-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={enableCrop}
+                  onChange={(e) => setEnableCrop(e.target.checked)}
+                />
+                Enable crop
+              </label>
+            </div>
+
+            {enableCrop && (
+              <div className="fill-control">
+                <label>Crop Inset</label>
+                <div className="control-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="50"
+                    step="1"
+                    value={draftCropInset}
+                    onChange={(e) => setDraftCropInset(Number(e.target.value))}
+                    onPointerUp={() => setCropInset(draftCropInset)}
+                    onKeyUp={() => setCropInset(draftCropInset)}
+                    className="fill-slider"
+                  />
+                  <span className="control-value">{draftCropInset}%</span>
+                </div>
+                <p className="control-hint">
+                  Percentage from each edge to crop
+                </p>
+              </div>
+            )}
+          </div>
 
           <div className="fill-section layer-section">
             <h3>Layer Color</h3>
