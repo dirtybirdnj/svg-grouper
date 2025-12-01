@@ -31,6 +31,7 @@ function AppContent() {
     setOrderData,
     isProcessing,
     arrangeHandlers,
+    toolHandlers,
   } = useAppContext()
 
   // Calculate SVG stats from layer nodes
@@ -428,10 +429,47 @@ function AppContent() {
     }
 
     // Create OrderData and navigate to Order tab
+    // onApply callback will rebuild the SVG with optimized line order
     setOrderData({
       lines,
       boundingBox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       source: 'sort',
+      onApply: (orderedLines: OrderLine[]) => {
+        // Rebuild the selected node's content with optimized line order
+        // Generate new path data as a compound path with all lines in order
+        const pathD = orderedLines.map(line =>
+          `M${line.x1.toFixed(2)},${line.y1.toFixed(2)} L${line.x2.toFixed(2)},${line.y2.toFixed(2)}`
+        ).join(' ')
+
+        // Get the color from the first line (all should be same in a group)
+        const strokeColor = orderedLines.length > 0 ? orderedLines[0].color : '#000000'
+
+        // Create new markup for the optimized paths
+        const optimizedMarkup = `<path id="${selectedId}-optimized" d="${pathD}" fill="none" stroke="${strokeColor}" stroke-width="1" stroke-linecap="round"/>`
+
+        // Update the selected node to use the optimized path
+        const updateNodeInTree = (nodes: SVGNode[]): SVGNode[] => {
+          return nodes.map(node => {
+            if (node.id === selectedId) {
+              // Replace with optimized version
+              return {
+                ...node,
+                customMarkup: optimizedMarkup,
+                children: [], // Clear children since we've merged into single path
+              }
+            }
+            if (node.children.length > 0) {
+              return { ...node, children: updateNodeInTree(node.children) }
+            }
+            return node
+          })
+        }
+
+        const updatedNodes = updateNodeInTree(layerNodes)
+        setLayerNodes(updatedNodes)
+        rebuildSvgFromLayers(updatedNodes)
+        setStatusMessage(`Optimized ${orderedLines.length} lines`)
+      },
     })
     setActiveTab('order')
     setStatusMessage('')
@@ -657,6 +695,12 @@ function AppContent() {
           break
         case 'arrange-ungroup':
           arrangeHandlers.current?.ungroup()
+          break
+        case 'convert-to-fills':
+          toolHandlers.current?.convertToFills()
+          break
+        case 'normalize-colors':
+          toolHandlers.current?.normalizeColors()
           break
       }
     })

@@ -10,7 +10,7 @@ interface SVGCanvasProps {
   offset?: { x: number; y: number }
   onOffsetChange?: (offset: { x: number; y: number }) => void
   showCrop?: boolean
-  cropAspectRatio?: '1:2' | '3:4' | '16:9' | '9:16'
+  cropAspectRatio?: '1:2' | '2:3' | '3:4' | '16:9' | '9:16'
   cropSize?: number
   svgDimensions?: { width: number; height: number } | null
   onCropResize?: (newSize: number) => void

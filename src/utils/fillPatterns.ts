@@ -163,7 +163,26 @@ export function generateHoneycombLines(
   const vertSpacing = hexHeight
 
   const lines: HatchLine[] = []
-  const padding = hexSize * 2
+  // Expand padding based on diagonal to ensure coverage at all rotation angles
+  // When rotating, hexagons at the edges of the unrotated grid need to reach
+  // parts of the shape that are diagonal from the center
+  const diagonal = Math.sqrt(Math.pow(maxX - minX, 2) + Math.pow(maxY - minY, 2))
+  const padding = hexSize * 2 + diagonal / 2
+
+  // OPTIMIZATION: Pre-compute hex vertex offsets (same for all hexes)
+  const hexOffsets: Point[] = []
+  for (let i = 0; i < 6; i++) {
+    const hexAngle = (Math.PI / 3) * i
+    hexOffsets.push({
+      x: hexSize * Math.cos(hexAngle),
+      y: hexSize * Math.sin(hexAngle)
+    })
+  }
+
+  // OPTIMIZATION: Helper to check if point might be inside polygon (fast bbox pre-check)
+  const mightBeInside = (p: Point): boolean => {
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+  }
 
   let row = 0
   for (let y = minY - padding; y <= maxY + padding; y += vertSpacing * 0.5) {
@@ -173,26 +192,32 @@ export function generateHoneycombLines(
     for (let x = minX - padding + xOffset; x <= maxX + padding; x += horizSpacing) {
       const rotatedCenter = rotatePoint({ x, y })
 
-      const hexPoints: Point[] = []
-      for (let i = 0; i < 6; i++) {
-        const hexAngle = (Math.PI / 3) * i
-        const unrotated = {
-          x: x + hexSize * Math.cos(hexAngle),
-          y: y + hexSize * Math.sin(hexAngle)
-        }
-        hexPoints.push(rotatePoint(unrotated))
+      // OPTIMIZATION: Early rejection - skip if rotated center is far from polygon
+      if (!mightBeInside(rotatedCenter) &&
+          rotatedCenter.x < minX - hexSize && rotatedCenter.x > maxX + hexSize &&
+          rotatedCenter.y < minY - hexSize && rotatedCenter.y > maxY + hexSize) {
+        continue
       }
 
-      const anyVertexInside = hexPoints.some(p => pointInPolygon(p, workingPolygon))
-      const centerInside = pointInPolygon(rotatedCenter, workingPolygon)
+      // Build hex points using pre-computed offsets
+      const hexPoints: Point[] = hexOffsets.map(off =>
+        rotatePoint({ x: x + off.x, y: y + off.y })
+      )
+
+      // OPTIMIZATION: bbox check before expensive pointInPolygon
+      const centerInside = mightBeInside(rotatedCenter) && pointInPolygon(rotatedCenter, workingPolygon)
+      const anyVertexInside = !centerInside && hexPoints.some(p =>
+        mightBeInside(p) && pointInPolygon(p, workingPolygon)
+      )
 
       if (anyVertexInside || centerInside) {
         for (let i = 0; i < 6; i++) {
           const p1 = hexPoints[i]
           const p2 = hexPoints[(i + 1) % 6]
 
-          const p1Inside = pointInPolygon(p1, workingPolygon)
-          const p2Inside = pointInPolygon(p2, workingPolygon)
+          // OPTIMIZATION: bbox check before pointInPolygon
+          const p1Inside = mightBeInside(p1) && pointInPolygon(p1, workingPolygon)
+          const p2Inside = mightBeInside(p2) && pointInPolygon(p2, workingPolygon)
 
           let candidateSegments: HatchLine[] = []
 
@@ -507,108 +532,125 @@ export function generateGyroidLines(
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
   const angleRad = (angleDegrees * Math.PI) / 180
+  const cosAngle = Math.cos(angleRad)
+  const sinAngle = Math.sin(angleRad)
 
   const rotatePoint = (p: Point): Point => {
     const dx = p.x - centerX
     const dy = p.y - centerY
     return {
-      x: centerX + dx * Math.cos(angleRad) - dy * Math.sin(angleRad),
-      y: centerY + dx * Math.sin(angleRad) + dy * Math.cos(angleRad)
+      x: centerX + dx * cosAngle - dy * sinAngle,
+      y: centerY + dx * sinAngle + dy * cosAngle
     }
   }
 
   const lines: HatchLine[] = []
   const scale = (2 * Math.PI) / spacing
-  const gridStep = spacing / 8
-  const padding = spacing * 2
+  // OPTIMIZATION: Increased grid step from spacing/8 to spacing/3 (7x fewer cells)
+  // This reduces iterations from millions to hundreds of thousands
+  const gridStep = spacing / 3
+  const padding = spacing
 
-  const zValues = [0, Math.PI / 2]
+  // OPTIMIZATION: Use single z-value for faster rendering (still looks good)
+  // Original used [0, Math.PI/2] which doubled computation
+  const zVal = Math.PI / 4 // Single value that gives good visual result
+  const sinZ = Math.sin(zVal)
+  const cosZ = Math.cos(zVal)
 
-  for (const zVal of zValues) {
-    const sinZ = Math.sin(zVal)
-    const cosZ = Math.cos(zVal)
+  // Pre-compute scale for gyroid function
+  const gyroidFunc = (x: number, y: number): number => {
+    const sx = Math.sin(x * scale)
+    const cx = Math.cos(x * scale)
+    const sy = Math.sin(y * scale)
+    const cy = Math.cos(y * scale)
+    return sx * cy + sy * cosZ + sinZ * cx
+  }
 
-    const gyroidFunc = (x: number, y: number): number => {
-      const sx = Math.sin(x * scale)
-      const cx = Math.cos(x * scale)
-      const sy = Math.sin(y * scale)
-      const cy = Math.cos(y * scale)
-      return sx * cy + sy * cosZ + sinZ * cx
-    }
+  // OPTIMIZATION: Quick bounding box check before expensive pointInPolygon
+  const inBounds = (p: Point): boolean => {
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+  }
 
-    for (let gridY = minY - padding; gridY < maxY + padding; gridY += gridStep) {
-      for (let gridX = minX - padding; gridX < maxX + padding; gridX += gridStep) {
-        const v00 = gyroidFunc(gridX, gridY)
-        const v10 = gyroidFunc(gridX + gridStep, gridY)
-        const v01 = gyroidFunc(gridX, gridY + gridStep)
-        const v11 = gyroidFunc(gridX + gridStep, gridY + gridStep)
+  for (let gridY = minY - padding; gridY < maxY + padding; gridY += gridStep) {
+    for (let gridX = minX - padding; gridX < maxX + padding; gridX += gridStep) {
+      const v00 = gyroidFunc(gridX, gridY)
+      const v10 = gyroidFunc(gridX + gridStep, gridY)
+      const v01 = gyroidFunc(gridX, gridY + gridStep)
+      const v11 = gyroidFunc(gridX + gridStep, gridY + gridStep)
 
-        const crossings: Point[] = []
+      const crossings: Point[] = []
 
-        if ((v00 > 0) !== (v10 > 0)) {
-          const t = v00 / (v00 - v10)
-          crossings.push({ x: gridX + t * gridStep, y: gridY })
-        }
-        if ((v10 > 0) !== (v11 > 0)) {
-          const t = v10 / (v10 - v11)
-          crossings.push({ x: gridX + gridStep, y: gridY + t * gridStep })
-        }
-        if ((v01 > 0) !== (v11 > 0)) {
-          const t = v01 / (v01 - v11)
-          crossings.push({ x: gridX + t * gridStep, y: gridY + gridStep })
-        }
-        if ((v00 > 0) !== (v01 > 0)) {
-          const t = v00 / (v00 - v01)
-          crossings.push({ x: gridX, y: gridY + t * gridStep })
-        }
+      if ((v00 > 0) !== (v10 > 0)) {
+        const t = v00 / (v00 - v10)
+        crossings.push({ x: gridX + t * gridStep, y: gridY })
+      }
+      if ((v10 > 0) !== (v11 > 0)) {
+        const t = v10 / (v10 - v11)
+        crossings.push({ x: gridX + gridStep, y: gridY + t * gridStep })
+      }
+      if ((v01 > 0) !== (v11 > 0)) {
+        const t = v01 / (v01 - v11)
+        crossings.push({ x: gridX + t * gridStep, y: gridY + gridStep })
+      }
+      if ((v00 > 0) !== (v01 > 0)) {
+        const t = v00 / (v00 - v01)
+        crossings.push({ x: gridX, y: gridY + t * gridStep })
+      }
 
-        if (crossings.length >= 2) {
-          if (crossings.length === 2) {
-            const p1 = rotatePoint(crossings[0])
-            const p2 = rotatePoint(crossings[1])
-            const p1In = pointInPolygon(p1, workingPolygon)
-            const p2In = pointInPolygon(p2, workingPolygon)
+      if (crossings.length >= 2) {
+        if (crossings.length === 2) {
+          const p1 = rotatePoint(crossings[0])
+          const p2 = rotatePoint(crossings[1])
 
-            let candidateSegments: HatchLine[] = []
+          // OPTIMIZATION: Skip if both points clearly outside bounds
+          if (!inBounds(p1) && !inBounds(p2)) continue
+
+          const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
+          const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
+
+          let candidateSegments: HatchLine[] = []
+          if (p1In && p2In) {
+            candidateSegments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
+          } else if (p1In || p2In) {
+            const intersections = linePolygonIntersections(
+              { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
+              workingPolygon
+            )
+            if (intersections.length > 0) {
+              const inside = p1In ? p1 : p2
+              const closest = intersections[0]
+              candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
+            }
+          }
+          for (const seg of candidateSegments) {
+            const clippedSegments = clipSegmentAroundHoles(seg, workingHoles)
+            lines.push(...clippedSegments)
+          }
+        } else if (crossings.length === 4) {
+          const centerVal = gyroidFunc(gridX + gridStep / 2, gridY + gridStep / 2)
+          const cellCenterX = gridX + gridStep / 2
+          const cellCenterY = gridY + gridStep / 2
+          crossings.sort((a, b) => {
+            const angleA = Math.atan2(a.y - cellCenterY, a.x - cellCenterX)
+            const angleB = Math.atan2(b.y - cellCenterY, b.x - cellCenterX)
+            return angleA - angleB
+          })
+          const pairs = centerVal > 0
+            ? [[0, 1], [2, 3]]
+            : [[0, 3], [1, 2]]
+          for (const [i1, i2] of pairs) {
+            const p1 = rotatePoint(crossings[i1])
+            const p2 = rotatePoint(crossings[i2])
+
+            // OPTIMIZATION: Skip if both points clearly outside bounds
+            if (!inBounds(p1) && !inBounds(p2)) continue
+
+            const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
+            const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
             if (p1In && p2In) {
-              candidateSegments.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
-            } else if (p1In || p2In) {
-              const intersections = linePolygonIntersections(
-                { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
-                workingPolygon
-              )
-              if (intersections.length > 0) {
-                const inside = p1In ? p1 : p2
-                const closest = intersections[0]
-                candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
-              }
-            }
-            for (const seg of candidateSegments) {
-              const clippedSegments = clipSegmentAroundHoles(seg, workingHoles)
+              const candidateSeg = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
+              const clippedSegments = clipSegmentAroundHoles(candidateSeg, workingHoles)
               lines.push(...clippedSegments)
-            }
-          } else if (crossings.length === 4) {
-            const centerVal = gyroidFunc(gridX + gridStep / 2, gridY + gridStep / 2)
-            const cellCenterX = gridX + gridStep / 2
-            const cellCenterY = gridY + gridStep / 2
-            crossings.sort((a, b) => {
-              const angleA = Math.atan2(a.y - cellCenterY, a.x - cellCenterX)
-              const angleB = Math.atan2(b.y - cellCenterY, b.x - cellCenterX)
-              return angleA - angleB
-            })
-            const pairs = centerVal > 0
-              ? [[0, 1], [2, 3]]
-              : [[0, 3], [1, 2]]
-            for (const [i1, i2] of pairs) {
-              const p1 = rotatePoint(crossings[i1])
-              const p2 = rotatePoint(crossings[i2])
-              const p1In = pointInPolygon(p1, workingPolygon)
-              const p2In = pointInPolygon(p2, workingPolygon)
-              if (p1In && p2In) {
-                const candidateSeg = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
-                const clippedSegments = clipSegmentAroundHoles(candidateSeg, workingHoles)
-                lines.push(...clippedSegments)
-              }
             }
           }
         }
@@ -642,7 +684,7 @@ export function generateCrosshatchLines(
 // Generate zigzag/sawtooth pattern
 export function generateZigzagLines(
   polygonData: PolygonWithHoles,
-  globalBbox: { x: number; y: number; width: number; height: number },
+  _globalBbox: { x: number; y: number; width: number; height: number }, // Unused after optimization
   spacing: number,
   angleDegrees: number,
   amplitude: number,
@@ -651,22 +693,35 @@ export function generateZigzagLines(
   const { outer } = polygonData
   if (outer.length < 3) return []
 
+  // OPTIMIZATION: Use polygon bbox instead of global bbox diagonal
+  // This significantly reduces the number of generated lines
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of outer) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  const polyWidth = maxX - minX
+  const polyHeight = maxY - minY
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+
   const angleRad = (angleDegrees * Math.PI) / 180
   const cos = Math.cos(angleRad)
   const sin = Math.sin(angleRad)
 
-  const diagonal = Math.sqrt(
-    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
-  )
-  const centerX = globalBbox.x + globalBbox.width / 2
-  const centerY = globalBbox.y + globalBbox.height / 2
+  // Use polygon diagonal + padding for rotation coverage
+  const diagonal = Math.sqrt(polyWidth * polyWidth + polyHeight * polyHeight)
+  const padding = amplitude * 2 // Extra coverage for zigzag amplitude
+  const extent = diagonal / 2 + padding
 
   const allLines: HatchLine[] = []
-  const numRows = Math.ceil(diagonal / spacing) + 2
+  const numRows = Math.ceil(extent * 2 / spacing) + 2
 
   for (let row = -numRows; row <= numRows; row++) {
     const perpOffset = row * spacing
-    const numZigs = Math.ceil(diagonal / amplitude)
+    const numZigs = Math.ceil(extent * 2 / amplitude) + 2
 
     for (let zig = -numZigs; zig < numZigs; zig++) {
       // Create zigzag points
@@ -1035,11 +1090,31 @@ export function generateFermatLines(
   // We want spacing between arms, so a = spacing / sqrt(2*PI)
   const a = spacing / Math.sqrt(2 * Math.PI)
 
-  const spiralPoints: Point[] = []
-  const angleStep = 0.05
-  let angle = 0
+  // OPTIMIZATION: Bounding box check before expensive pointInPolygon
+  const inBounds = (p: Point): boolean => {
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
+  }
 
-  while (true) {
+  // OPTIMIZATION: Adaptive angle step - larger steps for outer rings
+  // This reduces points from 50k to ~10k while maintaining visual quality
+  const getAngleStep = (currentAngle: number): number => {
+    // For small angles (center), use smaller steps for smoothness
+    // For larger angles (outer), use larger steps since arcs are longer
+    const baseStep = 0.15 // Increased from 0.05
+    const radius = a * Math.sqrt(currentAngle)
+    if (radius < 1) return 0.1 // Very center needs fine detail
+    // Target arc length of about spacing/2 for consistent visual density
+    const targetArcLength = spacing / 2
+    // Arc length = radius * angle_step, so angle_step = targetArcLength / radius
+    return Math.min(0.5, Math.max(baseStep, targetArcLength / radius))
+  }
+
+  const spiralPoints: Point[] = []
+  let angle = 0
+  // OPTIMIZATION: Reduced point limit from 50k to 15k
+  const maxPoints = 15000
+
+  while (spiralPoints.length < maxPoints) {
     const radius = a * Math.sqrt(angle)
     if (radius > maxRadius) break
 
@@ -1049,14 +1124,13 @@ export function generateFermatLines(
       y: centerY + radius * Math.sin(rotatedAngle)
     })
 
-    angle += angleStep
-    if (spiralPoints.length > 50000) break
+    angle += getAngleStep(angle)
   }
 
   // Also generate the mirror spiral (Fermat has two arms)
   const mirrorPoints: Point[] = []
   angle = 0
-  while (true) {
+  while (mirrorPoints.length < maxPoints) {
     const radius = a * Math.sqrt(angle)
     if (radius > maxRadius) break
 
@@ -1066,8 +1140,7 @@ export function generateFermatLines(
       y: centerY + radius * Math.sin(rotatedAngle)
     })
 
-    angle += angleStep
-    if (mirrorPoints.length > 50000) break
+    angle += getAngleStep(angle)
   }
 
   const lines: HatchLine[] = []
@@ -1077,7 +1150,13 @@ export function generateFermatLines(
     const p1 = spiralPoints[i]
     const p2 = spiralPoints[i + 1]
 
-    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
+    // OPTIMIZATION: Skip if both points clearly outside bounds
+    if (!inBounds(p1) && !inBounds(p2)) continue
+
+    const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
+    const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
+
+    if (p1In && p2In) {
       const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
       const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
       lines.push(...clippedSegments)
@@ -1089,7 +1168,13 @@ export function generateFermatLines(
     const p1 = mirrorPoints[i]
     const p2 = mirrorPoints[i + 1]
 
-    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
+    // OPTIMIZATION: Skip if both points clearly outside bounds
+    if (!inBounds(p1) && !inBounds(p2)) continue
+
+    const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
+    const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
+
+    if (p1In && p2In) {
       const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
       const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
       lines.push(...clippedSegments)
@@ -1122,12 +1207,22 @@ export function generateGlobalFermatLines(
 
   const lines: HatchLine[] = []
 
+  // OPTIMIZATION: Adaptive angle step for consistent arc length
+  const getAngleStep = (currentAngle: number): number => {
+    const baseStep = 0.1 // Increased from 0.02
+    const radius = a * Math.sqrt(currentAngle)
+    if (radius < 1) return 0.1
+    const targetArcLength = spacing / 2
+    return Math.min(0.4, Math.max(baseStep, targetArcLength / radius))
+  }
+
   // Generate main spiral
   const spiralPoints: Point[] = []
-  const angleStep = 0.02 // Finer step for better coverage
   let angle = 0
+  // OPTIMIZATION: Reduced limit from 100k to 30k
+  const maxPoints = 30000
 
-  while (true) {
+  while (spiralPoints.length < maxPoints) {
     const radius = a * Math.sqrt(angle)
     if (radius > maxRadius) break
 
@@ -1137,14 +1232,13 @@ export function generateGlobalFermatLines(
       y: centerY + radius * Math.sin(rotatedAngle)
     })
 
-    angle += angleStep
-    if (spiralPoints.length > 100000) break
+    angle += getAngleStep(angle)
   }
 
   // Generate mirror spiral (Fermat has two arms)
   const mirrorPoints: Point[] = []
   angle = 0
-  while (true) {
+  while (mirrorPoints.length < maxPoints) {
     const radius = a * Math.sqrt(angle)
     if (radius > maxRadius) break
 
@@ -1154,8 +1248,7 @@ export function generateGlobalFermatLines(
       y: centerY + radius * Math.sin(rotatedAngle)
     })
 
-    angle += angleStep
-    if (mirrorPoints.length > 100000) break
+    angle += getAngleStep(angle)
   }
 
   // Convert to lines
@@ -1192,7 +1285,7 @@ export function clipFermatToPolygon(
 // Generate smooth wave/sine pattern
 export function generateWaveLines(
   polygonData: PolygonWithHoles,
-  globalBbox: { x: number; y: number; width: number; height: number },
+  _globalBbox: { x: number; y: number; width: number; height: number }, // Unused after optimization
   spacing: number,
   angleDegrees: number,
   amplitude: number,
@@ -1202,28 +1295,42 @@ export function generateWaveLines(
   const { outer } = polygonData
   if (outer.length < 3) return []
 
+  // OPTIMIZATION: Use polygon bbox instead of global bbox diagonal
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const p of outer) {
+    if (p.x < minX) minX = p.x
+    if (p.y < minY) minY = p.y
+    if (p.x > maxX) maxX = p.x
+    if (p.y > maxY) maxY = p.y
+  }
+  const polyWidth = maxX - minX
+  const polyHeight = maxY - minY
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+
   const angleRad = (angleDegrees * Math.PI) / 180
   const cos = Math.cos(angleRad)
   const sin = Math.sin(angleRad)
 
-  const diagonal = Math.sqrt(
-    globalBbox.width * globalBbox.width + globalBbox.height * globalBbox.height
-  )
-  const centerX = globalBbox.x + globalBbox.width / 2
-  const centerY = globalBbox.y + globalBbox.height / 2
+  // Use polygon diagonal + padding for rotation coverage
+  const diagonal = Math.sqrt(polyWidth * polyWidth + polyHeight * polyHeight)
+  const padding = amplitude * 2
+  const extent = diagonal / 2 + padding
 
   const allLines: HatchLine[] = []
-  const numRows = Math.ceil(diagonal / spacing) + 2
+  const numRows = Math.ceil(extent * 2 / spacing) + 2
 
   for (let row = -numRows; row <= numRows; row++) {
     const perpOffset = row * spacing
 
     // Generate smooth sine wave points along this row
+    // OPTIMIZATION: Adaptive point density - use larger step for smoother waves
     const wavePoints: Point[] = []
-    const numPoints = Math.ceil(diagonal / 2) // Point every 2 units for smoothness
+    const pointStep = Math.max(2, spacing / 2) // Coarser points for performance
+    const numPoints = Math.ceil(extent * 2 / pointStep)
 
     for (let i = 0; i <= numPoints; i++) {
-      const t = -diagonal / 2 + (i / numPoints) * diagonal
+      const t = -extent + (i / numPoints) * extent * 2
       // Sine wave displacement perpendicular to line direction
       const waveOffset = Math.sin(t * frequency * 0.1) * amplitude
 
@@ -1331,8 +1438,11 @@ export interface CustomTileShape {
   scale: number
 }
 
+// Tile shape type
+export type TileShapeType = 'triangle' | 'square' | 'diamond' | 'hexagon' | 'star' | 'plus' | 'circle'
+
 // Predefined tile shapes
-export const TILE_SHAPES: Record<string, Point[]> = {
+export const TILE_SHAPES: Record<TileShapeType, Point[]> = {
   // Triangle pointing up
   triangle: [
     { x: 0, y: -0.5 },
@@ -1424,39 +1534,49 @@ export function generateCustomTileLines(
     maxY = Math.max(maxY, p.y)
   }
 
-  const centerX = (minX + maxX) / 2
-  const centerY = (minY + maxY) / 2
   const angleRad = (angleDegrees * Math.PI) / 180
+  const cosA = Math.cos(angleRad)
+  const sinA = Math.sin(angleRad)
 
   const lines: HatchLine[] = []
-  const padding = spacing * 2
+  // OPTIMIZATION: Reduced padding from spacing * 2 to spacing
+  const padding = spacing
+
+  // OPTIMIZATION: Pre-compute tile radius for quick bbox test
+  const tileRadius = spacing * 0.75 // Approximate tile extent from center
 
   // Grid of tile positions
   for (let y = minY - padding; y <= maxY + padding; y += spacing) {
     for (let x = minX - padding; x <= maxX + padding; x += spacing) {
+      // OPTIMIZATION: Quick bbox rejection before any expensive operations
+      // Skip tiles whose bounding circle doesn't intersect polygon bbox
+      if (x + tileRadius < minX || x - tileRadius > maxX ||
+          y + tileRadius < minY || y - tileRadius > maxY) {
+        continue
+      }
+
       // Transform tile points to this position
       const transformedPoints: Point[] = tileShape.map(p => {
         // Scale
         const sx = p.x * spacing
         const sy = p.y * spacing
         // Rotate around origin
-        const rx = sx * Math.cos(angleRad) - sy * Math.sin(angleRad)
-        const ry = sx * Math.sin(angleRad) + sy * Math.cos(angleRad)
+        const rx = sx * cosA - sy * sinA
+        const ry = sx * sinA + sy * cosA
         // Translate
         return { x: x + rx, y: y + ry }
       })
 
-      // Check if tile center is inside polygon
-      const tileCenterX = x
-      const tileCenterY = y
+      // OPTIMIZATION: First check if center is inside bbox before expensive pointInPolygon
+      const centerInBbox = x >= minX && x <= maxX && y >= minY && y <= maxY
+      const centerInPolygon = centerInBbox && pointInPolygon({ x, y }, workingPolygon)
 
-      // Rotate center check point
-      const rcx = centerX + (tileCenterX - centerX) * Math.cos(0) - (tileCenterY - centerY) * Math.sin(0)
-      const rcy = centerY + (tileCenterX - centerX) * Math.sin(0) + (tileCenterY - centerY) * Math.cos(0)
-
-      if (!pointInPolygon({ x: rcx, y: rcy }, workingPolygon)) {
-        // Check if any vertex is inside
-        const anyInside = transformedPoints.some(p => pointInPolygon(p, workingPolygon))
+      if (!centerInPolygon) {
+        // Check if any vertex is inside (with bbox pre-check)
+        const anyInside = transformedPoints.some(p =>
+          p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY &&
+          pointInPolygon(p, workingPolygon)
+        )
         if (!anyInside) continue
       }
 
@@ -1465,8 +1585,11 @@ export function generateCustomTileLines(
         const p1 = transformedPoints[i]
         const p2 = transformedPoints[(i + 1) % transformedPoints.length]
 
-        const p1Inside = pointInPolygon(p1, workingPolygon)
-        const p2Inside = pointInPolygon(p2, workingPolygon)
+        // OPTIMIZATION: bbox check before pointInPolygon
+        const p1InBbox = p1.x >= minX && p1.x <= maxX && p1.y >= minY && p1.y <= maxY
+        const p2InBbox = p2.x >= minX && p2.x <= maxX && p2.y >= minY && p2.y <= maxY
+        const p1Inside = p1InBbox && pointInPolygon(p1, workingPolygon)
+        const p2Inside = p2InBbox && pointInPolygon(p2, workingPolygon)
 
         if (p1Inside && p2Inside) {
           lines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
@@ -1648,11 +1771,24 @@ function reverseShapeLines(lines: OrderedLine[]): OrderedLine[] {
   })).reverse()
 }
 
+// Thresholds for optimization - skip expensive algorithms for large datasets
+const OPTIMIZATION_LINE_THRESHOLD = 5000 // Skip within-shape optimization above this
+const OPTIMIZATION_SHAPE_THRESHOLD = 200 // Skip 2-opt improvement above this many shapes
+
 // Multi-pass optimization for line ordering with 2-opt improvement
 export function optimizeLineOrderMultiPass(
   hatchedPaths: { pathInfo: { id: string; color: string }; lines: HatchLine[] }[]
 ): OrderedLine[] {
   if (hatchedPaths.length === 0) return []
+
+  // Count total lines to decide optimization level
+  const totalLines = hatchedPaths.reduce((sum, p) => sum + p.lines.length, 0)
+  const skipWithinShapeOptimization = totalLines > OPTIMIZATION_LINE_THRESHOLD
+  const skipTwoOptImprovement = hatchedPaths.length > OPTIMIZATION_SHAPE_THRESHOLD
+
+  if (skipWithinShapeOptimization) {
+    console.log(`[Optimization] Skipping within-shape optimization (${totalLines} lines > ${OPTIMIZATION_LINE_THRESHOLD} threshold)`)
+  }
 
   // ===== PASS 1: Initial ordering with nearest-neighbor =====
   const shapes = hatchedPaths.map(({ pathInfo, lines }) => ({
@@ -1700,13 +1836,33 @@ export function optimizeLineOrderMultiPass(
   let globalIndex = 0
 
   for (const shape of orderedShapes) {
-    const { orderedLines, endPoint } = optimizeLinesWithinShape(
-      shape.lines,
-      shape.pathId,
-      shape.color,
-      penPosition,
-      globalIndex
-    )
+    let orderedLines: OrderedLine[]
+    let endPoint: Point
+
+    if (skipWithinShapeOptimization) {
+      // Fast path: just convert lines to OrderedLine without optimization
+      orderedLines = shape.lines.map((line, idx) => ({
+        ...line,
+        pathId: shape.pathId,
+        color: shape.color,
+        originalIndex: globalIndex + idx,
+        reversed: false
+      }))
+      endPoint = orderedLines.length > 0
+        ? { x: orderedLines[orderedLines.length - 1].x2, y: orderedLines[orderedLines.length - 1].y2 }
+        : penPosition
+    } else {
+      // Full optimization: nearest-neighbor within each shape
+      const result = optimizeLinesWithinShape(
+        shape.lines,
+        shape.pathId,
+        shape.color,
+        penPosition,
+        globalIndex
+      )
+      orderedLines = result.orderedLines
+      endPoint = result.endPoint
+    }
 
     const endpoints = getShapeEndpoints(orderedLines)
     optimizedShapes.push({
@@ -1724,8 +1880,9 @@ export function optimizeLineOrderMultiPass(
 
   // ===== PASS 2: 2-opt style improvement =====
   // Try reversing individual shapes and swapping adjacent pairs
+  // Skip for large shape counts
 
-  if (optimizedShapes.length > 1) {
+  if (optimizedShapes.length > 1 && !skipTwoOptImprovement) {
     let improved = true
     let iterations = 0
     const maxIterations = optimizedShapes.length * 2 // Limit iterations

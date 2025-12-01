@@ -16,6 +16,10 @@ export default defineConfig({
           options.reload()
         },
       },
+      {
+        // Worker thread for fill generation (runs in separate thread)
+        entry: 'electron/fillWorker.ts',
+      },
     ]),
     renderer(),
   ],

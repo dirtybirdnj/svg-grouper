@@ -14,8 +14,8 @@ import {
   linesToCompoundPath,
 } from '../../utils/geometry'
 import {
-  OrderedLine,
   FillPatternType,
+  TileShapeType,
   generateConcentricLines,
   generateHoneycombLines,
   generateWiggleLines,
@@ -38,7 +38,6 @@ import {
   generateCustomTileLines,
   TILE_SHAPES,
   optimizeLineOrderMultiPass,
-  calculateTravelDistance,
 } from '../../utils/fillPatterns'
 import simplify from 'simplify-js'
 import './FillTab.css'
@@ -57,6 +56,7 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
   if (tolerance <= 0 || lines.length === 0) return lines
 
   const CONNECT_THRESHOLD = 0.5 // Points closer than this are considered connected
+  const MAX_CHAIN_ITERATIONS = 10000 // Safety limit to prevent infinite loops
 
   // Build chains of connected lines
   const chains: Point[][] = []
@@ -74,8 +74,10 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
 
     // Try to extend the chain in both directions
     let extended = true
-    while (extended) {
+    let iterations = 0
+    while (extended && iterations < MAX_CHAIN_ITERATIONS) {
       extended = false
+      iterations++
       const chainStart = chain[0]
       const chainEnd = chain[chain.length - 1]
 
@@ -96,18 +98,22 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
           chain.push(p2)
           used.add(j)
           extended = true
+          break // Found a connection, restart scan from chain ends
         } else if (d2End < CONNECT_THRESHOLD) {
           chain.push(p1)
           used.add(j)
           extended = true
+          break
         } else if (d1Start < CONNECT_THRESHOLD) {
           chain.unshift(p2)
           used.add(j)
           extended = true
+          break
         } else if (d2Start < CONNECT_THRESHOLD) {
           chain.unshift(p1)
           used.add(j)
           extended = true
+          break
         }
       }
     }
@@ -165,9 +171,169 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
 // - calculateShapeCentroid (via fillPatterns.ts)
 // - getShapeTopLeft (via fillPatterns.ts)
 // - optimizeLineOrderMultiPass
-// - calculateTravelDistance
 
 // == ALL DUPLICATED FUNCTIONS REMOVED - USING IMPORTS FROM UTILS ==
+
+// Local fallback for fill generation (when not running in Electron)
+async function generateFillsLocally(
+  pathInputs: Array<{ id: string; color: string; polygons: PolygonWithHoles[] }>,
+  pathsToProcess: FillPathInfo[],
+  boundingBox: Rect,
+  fillPattern: FillPatternType,
+  lineSpacing: number,
+  angle: number,
+  crossHatch: boolean,
+  inset: number,
+  wiggleAmplitude: number,
+  wiggleFrequency: number,
+  spiralOverDiameter: number,
+  singleSpiral: boolean,
+  singleHilbert: boolean,
+  singleFermat: boolean,
+  customTileShape: TileShapeType,
+  enableCrop: boolean,
+  cropInset: number,
+  abortController: { aborted: boolean },
+  setProgress: (progress: number) => void
+): Promise<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]> {
+  // Calculate crop rectangle if enabled
+  let cropRect: Rect | null = null
+  if (enableCrop && cropInset > 0) {
+    const insetX = boundingBox.width * (cropInset / 100)
+    const insetY = boundingBox.height * (cropInset / 100)
+    cropRect = {
+      x: boundingBox.x + insetX,
+      y: boundingBox.y + insetY,
+      width: boundingBox.width - insetX * 2,
+      height: boundingBox.height - insetY * 2
+    }
+  }
+
+  // Generate global patterns
+  const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
+  const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
+
+  let globalSpiralLines: HatchLine[] = []
+  if (fillPattern === 'spiral' && singleSpiral) {
+    const centerX = boundingBox.x + boundingBox.width / 2
+    const centerY = boundingBox.y + boundingBox.height / 2
+    const maxRadius = Math.sqrt(Math.pow(boundingBox.width / 2, 2) + Math.pow(boundingBox.height / 2, 2)) * spiralOverDiameter
+    globalSpiralLines = generateGlobalSpiralLines(centerX, centerY, maxRadius, lineSpacing, angle)
+  }
+
+  let globalHilbertLines: HatchLine[] = []
+  if (fillPattern === 'hilbert' && singleHilbert) {
+    globalHilbertLines = generateGlobalHilbertLines(boundingBox, lineSpacing)
+  }
+
+  let globalFermatLines: HatchLine[] = []
+  if (fillPattern === 'fermat' && singleFermat) {
+    globalFermatLines = generateGlobalFermatLines(boundingBox, lineSpacing, angle, spiralOverDiameter)
+  }
+
+  const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
+  const totalPaths = pathInputs.length
+
+  for (let i = 0; i < pathInputs.length; i++) {
+    if (abortController.aborted) break
+
+    setProgress(Math.round((i / totalPaths) * 100))
+    const pathInput = pathInputs[i]
+    const originalPath = pathsToProcess.find(p => p.id === pathInput.id)
+    if (!originalPath) continue
+
+    let allPolygons = pathInput.polygons
+    if (cropRect) {
+      allPolygons = allPolygons.map(p => clipPolygonWithHolesToRect(p, cropRect!)).filter(p => p.outer.length >= 3)
+    }
+
+    let allLines: HatchLine[] = []
+    let firstValidPolygon: Point[] | null = null
+
+    for (const polygonData of allPolygons) {
+      if (polygonData.outer.length < 3) continue
+      if (!firstValidPolygon) firstValidPolygon = polygonData.outer
+
+      let lines: HatchLine[] = []
+
+      switch (fillPattern) {
+        case 'concentric':
+          lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+          break
+        case 'wiggle':
+          lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+          break
+        case 'spiral':
+          lines = singleSpiral
+            ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+            : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+          break
+        case 'honeycomb':
+          lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+          break
+        case 'gyroid':
+          lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+          break
+        case 'crosshatch':
+          lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
+          break
+        case 'zigzag':
+          lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+          break
+        case 'radial':
+          lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
+          break
+        case 'crossspiral':
+          lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+          break
+        case 'hilbert':
+          lines = singleHilbert
+            ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+            : generateHilbertLines(polygonData, lineSpacing, inset)
+          break
+        case 'fermat':
+          lines = singleFermat
+            ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
+            : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+          break
+        case 'wave':
+          lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+          break
+        case 'scribble':
+          lines = generateScribbleLines(polygonData, lineSpacing, inset)
+          break
+        case 'custom':
+          lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle)
+          break
+        case 'lines':
+        default:
+          lines = clipLinesToPolygon(globalLines, polygonData, inset)
+          if (crossHatch) {
+            lines = [...lines, ...clipLinesToPolygon(globalCrossLines, polygonData, inset)]
+          }
+          break
+      }
+
+      allLines = allLines.concat(lines)
+    }
+
+    if (cropRect && allLines.length > 0) {
+      allLines = clipLinesToRect(allLines, cropRect)
+    }
+
+    if (allLines.length > 0 && firstValidPolygon) {
+      results.push({ pathInfo: originalPath, lines: allLines, polygon: firstValidPolygon })
+    }
+
+    // Yield to browser
+    if (i % 5 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+  }
+
+  return results
+}
+
 export default function FillTab() {
   const {
     svgContent,
@@ -200,7 +366,7 @@ export default function FillTab() {
   const [singleHilbert, setSingleHilbert] = useState(true) // Use one Hilbert curve for all shapes (default true)
   const [singleFermat, setSingleFermat] = useState(true) // Use one Fermat spiral for all shapes (default true)
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
-  const [customTileShape, setCustomTileShape] = useState<keyof typeof TILE_SHAPES>('triangle') // Selected tile shape for custom pattern
+  const [customTileShape, setCustomTileShape] = useState<TileShapeType>('triangle') // Selected tile shape for custom pattern
 
   // Crop support for fill patterns
   const [enableCrop, setEnableCrop] = useState(false)
@@ -226,15 +392,18 @@ export default function FillTab() {
   const [draftPenWidth, setDraftPenWidth] = useState(0.5)
   const [draftSimplifyTolerance, setDraftSimplifyTolerance] = useState(0)
 
-  // Sync draft states when actual values change programmatically (e.g., auto-rotate angle)
-  useEffect(() => { setDraftLineSpacing(lineSpacing) }, [lineSpacing])
-  useEffect(() => { setDraftAngle(angle) }, [angle])
-  useEffect(() => { setDraftInset(inset) }, [inset])
-  useEffect(() => { setDraftWiggleAmplitude(wiggleAmplitude) }, [wiggleAmplitude])
-  useEffect(() => { setDraftWiggleFrequency(wiggleFrequency) }, [wiggleFrequency])
-  useEffect(() => { setDraftPenWidth(penWidth) }, [penWidth])
-  useEffect(() => { setDraftSimplifyTolerance(simplifyTolerance) }, [simplifyTolerance])
-  useEffect(() => { setDraftCropInset(cropInset) }, [cropInset])
+  // Sync all draft states when actual values change programmatically (e.g., auto-rotate angle)
+  // Consolidated into single useEffect to reduce hook overhead
+  useEffect(() => {
+    setDraftLineSpacing(lineSpacing)
+    setDraftAngle(angle)
+    setDraftInset(inset)
+    setDraftWiggleAmplitude(wiggleAmplitude)
+    setDraftWiggleFrequency(wiggleFrequency)
+    setDraftPenWidth(penWidth)
+    setDraftSimplifyTolerance(simplifyTolerance)
+    setDraftCropInset(cropInset)
+  }, [lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth, simplifyTolerance, cropInset])
 
   // Selected control for keyboard nudge
   type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
@@ -475,10 +644,30 @@ export default function FillTab() {
   const hatchAbortRef = useRef<{ aborted: boolean }>({ aborted: false })
 
   // Use preserved data if available (after Apply & Fill Again), otherwise use computed fillPaths
-  const activeFillPaths = preservedFillData
-    ? preservedFillData.map(d => d.pathInfo)
-    : fillPaths
+  // IMPORTANT: Must be memoized to prevent creating new array reference on every render
+  // which would trigger the expensive useEffect that depends on this
+  const activeFillPaths = useMemo(() => {
+    return preservedFillData
+      ? preservedFillData.map(d => d.pathInfo)
+      : fillPaths
+  }, [preservedFillData, fillPaths])
 
+  // Listen for progress updates from backend
+  useEffect(() => {
+    if (!window.electron?.onFillProgress) return
+
+    const handleProgress = (data: { progress: number; status: string }) => {
+      setFillProgress(data.progress)
+    }
+
+    window.electron.onFillProgress(handleProgress)
+
+    return () => {
+      window.electron?.offFillProgress?.()
+    }
+  }, [])
+
+  // Generate fills using backend IPC for better performance
   useEffect(() => {
     // Abort any in-progress generation
     hatchAbortRef.current.aborted = true
@@ -494,227 +683,135 @@ export default function FillTab() {
     const abortController = { aborted: false }
     hatchAbortRef.current = abortController
 
-    setIsGeneratingHatch(true)
-    setIsProcessing(true)
-    setFillProgress(0)
+    // Debounce fill generation to improve UI responsiveness
+    const DEBOUNCE_MS = 50
+    const debounceTimer = setTimeout(async () => {
+      if (abortController.aborted) return
 
-    // Process paths asynchronously in batches
-    const processAsync = async () => {
-      // Calculate crop rectangle if enabled
-      let cropRect: Rect | null = null
-      if (enableCrop && cropInset > 0 && boundingBox) {
-        const insetX = boundingBox.width * (cropInset / 100)
-        const insetY = boundingBox.height * (cropInset / 100)
-        cropRect = {
-          x: boundingBox.x + insetX,
-          y: boundingBox.y + insetY,
-          width: boundingBox.width - insetX * 2,
-          height: boundingBox.height - insetY * 2
+      setIsGeneratingHatch(true)
+      setIsProcessing(true)
+      setFillProgress(0)
+
+      try {
+        // Step 1: Extract polygon data from DOM elements (fast, runs on frontend)
+        const pathInputs: Array<{
+          id: string
+          color: string
+          polygons: PolygonWithHoles[]
+        }> = []
+
+        for (const path of pathsToProcess) {
+          let polygons: PolygonWithHoles[]
+          if (preservedFillData) {
+            const preserved = preservedFillData.find(p => p.pathInfo.id === path.id)
+            polygons = preserved ? [preserved.polygon] : getAllPolygonsFromElement(path.element)
+          } else {
+            polygons = getAllPolygonsFromElement(path.element)
+          }
+
+          pathInputs.push({
+            id: path.id,
+            color: path.color,
+            polygons
+          })
         }
-      }
 
-      // Generate global hatch lines for line-based patterns
-      const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
-      const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
+        // Step 2: Check if electron API is available (running in Electron)
+        if (window.electron?.generateFills) {
+          // Use backend IPC for fill generation
+          const result = await window.electron.generateFills({
+            paths: pathInputs,
+            boundingBox,
+            fillPattern,
+            lineSpacing,
+            angle,
+            crossHatch,
+            inset,
+            wiggleAmplitude,
+            wiggleFrequency,
+            spiralOverDiameter,
+            singleSpiral,
+            singleHilbert,
+            singleFermat,
+            customTileShape,
+            enableCrop,
+            cropInset
+          })
 
-      // Generate global spiral if in single spiral mode
-      let globalSpiralLines: HatchLine[] = []
-      if (fillPattern === 'spiral' && singleSpiral && boundingBox) {
-        const centerX = boundingBox.x + boundingBox.width / 2
-        const centerY = boundingBox.y + boundingBox.height / 2
-        // Calculate max radius to cover the entire bounding box
-        const maxRadius = Math.sqrt(
-          Math.pow(boundingBox.width / 2, 2) + Math.pow(boundingBox.height / 2, 2)
-        ) * spiralOverDiameter
-        globalSpiralLines = generateGlobalSpiralLines(centerX, centerY, maxRadius, lineSpacing, angle)
-      }
-
-      // Generate global Hilbert curve if in single Hilbert mode
-      let globalHilbertLines: HatchLine[] = []
-      if (fillPattern === 'hilbert' && singleHilbert && boundingBox) {
-        globalHilbertLines = generateGlobalHilbertLines(boundingBox, lineSpacing)
-      }
-
-      // Generate global Fermat spiral if in single Fermat mode
-      let globalFermatLines: HatchLine[] = []
-      if (fillPattern === 'fermat' && singleFermat && boundingBox) {
-        globalFermatLines = generateGlobalFermatLines(boundingBox, lineSpacing, angle, spiralOverDiameter)
-      }
-
-      const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
-      // Use smaller batch size for expensive patterns
-      const isExpensivePattern = fillPattern === 'gyroid' || fillPattern === 'honeycomb'
-      const BATCH_SIZE = isExpensivePattern ? 1 : 5
-      const totalPaths = pathsToProcess.length
-
-      for (let i = 0; i < pathsToProcess.length; i += BATCH_SIZE) {
-        // Check if aborted
-        if (abortController.aborted) return
-
-        // Update progress
-        const progress = Math.round((i / totalPaths) * 100)
-        setFillProgress(progress)
-
-        const batch = pathsToProcess.slice(i, i + BATCH_SIZE)
-
-        for (const path of batch) {
           if (abortController.aborted) return
 
-          try {
-            // Get ALL polygons from the element (handles compound paths with disconnected regions)
-            let allPolygons: PolygonWithHoles[]
-            if (preservedFillData) {
-              const preserved = preservedFillData.find(p => p.pathInfo.id === path.id)
-              // For preserved data, we only have one polygon stored
-              allPolygons = preserved ? [preserved.polygon] : getAllPolygonsFromElement(path.element)
-            } else {
-              allPolygons = getAllPolygonsFromElement(path.element)
-            }
+          if (result.success) {
+            // Map backend results back to frontend format
+            const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
 
-            // Apply crop to polygons if enabled
-            if (cropRect) {
-              allPolygons = allPolygons
-                .map(p => clipPolygonWithHolesToRect(p, cropRect!))
-                .filter(p => p.outer.length >= 3)
-            }
-
-            // Process each polygon in the element (for compound paths with disconnected regions)
-            let allLines: HatchLine[] = []
-            let firstValidPolygon: Point[] | null = null
-
-            for (const polygonData of allPolygons) {
-              if (polygonData.outer.length < 3) continue
-              if (!firstValidPolygon) firstValidPolygon = polygonData.outer
-
-              let lines: HatchLine[] = []
-
-              switch (fillPattern) {
-                case 'concentric':
-                  // Concentric works inward from outer boundary - holes handled naturally
-                  lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
-                  break
-                case 'wiggle':
-                  lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-                  break
-                case 'spiral':
-                  if (singleSpiral) {
-                    // Single spiral mode: clip the global spiral to this shape
-                    // The clipping now properly handles lines entirely inside shapes
-                    lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-                  } else {
-                    // Per-shape spiral: generate unique spiral for each shape
-                    lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-                  }
-                  break
-                case 'honeycomb':
-                  lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-                  break
-                case 'gyroid':
-                  lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-                  break
-                case 'crosshatch':
-                  lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-                  break
-                case 'zigzag':
-                  lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
-                  break
-                case 'radial':
-                  lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
-                  break
-                case 'crossspiral':
-                  lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-                  break
-                case 'hilbert':
-                  if (singleHilbert) {
-                    // Single Hilbert mode: clip the global curve to this shape
-                    lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
-                  } else {
-                    // Per-shape Hilbert: generate unique curve for each shape
-                    lines = generateHilbertLines(polygonData, lineSpacing, inset)
-                  }
-                  break
-                case 'fermat':
-                  if (singleFermat) {
-                    // Single Fermat mode: clip the global spiral to this shape
-                    lines = clipFermatToPolygon(globalFermatLines, polygonData, inset)
-                  } else {
-                    // Per-shape Fermat: generate unique spiral for each shape
-                    lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-                  }
-                  break
-                case 'wave':
-                  lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-                  break
-                case 'scribble':
-                  lines = generateScribbleLines(polygonData, lineSpacing, inset)
-                  break
-                case 'custom':
-                  lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle)
-                  break
-                case 'lines':
-                default:
-                  lines = clipLinesToPolygon(globalLines, polygonData, inset)
-                  if (crossHatch) {
-                    const crossLines = clipLinesToPolygon(globalCrossLines, polygonData, inset)
-                    lines = [...lines, ...crossLines]
-                  }
-                  break
+            for (const pathResult of result.paths) {
+              const originalPath = pathsToProcess.find(p => p.id === pathResult.pathId)
+              if (originalPath) {
+                results.push({
+                  pathInfo: originalPath,
+                  lines: pathResult.lines,
+                  polygon: pathResult.polygon
+                })
               }
-
-              allLines = allLines.concat(lines)
             }
 
-            // Apply crop clipping to all generated lines if enabled
-            if (cropRect && allLines.length > 0) {
-              allLines = clipLinesToRect(allLines, cropRect)
-            }
+            setHatchedPaths(results)
 
-            if (allLines.length > 0 && firstValidPolygon) {
-              results.push({ pathInfo: path, lines: allLines, polygon: firstValidPolygon })
-            } else if (firstValidPolygon) {
-              // Debug: shape has valid polygon but no fill lines generated
-              // Calculate bounding box for more useful debug info
-              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-              for (const p of firstValidPolygon) {
-                minX = Math.min(minX, p.x)
-                minY = Math.min(minY, p.y)
-                maxX = Math.max(maxX, p.x)
-                maxY = Math.max(maxY, p.y)
-              }
-              const width = maxX - minX
-              const height = maxY - minY
-              console.warn(`Shape ${path.id}: ${firstValidPolygon.length} pts, bbox ${width.toFixed(1)}x${height.toFixed(1)} at (${minX.toFixed(1)},${minY.toFixed(1)}), pattern: ${fillPattern}, singleSpiral: ${singleSpiral}, got ${allPolygons.length} polygon(s)`)
+            // Debug summary
+            const filledCount = results.length
+            const totalCount = pathsToProcess.length
+            const unfilledCount = totalCount - filledCount
+            if (unfilledCount > 0) {
+              console.log(`Fill summary: ${filledCount}/${totalCount} shapes filled. ${unfilledCount} shapes have no fill lines.`)
             }
-          } catch (err) {
-            console.error(`Failed to generate hatch for path ${path.id}:`, err)
+          } else {
+            console.error('Fill generation failed:', result.error)
+            setHatchedPaths([])
+          }
+        } else {
+          // Fallback: Run fill generation locally (for web browser or missing IPC)
+          console.log('Running fill generation locally (no IPC available)')
+          const results = await generateFillsLocally(
+            pathInputs,
+            pathsToProcess,
+            boundingBox,
+            fillPattern,
+            lineSpacing,
+            angle,
+            crossHatch,
+            inset,
+            wiggleAmplitude,
+            wiggleFrequency,
+            spiralOverDiameter,
+            singleSpiral,
+            singleHilbert,
+            singleFermat,
+            customTileShape,
+            enableCrop,
+            cropInset,
+            abortController,
+            setFillProgress
+          )
+
+          if (!abortController.aborted) {
+            setHatchedPaths(results)
           }
         }
-
-        // Yield to browser to keep UI responsive
-        await new Promise(resolve => setTimeout(resolve, 0))
-      }
-
-      // Only update state if not aborted
-      if (!abortController.aborted) {
-        setFillProgress(100)
-        setHatchedPaths(results)
-        setIsGeneratingHatch(false)
-        setIsProcessing(false)
-
-        // Debug summary
-        const filledCount = results.length
-        const totalCount = pathsToProcess.length
-        const unfilledCount = totalCount - filledCount
-        if (unfilledCount > 0) {
-          console.log(`Fill summary: ${filledCount}/${totalCount} shapes filled. ${unfilledCount} shapes have no fill lines.`)
+      } catch (err) {
+        console.error('Fill generation error:', err)
+        setHatchedPaths([])
+      } finally {
+        if (!abortController.aborted) {
+          setFillProgress(100)
+          setIsGeneratingHatch(false)
+          setIsProcessing(false)
         }
       }
-    }
-
-    processAsync()
+    }, DEBOUNCE_MS)
 
     // Cleanup on unmount or dependency change
     return () => {
+      clearTimeout(debounceTimer)
       abortController.aborted = true
       setIsProcessing(false)
     }
@@ -742,47 +839,8 @@ export default function FillTab() {
     return map
   }, [simplifiedHatchedPaths])
 
-  // Compute ordered lines using multi-pass optimization:
-  // 1. Order shapes by proximity (starting from top-left)
-  // 2. Optimize lines within each shape
-  // 3. Chain shapes together
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { unoptimizedLines: _unoptimizedLines, optimizedLines, stats: _stats } = useMemo(() => {
-    if (simplifiedHatchedPaths.length === 0) {
-      return { unoptimizedLines: [], optimizedLines: [], stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0, shapeCount: 0 } }
-    }
-
-    // Unoptimized: flatten lines in original order
-    const unoptimized: OrderedLine[] = []
-    let globalIndex = 0
-    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
-      lines.forEach(line => {
-        unoptimized.push({
-          ...line,
-          pathId: pathInfo.id,
-          color: pathInfo.color,
-          originalIndex: globalIndex++,
-          reversed: false
-        })
-      })
-    })
-
-    // Optimized: use multi-pass algorithm (shape ordering + line optimization within shapes)
-    const optimized = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
-
-    // Calculate statistics
-    const unoptimizedDistance = calculateTravelDistance(unoptimized)
-    const optimizedDistance = calculateTravelDistance(optimized)
-    const improvement = unoptimizedDistance > 0
-      ? ((unoptimizedDistance - optimizedDistance) / unoptimizedDistance) * 100
-      : 0
-
-    return {
-      unoptimizedLines: unoptimized,
-      optimizedLines: optimized,
-      stats: { unoptimizedDistance, optimizedDistance, improvement, shapeCount: simplifiedHatchedPaths.length }
-    }
-  }, [simplifiedHatchedPaths])
+  // Note: Line ordering optimization is deferred to handleApplyFill/handleNavigateToOrder
+  // for better UI responsiveness during preview generation
 
   // Calculate fill statistics for display (uses simplified paths)
   const fillStats = useMemo(() => {
@@ -901,6 +959,11 @@ export default function FillTab() {
   }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, highlightedPathId, enableCrop, cropInset])
 
   const handleBack = () => {
+    // Clean up all fill state when navigating away
+    setAccumulatedLayers([])
+    setPreservedFillData(null)
+    setLayerColor('')
+    setShowHatchPreview(false)
     setFillTargetNodeIds([])
     setActiveTab('sort')
   }
@@ -912,34 +975,45 @@ export default function FillTab() {
   const handleApplyFill = useCallback(() => {
     if (targetNodes.length === 0 || (simplifiedHatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
 
-    // Collect all lines: accumulated layers + current preview
-    // Group by path ID AND color so different colors become separate layer nodes
-    const allLinesByPathAndColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
+    // Show processing state while optimizing
+    setIsProcessing(true)
 
-    // Add accumulated layers first
-    accumulatedLayers.forEach(layer => {
-      layer.lines.forEach(line => {
-        const key = `${layer.pathId}|${layer.color}`
+    // Use setTimeout to let UI update before running expensive optimization
+    setTimeout(() => {
+      // Run optimization now (deferred from preview for responsiveness)
+      const optimizedLines = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
+
+      // Create DOMParser once and reuse (expensive to create repeatedly)
+      const parser = new DOMParser()
+
+      // Collect all lines: accumulated layers + current preview
+      // Group by path ID AND color so different colors become separate layer nodes
+      const allLinesByPathAndColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
+
+      // Add accumulated layers first
+      accumulatedLayers.forEach(layer => {
+        layer.lines.forEach(line => {
+          const key = `${layer.pathId}|${layer.color}`
+          const existing = allLinesByPathAndColor.get(key) || []
+          existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
+          allLinesByPathAndColor.set(key, existing)
+        })
+      })
+
+      // Add current optimized lines
+      optimizedLines.forEach(line => {
+        const color = layerColor || line.color
+        const key = `${line.pathId}|${color}`
         const existing = allLinesByPathAndColor.get(key) || []
         existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
         allLinesByPathAndColor.set(key, existing)
       })
-    })
 
-    // Add current optimized lines
-    optimizedLines.forEach(line => {
-      const color = layerColor || line.color
-      const key = `${line.pathId}|${color}`
-      const existing = allLinesByPathAndColor.get(key) || []
-      existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
-      allLinesByPathAndColor.set(key, existing)
-    })
-
-    // Get unique colors used across all fills
-    const colorsUsed = new Set<string>()
-    accumulatedLayers.forEach(layer => colorsUsed.add(layer.color))
-    optimizedLines.forEach(line => colorsUsed.add(layerColor || line.color))
-    const uniqueColors = Array.from(colorsUsed)
+      // Get unique colors used across all fills
+      const colorsUsed = new Set<string>()
+      accumulatedLayers.forEach(layer => colorsUsed.add(layer.color))
+      optimizedLines.forEach(line => colorsUsed.add(layerColor || line.color))
+      const uniqueColors = Array.from(colorsUsed)
 
     // For each original path, create child nodes for each color used
     // If retainStrokes is enabled, weld the outline into the fill compound path
@@ -1003,8 +1077,7 @@ export default function FillTab() {
         // Create as a path element (not a group) for proper display in layer tree
         const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
 
-        // Create element for the node
-        const parser = new DOMParser()
+        // Create element for the node (reuse parser from outer scope)
         const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
         const pathElement = dummyDoc.querySelector('path') as Element
 
@@ -1047,37 +1120,50 @@ export default function FillTab() {
       })
     }
 
-    const updatedNodes = updateNodesWithFillChildren(layerNodes)
-    setLayerNodes(updatedNodes)
-    rebuildSvgFromLayers(updatedNodes)
+      const updatedNodes = updateNodesWithFillChildren(layerNodes)
+      setLayerNodes(updatedNodes)
+      rebuildSvgFromLayers(updatedNodes)
 
-    // Clear all state when done
-    setPreservedFillData(null)
-    setAccumulatedLayers([])
-    setLayerColor('')
+      // Clear all state when done
+      setPreservedFillData(null)
+      setAccumulatedLayers([])
+      setLayerColor('')
+      setIsProcessing(false)
 
-    setFillTargetNodeIds([])
-    setActiveTab('sort')
-  }, [targetNodes, simplifiedHatchedPaths, optimizedLines, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData])
+      setFillTargetNodeIds([])
+      setActiveTab('sort')
+    }, 0) // End setTimeout
+  }, [targetNodes, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData, setIsProcessing])
+
+  // Maximum accumulated layers to prevent memory bloat
+  const MAX_ACCUMULATED_LAYERS = 100
 
   // Add current hatch lines as a layer and rotate angle for next layer
   const handleAddLayer = useCallback(() => {
     if (simplifiedHatchedPaths.length === 0) return
 
     // Collect all current lines into accumulated layers (using simplified paths)
+    // Group by path+color to reduce object count (much more efficient than one object per line)
     const newLayers: FillLayer[] = []
     simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
       const color = layerColor || pathInfo.color // Use custom color or original
-      lines.forEach(line => {
-        newLayers.push({
-          lines: [line],
-          color,
-          pathId: pathInfo.id,
-        })
+      // Create one FillLayer per path with all its lines (not one per line)
+      newLayers.push({
+        lines: lines, // All lines for this path in one object
+        color,
+        pathId: pathInfo.id,
       })
     })
 
-    setAccumulatedLayers(prev => [...prev, ...newLayers])
+    setAccumulatedLayers(prev => {
+      const combined = [...prev, ...newLayers]
+      // Limit to prevent memory bloat
+      if (combined.length > MAX_ACCUMULATED_LAYERS) {
+        console.warn(`[FillTab] Accumulated layers exceeded ${MAX_ACCUMULATED_LAYERS}, trimming oldest layers`)
+        return combined.slice(-MAX_ACCUMULATED_LAYERS)
+      }
+      return combined
+    })
 
     // Rotate angle for next layer (cross-hatching effect)
     const newAngle = (angle + 45) % 180
@@ -1094,30 +1180,40 @@ export default function FillTab() {
   }, [])
 
   const handleNavigateToOrder = useCallback(() => {
-    if (!boundingBox || optimizedLines.length === 0) return
+    if (!boundingBox || simplifiedHatchedPaths.length === 0) return
 
-    // Convert optimized lines to OrderLine format
-    const orderLines = optimizedLines.map(line => ({
-      x1: line.x1,
-      y1: line.y1,
-      x2: line.x2,
-      y2: line.y2,
-      color: line.color,
-      pathId: line.pathId,
-    }))
+    // Show processing state while optimizing
+    setIsProcessing(true)
 
-    // Set order data and navigate to Order tab
-    setOrderData({
-      lines: orderLines,
-      boundingBox,
-      source: 'fill',
-      onApply: () => {
-        // When apply is clicked in Order tab, apply the fill
-        handleApplyFill()
-      },
-    })
-    setActiveTab('order')
-  }, [boundingBox, optimizedLines, setOrderData, setActiveTab, handleApplyFill])
+    // Use setTimeout to let UI update before running expensive optimization
+    setTimeout(() => {
+      // Run optimization now (deferred from preview for responsiveness)
+      const optimizedLines = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
+
+      // Convert optimized lines to OrderLine format
+      const orderLines = optimizedLines.map(line => ({
+        x1: line.x1,
+        y1: line.y1,
+        x2: line.x2,
+        y2: line.y2,
+        color: line.color,
+        pathId: line.pathId,
+      }))
+
+      // Set order data and navigate to Order tab
+      setOrderData({
+        lines: orderLines,
+        boundingBox,
+        source: 'fill',
+        onApply: () => {
+          // When apply is clicked in Order tab, apply the fill
+          handleApplyFill()
+        },
+      })
+      setIsProcessing(false)
+      setActiveTab('order')
+    }, 0)
+  }, [boundingBox, simplifiedHatchedPaths, setOrderData, setActiveTab, handleApplyFill, setIsProcessing])
 
   // Wheel zoom handler - use native event listener to support passive: false
   useEffect(() => {
@@ -1558,7 +1654,7 @@ export default function FillTab() {
               <div className="fill-control">
                 <label>Tile Shape</label>
                 <div className="tile-shape-selector">
-                  {(Object.keys(TILE_SHAPES) as Array<keyof typeof TILE_SHAPES>).map(shape => (
+                  {(Object.keys(TILE_SHAPES) as TileShapeType[]).map(shape => (
                     <button
                       key={shape}
                       className={`tile-shape-btn ${customTileShape === shape ? 'active' : ''}`}

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, MenuItemConstructorOptions }
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
+import { registerFillGeneratorIPC } from './fillGenerator'
 
 process.env.DIST = path.join(__dirname, '../dist')
 process.env.VITE_PUBLIC = app.isPackaged
@@ -410,6 +411,15 @@ function createMenu() {
           label: 'Toggle Crop Overlay',
           accelerator: 'CmdOrCtrl+Shift+C',
           click: () => sendMenuCommand('crop')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Convert to Fills',
+          click: () => sendMenuCommand('convert-to-fills')
+        },
+        {
+          label: 'Normalize Colors',
+          click: () => sendMenuCommand('normalize-colors')
         }
       ]
     },
@@ -511,6 +521,7 @@ function createMenu() {
 }
 
 app.whenReady().then(() => {
+  registerFillGeneratorIPC()
   createMenu()
   createWindow()
 })

@@ -658,7 +658,27 @@ export function clipLinesToPolygon(
     return hole
   })
 
+  // OPTIMIZATION: Pre-compute polygon bounding box for fast rejection
+  let bboxMinX = Infinity, bboxMinY = Infinity, bboxMaxX = -Infinity, bboxMaxY = -Infinity
+  for (const p of workingOuter) {
+    if (p.x < bboxMinX) bboxMinX = p.x
+    if (p.y < bboxMinY) bboxMinY = p.y
+    if (p.x > bboxMaxX) bboxMaxX = p.x
+    if (p.y > bboxMaxY) bboxMaxY = p.y
+  }
+
   for (const line of lines) {
+    // OPTIMIZATION: Fast bbox rejection - skip lines entirely outside polygon bbox
+    const lineMinX = Math.min(line.x1, line.x2)
+    const lineMaxX = Math.max(line.x1, line.x2)
+    const lineMinY = Math.min(line.y1, line.y2)
+    const lineMaxY = Math.max(line.y1, line.y2)
+
+    if (lineMaxX < bboxMinX || lineMinX > bboxMaxX ||
+        lineMaxY < bboxMinY || lineMinY > bboxMaxY) {
+      continue // Line is completely outside polygon bbox
+    }
+
     const p1 = { x: line.x1, y: line.y1 }
     const p2 = { x: line.x2, y: line.y2 }
     const p1Inside = pointInPolygon(p1, workingOuter)

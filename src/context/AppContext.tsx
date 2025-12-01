@@ -63,6 +63,12 @@ interface AppContextType {
     ungroup: () => void
   } | null>
 
+  // Tool handlers (set by SortTab, called from App menu)
+  toolHandlers: React.MutableRefObject<{
+    convertToFills: () => void
+    normalizeColors: () => void
+  } | null>
+
   // Layer state
   layerNodes: SVGNode[]
   setLayerNodes: (nodes: SVGNode[]) => void
@@ -89,8 +95,8 @@ interface AppContextType {
   // Crop state
   showCrop: boolean
   setShowCrop: (show: boolean) => void
-  cropAspectRatio: '1:2' | '3:4' | '16:9' | '9:16'
-  setCropAspectRatio: (ratio: '1:2' | '3:4' | '16:9' | '9:16') => void
+  cropAspectRatio: '1:2' | '2:3' | '3:4' | '16:9' | '9:16'
+  setCropAspectRatio: (ratio: '1:2' | '2:3' | '3:4' | '16:9' | '9:16') => void
   cropSize: number
   setCropSize: (size: number) => void
 
@@ -157,6 +163,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ungroup: () => void
   } | null>(null)
 
+  // Tool handlers (set by SortTab, called from App menu)
+  const toolHandlers = useRef<{
+    convertToFills: () => void
+    normalizeColors: () => void
+  } | null>(null)
+
   const syncSvgContent = useCallback(() => {
     if (svgElementRef.current) {
       const serializer = new XMLSerializer()
@@ -202,16 +214,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return node.customMarkup
       }
 
-      // For groups, build children recursively
-      if (node.isGroup && node.children.length > 0) {
+      // For nodes with children (groups or shapes with fill children), build children recursively
+      if (node.children.length > 0) {
         const childContent = node.children.map(buildNodeContent).join('\n')
         const el = node.element
+        const tagName = el.tagName.toLowerCase()
+
+        // Non-container elements (path, rect, circle, etc.) can't have children in SVG
+        // If such an element has children (from fill generation), render as a group instead
+        const nonContainerElements = ['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use']
+        const useGroupWrapper = nonContainerElements.includes(tagName)
+        const outputTagName = useGroupWrapper ? 'g' : el.tagName
+
+        // For non-container elements converted to groups, only keep id and data-* attributes
         const attrs: string[] = []
         let existingStyle = ''
         for (const attr of Array.from(el.attributes)) {
           if (attr.name === 'style') {
             // Handle style attribute separately to manage display:none
             existingStyle = attr.value
+          } else if (useGroupWrapper) {
+            // Only keep id and data-* attributes for converted elements
+            if (attr.name === 'id' || attr.name.startsWith('data-')) {
+              attrs.push(`${attr.name}="${attr.value}"`)
+            }
           } else {
             attrs.push(`${attr.name}="${attr.value}"`)
           }
@@ -231,8 +257,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
           finalStyle = finalStyle.replace(/display:\s*none;?\s*/g, '').trim()
         }
 
-        const styleAttr = finalStyle ? ` style="${finalStyle}"` : ''
-        return `<${el.tagName} ${attrs.join(' ')}${styleAttr}>\n${childContent}\n</${el.tagName}>`
+        // For group wrappers, don't include the original element's style (fill, stroke, etc.)
+        const styleAttr = (!useGroupWrapper && finalStyle) ? ` style="${finalStyle}"` : (node.isHidden ? ' style="display:none"' : '')
+        return `<${outputTagName} ${attrs.join(' ')}${styleAttr}>\n${childContent}\n</${outputTagName}>`
       }
 
       // For leaf nodes, use the element's outer HTML
@@ -340,7 +367,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Crop state
   const [showCrop, setShowCrop] = useState(false)
-  const [cropAspectRatio, setCropAspectRatio] = useState<'1:2' | '3:4' | '16:9' | '9:16'>('3:4')
+  const [cropAspectRatio, setCropAspectRatio] = useState<'1:2' | '2:3' | '3:4' | '16:9' | '9:16'>('3:4')
   const [cropSize, setCropSize] = useState(0.25)
 
   // Armed states for confirmation buttons
@@ -396,6 +423,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     skipNextParse,
     originalSvgAttrs,
     arrangeHandlers,
+    toolHandlers,
     refreshElementRefs,
     layerNodes,
     setLayerNodes,

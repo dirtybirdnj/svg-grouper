@@ -62,6 +62,7 @@ export default function SortTab() {
     skipNextParse,
     originalSvgAttrs,
     arrangeHandlers,
+    toolHandlers,
     isProcessing,
     setIsProcessing,
     setFillTargetNodeIds,
@@ -1642,6 +1643,143 @@ export default function SortTab() {
     }
   }, [handleMoveUp, handleMoveDown, handleBringToFront, handleSendToBack, handleGroupUngroup, arrangeHandlers])
 
+  // Convert paths to fills - changes stroke color to fill color
+  const handleConvertToFills = useCallback(() => {
+    if (selectedNodeIds.size === 0) return
+
+    let converted = 0
+    const processNode = (node: SVGNode) => {
+      const el = node.element
+      const tagName = el.tagName.toLowerCase()
+
+      // Only process path-like elements
+      if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
+        // Get the stroke color
+        let strokeColor = el.getAttribute('stroke')
+        const style = el.getAttribute('style') || ''
+        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+        if (strokeMatch) {
+          strokeColor = strokeMatch[1].trim()
+        }
+
+        // If there's a stroke color, convert it to fill
+        if (strokeColor && strokeColor !== 'none' && strokeColor !== 'transparent') {
+          el.setAttribute('fill', strokeColor)
+          el.setAttribute('stroke', 'none')
+
+          // Also update style attribute if present
+          if (style) {
+            let newStyle = style
+              .replace(/stroke:\s*[^;]+;?/g, 'stroke:none;')
+              .replace(/fill:\s*[^;]+;?/g, `fill:${strokeColor};`)
+            if (!newStyle.includes('fill:')) {
+              newStyle += `fill:${strokeColor};`
+            }
+            el.setAttribute('style', newStyle)
+          }
+          converted++
+        }
+      }
+
+      // Process children
+      node.children.forEach(processNode)
+    }
+
+    // Process all selected nodes
+    for (const id of selectedNodeIds) {
+      const node = findNodeById(layerNodes, id)
+      if (node) {
+        processNode(node)
+      }
+    }
+
+    if (converted > 0) {
+      skipNextParse.current = true
+      rebuildSvgFromLayers()
+      setStatusMessage(`Converted ${converted} element${converted > 1 ? 's' : ''} to fills`)
+    } else {
+      setStatusMessage('No elements with strokes found to convert')
+    }
+  }, [selectedNodeIds, layerNodes, rebuildSvgFromLayers, skipNextParse, setStatusMessage])
+
+  // Normalize colors - apply selected element's color attributes to all siblings
+  const handleNormalizeColors = useCallback(() => {
+    if (selectedNodeIds.size !== 1) {
+      setStatusMessage('Select exactly one element to normalize colors from')
+      return
+    }
+
+    const selectedId = Array.from(selectedNodeIds)[0]
+    const selectedNode = findNodeById(layerNodes, selectedId)
+    if (!selectedNode) return
+
+    // Find the parent of the selected node
+    let parentNode: SVGNode | null = null
+    const findParent = (nodes: SVGNode[], parent: SVGNode | null): boolean => {
+      for (const node of nodes) {
+        if (node.id === selectedId) {
+          parentNode = parent
+          return true
+        }
+        if (findParent(node.children, node)) return true
+      }
+      return false
+    }
+    findParent(layerNodes, null)
+
+    if (!parentNode) {
+      setStatusMessage('Cannot normalize: selected element has no parent')
+      return
+    }
+
+    // Get the color attributes from the selected element
+    const sourceEl = selectedNode.element
+    const sourceFill = sourceEl.getAttribute('fill')
+    const sourceStroke = sourceEl.getAttribute('stroke')
+    const sourceStrokeWidth = sourceEl.getAttribute('stroke-width')
+    const sourceOpacity = sourceEl.getAttribute('opacity')
+    const sourceFillOpacity = sourceEl.getAttribute('fill-opacity')
+    const sourceStrokeOpacity = sourceEl.getAttribute('stroke-opacity')
+
+    let normalized = 0
+    // Apply to all siblings (other children of the parent)
+    const parent = parentNode as SVGNode
+    for (const sibling of parent.children) {
+      if (sibling.id === selectedId) continue // Skip the source element
+
+      const el = sibling.element
+      // Only apply to path-like elements
+      const tagName = el.tagName.toLowerCase()
+      if (!['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) continue
+
+      // Apply the attributes
+      if (sourceFill) el.setAttribute('fill', sourceFill)
+      if (sourceStroke) el.setAttribute('stroke', sourceStroke)
+      if (sourceStrokeWidth) el.setAttribute('stroke-width', sourceStrokeWidth)
+      if (sourceOpacity) el.setAttribute('opacity', sourceOpacity)
+      if (sourceFillOpacity) el.setAttribute('fill-opacity', sourceFillOpacity)
+      if (sourceStrokeOpacity) el.setAttribute('stroke-opacity', sourceStrokeOpacity)
+
+      normalized++
+    }
+
+    if (normalized > 0) {
+      skipNextParse.current = true
+      rebuildSvgFromLayers()
+      setStatusMessage(`Normalized colors on ${normalized} sibling${normalized > 1 ? 's' : ''}`)
+    } else {
+      setStatusMessage('No sibling elements found to normalize')
+    }
+  }, [selectedNodeIds, layerNodes, rebuildSvgFromLayers, skipNextParse, setStatusMessage])
+
+  // Register tool handlers in context
+  useEffect(() => {
+    toolHandlers.current = {
+      convertToFills: handleConvertToFills,
+      normalizeColors: handleNormalizeColors
+    }
+  }, [handleConvertToFills, handleNormalizeColors, toolHandlers])
+
   // Check if simplification is possible
   const canSimplify = (): boolean => {
     if (selectedNodeIds.size === 0) return false
@@ -2324,7 +2462,7 @@ export default function SortTab() {
 
   const rotateCropAspectRatio = () => {
     const [w, h] = cropAspectRatio.split(':')
-    setCropAspectRatio(`${h}:${w}` as '1:2' | '3:4' | '16:9' | '9:16')
+    setCropAspectRatio(`${h}:${w}` as '1:2' | '2:3' | '3:4' | '16:9' | '9:16')
   }
 
   // JavaScript-based crop that preserves fill shapes
@@ -2332,6 +2470,49 @@ export default function SortTab() {
     const parser = new DOMParser()
     const doc = parser.parseFromString(svgString, 'image/svg+xml')
     const svg = doc.documentElement
+
+    // Parse viewBox to handle coordinate transformations
+    // The cropRect is in display coordinates (0 to width, 0 to height)
+    // but element coordinates are in viewBox space
+    const viewBoxAttr = svg.getAttribute('viewBox')
+    let viewBox = { minX: 0, minY: 0, width: cropRect.width, height: cropRect.height }
+    let displayWidth = parseFloat(svg.getAttribute('width') || '0') || cropRect.width
+    let displayHeight = parseFloat(svg.getAttribute('height') || '0') || cropRect.height
+
+    // Handle pt units in width/height
+    const widthAttr = svg.getAttribute('width') || ''
+    const heightAttr = svg.getAttribute('height') || ''
+    if (widthAttr.endsWith('pt')) {
+      displayWidth = parseFloat(widthAttr) * 1.333333 // pt to px conversion
+    }
+    if (heightAttr.endsWith('pt')) {
+      displayHeight = parseFloat(heightAttr) * 1.333333
+    }
+
+    if (viewBoxAttr) {
+      const parts = viewBoxAttr.split(/[\s,]+/).map(parseFloat)
+      if (parts.length === 4) {
+        viewBox = { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] }
+      }
+    }
+
+    // Transform crop rect from display coordinates to viewBox coordinates
+    const scaleX = viewBox.width / displayWidth
+    const scaleY = viewBox.height / displayHeight
+    const transformedCropRect: Rect = {
+      x: viewBox.minX + cropRect.x * scaleX,
+      y: viewBox.minY + cropRect.y * scaleY,
+      width: cropRect.width * scaleX,
+      height: cropRect.height * scaleY
+    }
+
+    console.log('[Crop] ViewBox:', viewBox)
+    console.log('[Crop] Display dimensions:', displayWidth, 'x', displayHeight)
+    console.log('[Crop] Original crop rect:', cropRect)
+    console.log('[Crop] Transformed crop rect:', transformedCropRect)
+
+    // Use transformed crop rect for all operations
+    const actualCropRect = transformedCropRect
 
     // Parse path d attribute to multiple subpath polygons (handles compound paths)
     const pathToSubpaths = (d: string): Point[][] => {
@@ -2514,8 +2695,8 @@ export default function SortTab() {
       }
 
       // Quick rejection: if bounding boxes don't overlap, no intersection
-      if (maxX < cropRect.x || minX > cropRect.x + cropRect.width ||
-          maxY < cropRect.y || minY > cropRect.y + cropRect.height) {
+      if (maxX < actualCropRect.x || minX > actualCropRect.x + actualCropRect.width ||
+          maxY < actualCropRect.y || minY > actualCropRect.y + actualCropRect.height) {
         return false
       }
 
@@ -2546,16 +2727,16 @@ export default function SortTab() {
         const y = parseFloat(elem.getAttribute('y') || '0')
         const w = parseFloat(elem.getAttribute('width') || '0')
         const h = parseFloat(elem.getAttribute('height') || '0')
-        return !(x + w < cropRect.x || x > cropRect.x + cropRect.width ||
-                 y + h < cropRect.y || y > cropRect.y + cropRect.height)
+        return !(x + w < actualCropRect.x || x > actualCropRect.x + actualCropRect.width ||
+                 y + h < actualCropRect.y || y > actualCropRect.y + actualCropRect.height)
       }
 
       if (tagName === 'circle') {
         const cx = parseFloat(elem.getAttribute('cx') || '0')
         const cy = parseFloat(elem.getAttribute('cy') || '0')
         const r = parseFloat(elem.getAttribute('r') || '0')
-        return !(cx + r < cropRect.x || cx - r > cropRect.x + cropRect.width ||
-                 cy + r < cropRect.y || cy - r > cropRect.y + cropRect.height)
+        return !(cx + r < actualCropRect.x || cx - r > actualCropRect.x + actualCropRect.width ||
+                 cy + r < actualCropRect.y || cy - r > actualCropRect.y + actualCropRect.height)
       }
 
       if (tagName === 'ellipse') {
@@ -2563,8 +2744,8 @@ export default function SortTab() {
         const cy = parseFloat(elem.getAttribute('cy') || '0')
         const rx = parseFloat(elem.getAttribute('rx') || '0')
         const ry = parseFloat(elem.getAttribute('ry') || '0')
-        return !(cx + rx < cropRect.x || cx - rx > cropRect.x + cropRect.width ||
-                 cy + ry < cropRect.y || cy - ry > cropRect.y + cropRect.height)
+        return !(cx + rx < actualCropRect.x || cx - rx > actualCropRect.x + actualCropRect.width ||
+                 cy + ry < actualCropRect.y || cy - ry > actualCropRect.y + actualCropRect.height)
       }
 
       if (tagName === 'line') {
@@ -2579,8 +2760,8 @@ export default function SortTab() {
         const lineMinY = Math.min(y1, y2)
         const lineMaxY = Math.max(y1, y2)
 
-        return !(lineMaxX < cropRect.x || lineMinX > cropRect.x + cropRect.width ||
-                 lineMaxY < cropRect.y || lineMinY > cropRect.y + cropRect.height)
+        return !(lineMaxX < actualCropRect.x || lineMinX > actualCropRect.x + actualCropRect.width ||
+                 lineMaxY < actualCropRect.y || lineMinY > actualCropRect.y + actualCropRect.height)
       }
 
       return true // Default to keeping elements we don't recognize
@@ -2603,12 +2784,12 @@ export default function SortTab() {
         for (const subpath of subpaths) {
           if (subpath.length < 3) continue
 
-          const clipped = clipPolygonToRect(subpath, cropRect)
+          const clipped = clipPolygonToRect(subpath, actualCropRect)
           if (clipped.length >= 3) {
             // Translate to new origin
             const translated = clipped.map(p => ({
-              x: p.x - cropRect.x,
-              y: p.y - cropRect.y
+              x: p.x - actualCropRect.x,
+              y: p.y - actualCropRect.y
             }))
             clippedSubpaths.push(translated)
           }
@@ -2633,15 +2814,15 @@ export default function SortTab() {
         const points = getPolygonPoints(elem)
         if (points.length < 3) return
 
-        const clipped = clipPolygonToRect(points, cropRect)
+        const clipped = clipPolygonToRect(points, actualCropRect)
         if (clipped.length < 3) {
           elem.parentNode?.removeChild(elem)
           return
         }
 
         const translated = clipped.map(p => ({
-          x: p.x - cropRect.x,
-          y: p.y - cropRect.y
+          x: p.x - actualCropRect.x,
+          y: p.y - actualCropRect.y
         }))
         elem.setAttribute('points', translated.map(p => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' '))
       } else if (tagName === 'rect') {
@@ -2651,18 +2832,18 @@ export default function SortTab() {
         const h = parseFloat(elem.getAttribute('height') || '0')
 
         // Clip rect bounds
-        const newX = Math.max(x, cropRect.x)
-        const newY = Math.max(y, cropRect.y)
-        const newX2 = Math.min(x + w, cropRect.x + cropRect.width)
-        const newY2 = Math.min(y + h, cropRect.y + cropRect.height)
+        const newX = Math.max(x, actualCropRect.x)
+        const newY = Math.max(y, actualCropRect.y)
+        const newX2 = Math.min(x + w, actualCropRect.x + actualCropRect.width)
+        const newY2 = Math.min(y + h, actualCropRect.y + actualCropRect.height)
 
         if (newX2 <= newX || newY2 <= newY) {
           elem.parentNode?.removeChild(elem)
           return
         }
 
-        elem.setAttribute('x', String(newX - cropRect.x))
-        elem.setAttribute('y', String(newY - cropRect.y))
+        elem.setAttribute('x', String(newX - actualCropRect.x))
+        elem.setAttribute('y', String(newY - actualCropRect.y))
         elem.setAttribute('width', String(newX2 - newX))
         elem.setAttribute('height', String(newY2 - newY))
       } else if (tagName === 'circle' || tagName === 'ellipse') {
@@ -2688,7 +2869,7 @@ export default function SortTab() {
           })
         }
 
-        const clipped = clipPolygonToRect(points, cropRect)
+        const clipped = clipPolygonToRect(points, actualCropRect)
         if (clipped.length < 3) {
           elem.parentNode?.removeChild(elem)
           return
@@ -2696,8 +2877,8 @@ export default function SortTab() {
 
         // Convert to path element
         const translated = clipped.map(p => ({
-          x: p.x - cropRect.x,
-          y: p.y - cropRect.y
+          x: p.x - actualCropRect.x,
+          y: p.y - actualCropRect.y
         }))
         const pathD = polygonToPath(translated)
 
@@ -2723,10 +2904,10 @@ export default function SortTab() {
         const INSIDE = 0, LEFT = 1, RIGHT = 2, BOTTOM = 4, TOP = 8
         const computeOutCode = (x: number, y: number) => {
           let code = INSIDE
-          if (x < cropRect.x) code |= LEFT
-          else if (x > cropRect.x + cropRect.width) code |= RIGHT
-          if (y < cropRect.y) code |= TOP
-          else if (y > cropRect.y + cropRect.height) code |= BOTTOM
+          if (x < actualCropRect.x) code |= LEFT
+          else if (x > actualCropRect.x + actualCropRect.width) code |= RIGHT
+          if (y < actualCropRect.y) code |= TOP
+          else if (y > actualCropRect.y + actualCropRect.height) code |= BOTTOM
           return code
         }
 
@@ -2745,17 +2926,17 @@ export default function SortTab() {
             const outcodeOut = outcode1 !== 0 ? outcode1 : outcode2
             let x = 0, y = 0
             if (outcodeOut & BOTTOM) {
-              x = cx1 + (cx2 - cx1) * (cropRect.y + cropRect.height - cy1) / (cy2 - cy1)
-              y = cropRect.y + cropRect.height
+              x = cx1 + (cx2 - cx1) * (actualCropRect.y + actualCropRect.height - cy1) / (cy2 - cy1)
+              y = actualCropRect.y + actualCropRect.height
             } else if (outcodeOut & TOP) {
-              x = cx1 + (cx2 - cx1) * (cropRect.y - cy1) / (cy2 - cy1)
-              y = cropRect.y
+              x = cx1 + (cx2 - cx1) * (actualCropRect.y - cy1) / (cy2 - cy1)
+              y = actualCropRect.y
             } else if (outcodeOut & RIGHT) {
-              y = cy1 + (cy2 - cy1) * (cropRect.x + cropRect.width - cx1) / (cx2 - cx1)
-              x = cropRect.x + cropRect.width
+              y = cy1 + (cy2 - cy1) * (actualCropRect.x + actualCropRect.width - cx1) / (cx2 - cx1)
+              x = actualCropRect.x + actualCropRect.width
             } else if (outcodeOut & LEFT) {
-              y = cy1 + (cy2 - cy1) * (cropRect.x - cx1) / (cx2 - cx1)
-              x = cropRect.x
+              y = cy1 + (cy2 - cy1) * (actualCropRect.x - cx1) / (cx2 - cx1)
+              x = actualCropRect.x
             }
             if (outcodeOut === outcode1) {
               cx1 = x; cy1 = y
@@ -2770,10 +2951,10 @@ export default function SortTab() {
         if (!accept) {
           elem.parentNode?.removeChild(elem)
         } else {
-          elem.setAttribute('x1', String(cx1 - cropRect.x))
-          elem.setAttribute('y1', String(cy1 - cropRect.y))
-          elem.setAttribute('x2', String(cx2 - cropRect.x))
-          elem.setAttribute('y2', String(cy2 - cropRect.y))
+          elem.setAttribute('x1', String(cx1 - actualCropRect.x))
+          elem.setAttribute('y1', String(cy1 - actualCropRect.y))
+          elem.setAttribute('x2', String(cx2 - actualCropRect.x))
+          elem.setAttribute('y2', String(cy2 - actualCropRect.y))
         }
       } else if (tagName === 'polyline') {
         // For polyline, clip each segment
@@ -2783,12 +2964,12 @@ export default function SortTab() {
         // Translate points
         const translated = points
           .filter(p =>
-            p.x >= cropRect.x && p.x <= cropRect.x + cropRect.width &&
-            p.y >= cropRect.y && p.y <= cropRect.y + cropRect.height
+            p.x >= actualCropRect.x && p.x <= actualCropRect.x + actualCropRect.width &&
+            p.y >= actualCropRect.y && p.y <= actualCropRect.y + actualCropRect.height
           )
           .map(p => ({
-            x: p.x - cropRect.x,
-            y: p.y - cropRect.y
+            x: p.x - actualCropRect.x,
+            y: p.y - actualCropRect.y
           }))
 
         if (translated.length < 2) {
@@ -2838,10 +3019,10 @@ export default function SortTab() {
       processElement(child)
     }
 
-    // Update SVG dimensions
-    svg.setAttribute('width', String(cropRect.width))
-    svg.setAttribute('height', String(cropRect.height))
-    svg.setAttribute('viewBox', `0 0 ${cropRect.width} ${cropRect.height}`)
+    // Update SVG dimensions (use actualCropRect dimensions since elements are now in that coordinate space)
+    svg.setAttribute('width', String(actualCropRect.width))
+    svg.setAttribute('height', String(actualCropRect.height))
+    svg.setAttribute('viewBox', `0 0 ${actualCropRect.width} ${actualCropRect.height}`)
 
     // Serialize back to string
     const serializer = new XMLSerializer()
@@ -3242,7 +3423,7 @@ export default function SortTab() {
             <input
               type="range"
               min="25"
-              max="100"
+              max="200"
               value={cropSize * 100}
               onChange={(e) => setCropSize(Number(e.target.value) / 100)}
               style={{ width: '120px' }}
@@ -3262,6 +3443,17 @@ export default function SortTab() {
                 }}
               >
                 1:2
+              </button>
+              <button
+                className="crop-ratio-button"
+                onClick={() => setCropAspectRatio('2:3')}
+                title="Aspect Ratio 2:3 (12x18)"
+                style={{
+                  background: cropAspectRatio === '2:3' ? '#4a90e2' : 'white',
+                  color: cropAspectRatio === '2:3' ? 'white' : 'inherit',
+                }}
+              >
+                2:3
               </button>
               <button
                 className="crop-ratio-button"
