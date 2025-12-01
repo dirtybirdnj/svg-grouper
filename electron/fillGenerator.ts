@@ -42,6 +42,9 @@ export interface FillGenerationParams {
   singleHilbert: boolean
   singleFermat: boolean
   customTileShape: TileShapeType
+  customTileGap: number
+  customTileScale: number
+  customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
 }
@@ -200,6 +203,9 @@ async function generateFillsMainProcess(
     singleHilbert,
     singleFermat,
     customTileShape,
+    customTileGap,
+    customTileScale,
+    customTileRotateOffset,
     enableCrop,
     cropInset,
   } = params
@@ -318,7 +324,7 @@ async function generateFillsMainProcess(
             lines = generateScribbleLines(polygonData, lineSpacing, inset)
             break
           case 'custom':
-            lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle)
+            lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
             break
           case 'lines':
           default: {

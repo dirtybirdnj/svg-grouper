@@ -248,6 +248,9 @@ async function generateFillsLocally(
   singleHilbert: boolean,
   singleFermat: boolean,
   customTileShape: TileShapeType,
+  customTileGap: number,
+  customTileScale: number,
+  customTileRotateOffset: number,
   enableCrop: boolean,
   cropInset: number,
   abortController: { aborted: boolean },
@@ -360,7 +363,7 @@ async function generateFillsLocally(
           lines = generateScribbleLines(polygonData, lineSpacing, inset)
           break
         case 'custom':
-          lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle)
+          lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
           break
         case 'lines':
         default:
@@ -424,6 +427,9 @@ export default function FillTab() {
   const [singleFermat, setSingleFermat] = useState(true) // Use one Fermat spiral for all shapes (default true)
   const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
   const [customTileShape, setCustomTileShape] = useState<TileShapeType>('triangle') // Selected tile shape for custom pattern
+  const [customTileGap, setCustomTileGap] = useState(0) // Gap between tiles (px)
+  const [customTileScale, setCustomTileScale] = useState(1.0) // Scale factor for tile size
+  const [customTileRotateOffset, setCustomTileRotateOffset] = useState(0) // Rotation offset per tile (degrees)
 
   // Crop support for fill patterns
   const [enableCrop, setEnableCrop] = useState(false)
@@ -815,6 +821,9 @@ export default function FillTab() {
             singleHilbert,
             singleFermat,
             customTileShape,
+            customTileGap,
+            customTileScale,
+            customTileRotateOffset,
             enableCrop,
             cropInset
           })
@@ -874,6 +883,9 @@ export default function FillTab() {
             singleHilbert,
             singleFermat,
             customTileShape,
+            customTileGap,
+            customTileScale,
+            customTileRotateOffset,
             enableCrop,
             cropInset,
             abortController,
@@ -902,7 +914,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, enableCrop, cropInset, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, customTileGap, customTileScale, customTileRotateOffset, enableCrop, cropInset, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -1745,27 +1757,77 @@ export default function FillTab() {
             )}
 
             {fillPattern === 'custom' && (
-              <div className="fill-control">
-                <label>Tile Shape</label>
-                <div className="tile-shape-selector">
-                  {(Object.keys(TILE_SHAPES) as TileShapeType[]).map(shape => (
-                    <button
-                      key={shape}
-                      className={`tile-shape-btn ${customTileShape === shape ? 'active' : ''}`}
-                      onClick={() => setCustomTileShape(shape)}
-                      title={shape.charAt(0).toUpperCase() + shape.slice(1)}
-                    >
-                      {shape === 'triangle' && '△'}
-                      {shape === 'square' && '□'}
-                      {shape === 'diamond' && '◇'}
-                      {shape === 'hexagon' && '⬡'}
-                      {shape === 'star' && '☆'}
-                      {shape === 'plus' && '+'}
-                      {shape === 'circle' && '○'}
-                    </button>
-                  ))}
+              <>
+                <div className="fill-control">
+                  <label>Tile Shape</label>
+                  <div className="tile-shape-selector">
+                    {(Object.keys(TILE_SHAPES) as TileShapeType[]).map(shape => (
+                      <button
+                        key={shape}
+                        className={`tile-shape-btn ${customTileShape === shape ? 'active' : ''}`}
+                        onClick={() => setCustomTileShape(shape)}
+                        title={shape.charAt(0).toUpperCase() + shape.slice(1)}
+                      >
+                        {shape === 'triangle' && '△'}
+                        {shape === 'square' && '□'}
+                        {shape === 'diamond' && '◇'}
+                        {shape === 'hexagon' && '⬡'}
+                        {shape === 'star' && '☆'}
+                        {shape === 'plus' && '+'}
+                        {shape === 'circle' && '○'}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+
+                <div className="fill-control">
+                  <label>Tile Gap</label>
+                  <div className="control-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="20"
+                      step="1"
+                      value={customTileGap}
+                      onChange={(e) => setCustomTileGap(Number(e.target.value))}
+                      className="fill-slider"
+                    />
+                    <span className="control-value">{customTileGap}px</span>
+                  </div>
+                </div>
+
+                <div className="fill-control">
+                  <label>Tile Size</label>
+                  <div className="control-row">
+                    <input
+                      type="range"
+                      min="0.2"
+                      max="2.0"
+                      step="0.1"
+                      value={customTileScale}
+                      onChange={(e) => setCustomTileScale(Number(e.target.value))}
+                      className="fill-slider"
+                    />
+                    <span className="control-value">{(customTileScale * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+
+                <div className="fill-control">
+                  <label>Rotate Offset</label>
+                  <div className="control-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="45"
+                      step="1"
+                      value={customTileRotateOffset}
+                      onChange={(e) => setCustomTileRotateOffset(Number(e.target.value))}
+                      className="fill-slider"
+                    />
+                    <span className="control-value">{customTileRotateOffset}°</span>
+                  </div>
+                </div>
+              </>
             )}
 
             {(fillPattern === 'lines' || fillPattern === 'wiggle' || fillPattern === 'honeycomb' || fillPattern === 'crosshatch' || fillPattern === 'zigzag' || fillPattern === 'radial' || fillPattern === 'crossspiral' || fillPattern === 'hilbert' || fillPattern === 'gyroid' || fillPattern === 'fermat' || fillPattern === 'wave' || fillPattern === 'scribble' || fillPattern === 'custom') && (

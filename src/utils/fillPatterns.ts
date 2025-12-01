@@ -1603,7 +1603,10 @@ export function generateCustomTileLines(
   tileShape: Point[],
   inset: number = 0,
   angleDegrees: number = 0,
-  fillTiles: boolean = false // If true, fill tiles; if false, just outline
+  fillTiles: boolean = false, // If true, fill tiles; if false, just outline
+  tileGap: number = 0, // Extra gap between tiles (added to spacing)
+  tileScale: number = 1.0, // Scale factor for tile size (0.5 = half size, 2.0 = double)
+  rotateOffsetDegrees: number = 0 // Rotation offset applied incrementally to each tile
 ): HatchLine[] {
   const { outer } = polygonData
   if (outer.length < 3 || tileShape.length < 3) return []
@@ -1624,19 +1627,26 @@ export function generateCustomTileLines(
   }
 
   const angleRad = (angleDegrees * Math.PI) / 180
-  const cosA = Math.cos(angleRad)
-  const sinA = Math.sin(angleRad)
+  const rotateOffsetRad = (rotateOffsetDegrees * Math.PI) / 180
 
   const lines: HatchLine[] = []
-  // OPTIMIZATION: Reduced padding from spacing * 2 to spacing
-  const padding = spacing
+
+  // Grid spacing = base spacing + gap between tiles
+  const gridSpacing = spacing + tileGap
+  const gridPadding = gridSpacing
+
+  // Clamp tile scale to reasonable range
+  const clampedScale = Math.max(0.1, Math.min(3.0, tileScale))
 
   // OPTIMIZATION: Pre-compute tile radius for quick bbox test
-  const tileRadius = spacing * 0.75 // Approximate tile extent from center
+  const tileRadius = spacing * 0.75 * clampedScale // Approximate tile extent from center
 
-  // Grid of tile positions
-  for (let y = minY - padding; y <= maxY + padding; y += spacing) {
-    for (let x = minX - padding; x <= maxX + padding; x += spacing) {
+  // Track tile index for rotation offset
+  let tileIndex = 0
+
+  // Grid of tile positions (uses gridSpacing for distance between centers)
+  for (let y = minY - gridPadding; y <= maxY + gridPadding; y += gridSpacing) {
+    for (let x = minX - gridPadding; x <= maxX + gridPadding; x += gridSpacing) {
       // OPTIMIZATION: Quick bbox rejection before any expensive operations
       // Skip tiles whose bounding circle doesn't intersect polygon bbox
       if (x + tileRadius < minX || x - tileRadius > maxX ||
@@ -1644,17 +1654,24 @@ export function generateCustomTileLines(
         continue
       }
 
+      // Calculate rotation for this tile: base angle + incremental offset
+      const tileAngle = angleRad + (tileIndex * rotateOffsetRad)
+      const cosA = Math.cos(tileAngle)
+      const sinA = Math.sin(tileAngle)
+
       // Transform tile points to this position
+      // Tile size is based on spacing * scale (not affected by gap)
       const transformedPoints: Point[] = tileShape.map(p => {
-        // Scale
-        const sx = p.x * spacing
-        const sy = p.y * spacing
+        const sx = p.x * spacing * clampedScale
+        const sy = p.y * spacing * clampedScale
         // Rotate around origin
         const rx = sx * cosA - sy * sinA
         const ry = sx * sinA + sy * cosA
         // Translate
         return { x: x + rx, y: y + ry }
       })
+
+      tileIndex++
 
       // OPTIMIZATION: First check if center is inside bbox before expensive pointInPolygon
       const centerInBbox = x >= minX && x <= maxX && y >= minY && y <= maxY

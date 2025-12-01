@@ -20,6 +20,9 @@ interface FillGenerationParams {
   singleHilbert: boolean
   singleFermat: boolean
   customTileShape: string
+  customTileGap: number
+  customTileScale: number
+  customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
 }
