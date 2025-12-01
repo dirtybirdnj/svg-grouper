@@ -52,15 +52,82 @@ interface FillPathInfo {
 
 // Chain connected line segments into polylines, then simplify each polyline
 // Returns simplified lines that approximate the original with fewer points
+// Uses spatial indexing for O(n) performance instead of O(n²)
 function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
   if (tolerance <= 0 || lines.length === 0) return lines
 
   const CONNECT_THRESHOLD = 0.5 // Points closer than this are considered connected
-  const MAX_CHAIN_ITERATIONS = 10000 // Safety limit to prevent infinite loops
+  const GRID_SIZE = CONNECT_THRESHOLD * 2 // Grid cell size for spatial hashing
 
-  // Build chains of connected lines
+  // Spatial hash function - rounds point to grid cell
+  const hashPoint = (x: number, y: number): string => {
+    const gx = Math.floor(x / GRID_SIZE)
+    const gy = Math.floor(y / GRID_SIZE)
+    return `${gx},${gy}`
+  }
+
+  // Build spatial index: map from grid cell to line indices with endpoints in that cell
+  // Each line is indexed by both its endpoints
+  const spatialIndex = new Map<string, Set<number>>()
+
+  const addToIndex = (x: number, y: number, lineIndex: number) => {
+    const hash = hashPoint(x, y)
+    let set = spatialIndex.get(hash)
+    if (!set) {
+      set = new Set()
+      spatialIndex.set(hash, set)
+    }
+    set.add(lineIndex)
+    // Also add to adjacent cells for threshold tolerance
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (dx === 0 && dy === 0) continue
+        const gx = Math.floor(x / GRID_SIZE) + dx
+        const gy = Math.floor(y / GRID_SIZE) + dy
+        const adjHash = `${gx},${gy}`
+        let adjSet = spatialIndex.get(adjHash)
+        if (!adjSet) {
+          adjSet = new Set()
+          spatialIndex.set(adjHash, adjSet)
+        }
+        adjSet.add(lineIndex)
+      }
+    }
+  }
+
+  // Index all line endpoints
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    addToIndex(line.x1, line.y1, i)
+    addToIndex(line.x2, line.y2, i)
+  }
+
+  // Build chains using spatial index for fast neighbor lookup
   const chains: Point[][] = []
   const used = new Set<number>()
+
+  // Helper to find connecting line using spatial index
+  const findConnectingLine = (x: number, y: number): { lineIndex: number; isP1: boolean } | null => {
+    const hash = hashPoint(x, y)
+    const candidates = spatialIndex.get(hash)
+    if (!candidates) return null
+
+    for (const j of candidates) {
+      if (used.has(j)) continue
+      const line = lines[j]
+
+      const d1 = Math.hypot(line.x1 - x, line.y1 - y)
+      if (d1 < CONNECT_THRESHOLD) {
+        return { lineIndex: j, isP1: true }
+      }
+
+      const d2 = Math.hypot(line.x2 - x, line.y2 - y)
+      if (d2 < CONNECT_THRESHOLD) {
+        return { lineIndex: j, isP1: false }
+      }
+    }
+    return null
+  }
 
   for (let i = 0; i < lines.length; i++) {
     if (used.has(i)) continue
@@ -72,49 +139,39 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
     ]
     used.add(i)
 
-    // Try to extend the chain in both directions
-    let extended = true
-    let iterations = 0
-    while (extended && iterations < MAX_CHAIN_ITERATIONS) {
-      extended = false
-      iterations++
-      const chainStart = chain[0]
+    // Extend chain from end
+    let found = true
+    while (found) {
+      found = false
       const chainEnd = chain[chain.length - 1]
+      const result = findConnectingLine(chainEnd.x, chainEnd.y)
+      if (result) {
+        const line = lines[result.lineIndex]
+        // Add the other endpoint
+        const newPoint = result.isP1
+          ? { x: line.x2, y: line.y2 }
+          : { x: line.x1, y: line.y1 }
+        chain.push(newPoint)
+        used.add(result.lineIndex)
+        found = true
+      }
+    }
 
-      for (let j = 0; j < lines.length; j++) {
-        if (used.has(j)) continue
-
-        const line = lines[j]
-        const p1 = { x: line.x1, y: line.y1 }
-        const p2 = { x: line.x2, y: line.y2 }
-
-        // Check if line connects to end of chain
-        const d1End = Math.hypot(p1.x - chainEnd.x, p1.y - chainEnd.y)
-        const d2End = Math.hypot(p2.x - chainEnd.x, p2.y - chainEnd.y)
-        const d1Start = Math.hypot(p1.x - chainStart.x, p1.y - chainStart.y)
-        const d2Start = Math.hypot(p2.x - chainStart.x, p2.y - chainStart.y)
-
-        if (d1End < CONNECT_THRESHOLD) {
-          chain.push(p2)
-          used.add(j)
-          extended = true
-          break // Found a connection, restart scan from chain ends
-        } else if (d2End < CONNECT_THRESHOLD) {
-          chain.push(p1)
-          used.add(j)
-          extended = true
-          break
-        } else if (d1Start < CONNECT_THRESHOLD) {
-          chain.unshift(p2)
-          used.add(j)
-          extended = true
-          break
-        } else if (d2Start < CONNECT_THRESHOLD) {
-          chain.unshift(p1)
-          used.add(j)
-          extended = true
-          break
-        }
+    // Extend chain from start
+    found = true
+    while (found) {
+      found = false
+      const chainStart = chain[0]
+      const result = findConnectingLine(chainStart.x, chainStart.y)
+      if (result) {
+        const line = lines[result.lineIndex]
+        // Add the other endpoint
+        const newPoint = result.isP1
+          ? { x: line.x2, y: line.y2 }
+          : { x: line.x1, y: line.y1 }
+        chain.unshift(newPoint)
+        used.add(result.lineIndex)
+        found = true
       }
     }
 
@@ -383,7 +440,7 @@ export default function FillTab() {
   const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
 
-  // Draft states for sliders - show value during drag, commit on release
+  // Draft states for sliders and color picker - show value during drag, commit on release
   const [draftLineSpacing, setDraftLineSpacing] = useState(15)
   const [draftAngle, setDraftAngle] = useState(45)
   const [draftInset, setDraftInset] = useState(0)
@@ -391,6 +448,7 @@ export default function FillTab() {
   const [draftWiggleFrequency, setDraftWiggleFrequency] = useState(2)
   const [draftPenWidth, setDraftPenWidth] = useState(0.5)
   const [draftSimplifyTolerance, setDraftSimplifyTolerance] = useState(0)
+  const [draftLayerColor, setDraftLayerColor] = useState<string>('')
 
   // Sync all draft states when actual values change programmatically (e.g., auto-rotate angle)
   // Consolidated into single useEffect to reduce hook overhead
@@ -403,7 +461,8 @@ export default function FillTab() {
     setDraftPenWidth(penWidth)
     setDraftSimplifyTolerance(simplifyTolerance)
     setDraftCropInset(cropInset)
-  }, [lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth, simplifyTolerance, cropInset])
+    setDraftLayerColor(layerColor)
+  }, [lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth, simplifyTolerance, cropInset, layerColor])
 
   // Selected control for keyboard nudge
   type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
@@ -700,11 +759,28 @@ export default function FillTab() {
           polygons: PolygonWithHoles[]
         }> = []
 
-        for (const path of pathsToProcess) {
+        // Build lookup map for preserved data (O(1) lookup instead of O(n) find)
+        const preservedDataMap = new Map<string, PolygonWithHoles>()
+        if (preservedFillData) {
+          for (const p of preservedFillData) {
+            if (p.polygon) {
+              preservedDataMap.set(p.pathInfo.id, p.polygon as PolygonWithHoles)
+            }
+          }
+        }
+
+        // Extract polygons with yielding to prevent blocking
+        const BATCH_SIZE = 20 // Process 20 paths before yielding
+        for (let i = 0; i < pathsToProcess.length; i++) {
+          if (abortController.aborted) return
+
+          const path = pathsToProcess[i]
           let polygons: PolygonWithHoles[]
-          if (preservedFillData) {
-            const preserved = preservedFillData.find(p => p.pathInfo.id === path.id)
-            polygons = preserved ? [preserved.polygon] : getAllPolygonsFromElement(path.element)
+
+          // Use O(1) Map lookup instead of O(n) find
+          const preserved = preservedDataMap.get(path.id)
+          if (preserved) {
+            polygons = [preserved]
           } else {
             polygons = getAllPolygonsFromElement(path.element)
           }
@@ -714,6 +790,11 @@ export default function FillTab() {
             color: path.color,
             polygons
           })
+
+          // Yield to browser periodically to keep UI responsive
+          if (i > 0 && i % BATCH_SIZE === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0))
+          }
         }
 
         // Step 2: Check if electron API is available (running in Electron)
@@ -742,10 +823,16 @@ export default function FillTab() {
 
           if (result.success) {
             // Map backend results back to frontend format
+            // Use Map for O(1) lookup instead of O(n) find in loop
+            const pathsMap = new Map<string, FillPathInfo>()
+            for (const p of pathsToProcess) {
+              pathsMap.set(p.id, p)
+            }
+
             const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
 
             for (const pathResult of result.paths) {
-              const originalPath = pathsToProcess.find(p => p.id === pathResult.pathId)
+              const originalPath = pathsMap.get(pathResult.pathId)
               if (originalPath) {
                 results.push({
                   pathInfo: originalPath,
@@ -892,13 +979,20 @@ export default function FillTab() {
         pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="none" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
       })
 
+      // Build lookup map for O(1) access instead of O(n) find
+      const hatchDataMap = new Map<string, typeof simplifiedHatchedPaths[0]>()
+      for (const h of simplifiedHatchedPaths) {
+        hatchDataMap.set(h.pathInfo.id, h)
+      }
+
       // Then draw current working layer (as compound paths, using simplified paths)
       fillPaths.forEach((path) => {
         const isHighlighted = path.id === highlightedPathId
-        const hatchData = simplifiedHatchedPaths.find(h => h.pathInfo.id === path.id)
+        const hatchData = hatchDataMap.get(path.id)
 
         if (hatchData && hatchData.lines.length > 0) {
-          const currentColor = layerColor || path.color
+          // Use draftLayerColor for immediate visual feedback during color picker drag
+          const currentColor = draftLayerColor || layerColor || path.color
           const pathD = linesToCompoundPath(hatchData.lines, 2)
 
           pathElements.push(`<g class="current-layer"><path d="${pathD}" fill="none" stroke="${currentColor}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
@@ -956,7 +1050,7 @@ export default function FillTab() {
     }
 
     return { viewBox, content: pathElements.join('\n') }
-  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, highlightedPathId, enableCrop, cropInset])
+  }, [fillPaths, boundingBox, showHatchPreview, simplifiedHatchedPaths, accumulatedLayers, layerColor, draftLayerColor, retainStrokes, penWidthPx, highlightedPathId, enableCrop, cropInset])
 
   const handleBack = () => {
     // Clean up all fill state when navigating away
@@ -1834,22 +1928,32 @@ export default function FillTab() {
             <div className="layer-color-row">
               <input
                 type="color"
-                value={layerColor || (fillPaths[0]?.color || '#000000')}
+                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
+                onInput={(e) => setDraftLayerColor((e.target as HTMLInputElement).value)}
                 onChange={(e) => setLayerColor(e.target.value)}
                 className="layer-color-picker"
                 title="Pick color for this fill layer"
               />
               <input
                 type="text"
-                value={layerColor || (fillPaths[0]?.color || '#000000')}
-                onChange={(e) => setLayerColor(e.target.value)}
+                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
+                onChange={(e) => setDraftLayerColor(e.target.value)}
+                onBlur={(e) => setLayerColor(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setLayerColor((e.target as HTMLInputElement).value)
+                  }
+                }}
                 className="layer-color-input"
                 placeholder="#000000"
               />
-              {layerColor && (
+              {(layerColor || draftLayerColor) && (
                 <button
                   className="layer-color-reset"
-                  onClick={() => setLayerColor('')}
+                  onClick={() => {
+                    setLayerColor('')
+                    setDraftLayerColor('')
+                  }}
                   title="Reset to original color"
                 >
                   Reset

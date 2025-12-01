@@ -327,13 +327,18 @@ async function generateFillsMainProcess(
             if (crossHatch) {
               const clippedCrossLines = clipLinesToPolygon(globalCrossLines, polygonData, inset)
               const croppedCrossLines = cropRect ? clipLinesToRect(clippedCrossLines, cropRect) : clippedCrossLines
-              lines = [...lines, ...croppedCrossLines]
+              for (const cl of croppedCrossLines) {
+                lines.push(cl)
+              }
             }
             break
           }
         }
 
-        allLines = [...allLines, ...lines]
+        // Use push to avoid O(n²) array allocations from spread operator
+        for (const line of lines) {
+          allLines.push(line)
+        }
       }
 
       if (allLines.length > 0 && firstValidPolygon) {

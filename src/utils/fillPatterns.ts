@@ -24,6 +24,88 @@ export interface OrderedLine extends HatchLine {
 
 export type FillPatternType = 'lines' | 'concentric' | 'wiggle' | 'spiral' | 'honeycomb' | 'gyroid' | 'crosshatch' | 'zigzag' | 'radial' | 'crossspiral' | 'hilbert' | 'fermat' | 'wave' | 'scribble' | 'custom'
 
+// Check if a polygon is self-intersecting (simple check for validity)
+function isPolygonSelfIntersecting(polygon: Point[]): boolean {
+  const n = polygon.length
+  if (n < 4) return false
+
+  // Check each edge against non-adjacent edges
+  for (let i = 0; i < n; i++) {
+    const a1 = polygon[i]
+    const a2 = polygon[(i + 1) % n]
+
+    for (let j = i + 2; j < n; j++) {
+      // Skip adjacent edges
+      if (j === (i + n - 1) % n) continue
+
+      const b1 = polygon[j]
+      const b2 = polygon[(j + 1) % n]
+
+      // Check if segments intersect
+      if (segmentsIntersect(a1, a2, b1, b2)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+// Check if two line segments intersect (excluding endpoints)
+function segmentsIntersect(a1: Point, a2: Point, b1: Point, b2: Point): boolean {
+  const d1 = direction(b1, b2, a1)
+  const d2 = direction(b1, b2, a2)
+  const d3 = direction(a1, a2, b1)
+  const d4 = direction(a1, a2, b2)
+
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+      ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true
+  }
+  return false
+}
+
+function direction(p1: Point, p2: Point, p3: Point): number {
+  return (p3.x - p1.x) * (p2.y - p1.y) - (p2.x - p1.x) * (p3.y - p1.y)
+}
+
+// Simple robust inset for concentric (uses centroid scaling as fallback)
+function robustInsetPolygon(polygon: Point[], insetDistance: number): Point[] {
+  if (polygon.length < 3) return []
+
+  // First try standard offset
+  const offsetResult = offsetPolygonInward(polygon, insetDistance)
+
+  // Validate the result
+  if (offsetResult.length >= 3 && !isPolygonSelfIntersecting(offsetResult)) {
+    const originalArea = Math.abs(polygonSignedArea(polygon))
+    const newArea = Math.abs(polygonSignedArea(offsetResult))
+    // Make sure area decreased (valid inset)
+    if (newArea < originalArea && newArea > 0) {
+      return offsetResult
+    }
+  }
+
+  // Fallback: use centroid-based scaling (simpler but works for any shape)
+  const centroidX = polygon.reduce((sum, p) => sum + p.x, 0) / polygon.length
+  const centroidY = polygon.reduce((sum, p) => sum + p.y, 0) / polygon.length
+
+  // Calculate average distance to centroid
+  let avgDist = 0
+  for (const p of polygon) {
+    avgDist += Math.sqrt(Math.pow(p.x - centroidX, 2) + Math.pow(p.y - centroidY, 2))
+  }
+  avgDist /= polygon.length
+
+  if (avgDist <= insetDistance) return [] // Would collapse to point
+
+  const scale = (avgDist - insetDistance) / avgDist
+
+  return polygon.map(p => ({
+    x: centroidX + (p.x - centroidX) * scale,
+    y: centroidY + (p.y - centroidY) * scale
+  }))
+}
+
 // Generate concentric fill lines (snake pattern from outside in)
 export function generateConcentricLines(
   polygon: Point[],
@@ -33,7 +115,7 @@ export function generateConcentricLines(
   const lines: HatchLine[] = []
   if (polygon.length < 3) return lines
 
-  const minArea = spacing * spacing
+  const minArea = spacing * spacing * 0.5 // Reduced threshold for small shapes
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
   for (const p of polygon) {
@@ -47,19 +129,26 @@ export function generateConcentricLines(
 
   const loops: Point[][] = []
   let currentPolygon = [...polygon]
+  let lastArea = Math.abs(polygonSignedArea(currentPolygon))
 
   for (let loopCount = 0; loopCount < maxLoops; loopCount++) {
-    const area = Math.abs(polygonSignedArea(currentPolygon))
-
-    if (currentPolygon.length < 3 || area < minArea) break
+    if (currentPolygon.length < 3 || lastArea < minArea) break
 
     loops.push([...currentPolygon])
-    currentPolygon = offsetPolygonInward(currentPolygon, spacing)
+
+    // Use robust inset that handles complex shapes
+    currentPolygon = robustInsetPolygon(currentPolygon, spacing)
 
     if (currentPolygon.length < 3) break
 
     const newArea = Math.abs(polygonSignedArea(currentPolygon))
-    if (newArea >= area) break
+    if (newArea >= lastArea || newArea < minArea) break
+    lastArea = newArea
+  }
+
+  // If no loops were generated, at least draw the original polygon outline
+  if (loops.length === 0 && polygon.length >= 3) {
+    loops.push([...polygon])
   }
 
   for (let loopIdx = 0; loopIdx < loops.length; loopIdx++) {
