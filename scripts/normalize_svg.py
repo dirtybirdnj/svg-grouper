@@ -191,6 +191,96 @@ def normalize_element(elem, offset_x, offset_y, ns):
         normalize_element(child, offset_x, offset_y, ns)
 
 
+def analyze_svg_structure(root, ns):
+    """Analyze and report SVG structure for debugging."""
+    element_counts = {}
+    group_depths = []
+
+    def count_elements(elem, depth=0):
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+        element_counts[tag] = element_counts.get(tag, 0) + 1
+
+        if tag == 'g':
+            group_depths.append(depth)
+            fill = elem.get('fill')
+            stroke = elem.get('stroke')
+            elem_id = elem.get('id', 'no-id')
+            child_count = len(list(elem))
+            if depth < 2:
+                print(f"[normalize_svg] Group '{elem_id}' depth={depth}: {child_count} children, fill={fill}, stroke={stroke}", file=sys.stderr)
+
+        for child in elem:
+            count_elements(child, depth + 1)
+
+    for child in root:
+        count_elements(child)
+
+    print(f"[normalize_svg] Element counts: {element_counts}", file=sys.stderr)
+    if group_depths:
+        print(f"[normalize_svg] Max group depth: {max(group_depths)}, total groups: {len(group_depths)}", file=sys.stderr)
+
+
+LEAF_TAGS = {'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use'}
+
+
+def flatten_groups(root, ns):
+    """
+    Flatten all groups by extracting leaf elements and applying inherited styles.
+    Removes all <g> elements, keeping only drawable elements.
+    """
+    svg_ns = 'http://www.w3.org/2000/svg'
+    leaf_elements = []
+
+    def extract_leaves(elem, inherited_fill=None, inherited_stroke=None, inherited_transform=None):
+        """Recursively extract leaf elements, inheriting styles from parent groups."""
+        tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
+
+        # Get this element's styles
+        fill = elem.get('fill') or inherited_fill
+        stroke = elem.get('stroke') or inherited_stroke
+        transform = elem.get('transform')
+
+        # Compose transforms
+        if inherited_transform and transform:
+            composed_transform = f"{inherited_transform} {transform}"
+        else:
+            composed_transform = inherited_transform or transform
+
+        if tag == 'g':
+            # Recurse into group children
+            for child in list(elem):
+                extract_leaves(child, fill, stroke, composed_transform)
+        elif tag in LEAF_TAGS:
+            # Apply inherited styles to leaf
+            if composed_transform and not elem.get('transform'):
+                elem.set('transform', composed_transform)
+            if fill and not elem.get('fill'):
+                elem.set('fill', fill)
+            if stroke and not elem.get('stroke'):
+                elem.set('stroke', stroke)
+            leaf_elements.append(elem)
+
+    # Extract all leaves from root children
+    for child in list(root):
+        extract_leaves(child)
+        root.remove(child)
+
+    # Add all leaf elements directly to root
+    for leaf in leaf_elements:
+        root.append(leaf)
+
+    print(f"[normalize_svg] Flattened to {len(leaf_elements)} leaf elements", file=sys.stderr)
+
+    # Debug: count colors
+    color_counts = {}
+    for elem in leaf_elements[:1000]:
+        color = elem.get('fill') or elem.get('stroke') or 'no-color'
+        color_counts[color] = color_counts.get(color, 0) + 1
+    print(f"[normalize_svg] Color distribution (first 1000): {color_counts}", file=sys.stderr)
+
+    return len(leaf_elements)
+
+
 def main():
     # Read SVG from stdin
     svg_input = sys.stdin.read()
@@ -213,6 +303,11 @@ def main():
     # Parse SVG
     root = ET.fromstring(svg_input)
 
+    # Analyze structure for debugging
+    print(f"[normalize_svg] === SVG Structure Analysis ===", file=sys.stderr)
+    analyze_svg_structure(root, namespaces)
+    print(f"[normalize_svg] === End Structure Analysis ===", file=sys.stderr)
+
     # Get viewBox
     viewbox_str = root.get('viewBox')
     viewbox = parse_viewbox(viewbox_str)
@@ -224,28 +319,29 @@ def main():
 
     print(f"[normalize_svg] Original viewBox: {viewbox_str}", file=sys.stderr)
 
-    # Check if normalization is needed
-    if viewbox['minX'] == 0 and viewbox['minY'] == 0:
-        print(f"[normalize_svg] ViewBox already at origin, outputting unchanged", file=sys.stderr)
-        print(svg_input, end='')
-        return
+    # Check if coordinate normalization is needed
+    needs_coord_normalization = viewbox['minX'] != 0 or viewbox['minY'] != 0
 
-    # Calculate offset (negative of viewBox origin)
-    offset_x = -viewbox['minX']
-    offset_y = -viewbox['minY']
+    if needs_coord_normalization:
+        # Calculate offset (negative of viewBox origin)
+        offset_x = -viewbox['minX']
+        offset_y = -viewbox['minY']
 
-    print(f"[normalize_svg] Applying offset: ({offset_x}, {offset_y})", file=sys.stderr)
+        print(f"[normalize_svg] Applying offset: ({offset_x}, {offset_y})", file=sys.stderr)
 
-    # Count elements
-    path_count = len(root.findall('.//{http://www.w3.org/2000/svg}path'))
-    print(f"[normalize_svg] Processing {path_count} paths", file=sys.stderr)
+        # Count elements
+        path_count = len(root.findall('.//{http://www.w3.org/2000/svg}path'))
+        print(f"[normalize_svg] Processing {path_count} paths", file=sys.stderr)
 
-    # Transform all elements
-    normalize_element(root, offset_x, offset_y, namespaces)
+        # Transform all elements
+        normalize_element(root, offset_x, offset_y, namespaces)
 
-    # Update viewBox to start at (0, 0)
-    new_viewbox = f"0 0 {viewbox['width']} {viewbox['height']}"
-    root.set('viewBox', new_viewbox)
+        # Update viewBox to start at (0, 0)
+        new_viewbox = f"0 0 {viewbox['width']} {viewbox['height']}"
+        root.set('viewBox', new_viewbox)
+        print(f"[normalize_svg] New viewBox: {new_viewbox}", file=sys.stderr)
+    else:
+        print(f"[normalize_svg] ViewBox already at origin, skipping coordinate normalization", file=sys.stderr)
 
     # Get original width/height for debug
     orig_width = root.get('width', 'not set')
@@ -262,7 +358,10 @@ def main():
     root.set('width', new_width)
     root.set('height', new_height)
 
-    print(f"[normalize_svg] New viewBox: {new_viewbox}", file=sys.stderr)
+    # Flatten all groups - extract leaf elements and apply inherited styles
+    print(f"[normalize_svg] Flattening groups...", file=sys.stderr)
+    leaf_count = flatten_groups(root, namespaces)
+    print(f"[normalize_svg] Flattening complete: {leaf_count} elements", file=sys.stderr)
 
     # Verify attributes were set correctly
     final_width = root.get('width')
