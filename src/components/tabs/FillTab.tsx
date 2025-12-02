@@ -488,15 +488,25 @@ export default function FillTab() {
   const [cropInset, setCropInset] = useState(0) // Percentage of bounding box to crop from edges (0-50%)
   const [draftCropInset, setDraftCropInset] = useState(0)
 
-  // Accumulated fill layers - each layer has lines with a color
+  // Accumulated fill layers - each layer has lines with a color and settings for re-population
   interface FillLayer {
+    id: string  // Unique ID for drag-and-drop
     lines: HatchLine[]
     color: string
     pathId: string
+    // Settings stored for re-population
+    angle: number
+    lineSpacing: number
+    pattern: FillPatternType
+    inset: number
+    lineCount: number  // For display
   }
   const [accumulatedLayers, setAccumulatedLayers] = useState<FillLayer[]>([])
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
+  const [draggedLayerId, setDraggedLayerId] = useState<string | null>(null)
   const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
+  const [newLayerAngle, setNewLayerAngle] = useState(45) // Angle increment when adding a new layer
 
   // Draft states for sliders and color picker - show value during drag, commit on release
   const [draftLineSpacing, setDraftLineSpacing] = useState(15)
@@ -1146,97 +1156,61 @@ export default function FillTab() {
       const parser = new DOMParser()
 
       // Collect all lines: accumulated layers + current preview
-      // Group by path ID AND color so different colors become separate layer nodes
-      const allLinesByPathAndColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
+      // Group by color so different colors become separate layer nodes
+      const allLinesByColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
 
-      // Add accumulated layers first
+      // Add accumulated layers first (each layer now contains all lines for that layer)
       accumulatedLayers.forEach(layer => {
+        const existing = allLinesByColor.get(layer.color) || []
         layer.lines.forEach(line => {
-          const key = `${layer.pathId}|${layer.color}`
-          const existing = allLinesByPathAndColor.get(key) || []
           existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
-          allLinesByPathAndColor.set(key, existing)
         })
+        allLinesByColor.set(layer.color, existing)
       })
 
       // Add current optimized lines
       optimizedLines.forEach(line => {
         const color = layerColor || line.color
-        const key = `${line.pathId}|${color}`
-        const existing = allLinesByPathAndColor.get(key) || []
+        const existing = allLinesByColor.get(color) || []
         existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
-        allLinesByPathAndColor.set(key, existing)
+        allLinesByColor.set(color, existing)
       })
 
       // Get unique colors used across all fills
-      const colorsUsed = new Set<string>()
-      accumulatedLayers.forEach(layer => colorsUsed.add(layer.color))
-      optimizedLines.forEach(line => colorsUsed.add(layerColor || line.color))
-      const uniqueColors = Array.from(colorsUsed)
+      const uniqueColors = Array.from(allLinesByColor.keys())
 
-    // For each original path, create child nodes for each color used
-    // If retainStrokes is enabled, weld the outline into the fill compound path
-    const fillNodesByTargetId = new Map<string, SVGNode[]>()
+      // Create fill nodes - one per color
+      const fillNodes: SVGNode[] = []
 
-    // Initialize map for each target node
-    targetNodes.forEach(node => fillNodesByTargetId.set(node.id, []))
-
-    simplifiedHatchedPaths.forEach(({ pathInfo }) => {
-      // Find which target node this path belongs to
-      const findOwnerTargetId = (node: SVGNode, pathId: string): string | null => {
-        if (node.id === pathId) return node.id
-        for (const child of node.children) {
-          if (child.id === pathId) return node.id
-          const found = findOwnerTargetId(child, pathId)
-          if (found) return node.id
-        }
-        return null
-      }
-
-      let ownerTargetId: string | null = null
-      for (const targetNode of targetNodes) {
-        // Check if this path is the target itself or a descendant
-        if (targetNode.id === pathInfo.id) {
-          ownerTargetId = targetNode.id
-          break
-        }
-        const found = findOwnerTargetId(targetNode, pathInfo.id)
-        if (found) {
-          ownerTargetId = targetNode.id
-          break
-        }
-      }
-      if (!ownerTargetId) return
-
-      // Find all color variations for this path
-      uniqueColors.forEach(color => {
-        const key = `${pathInfo.id}|${color}`
-        const lines = allLinesByPathAndColor.get(key)
+      // For each color, create a single fill node with all lines
+      uniqueColors.forEach((color, index) => {
+        const lines = allLinesByColor.get(color)
         if (!lines || lines.length === 0) return
 
-        // Convert lines to a single compound path (reduces element count for Cricut compatibility)
+        // Convert lines to a single compound path
         let pathD = linesToCompoundPath(lines, 2)
 
-        // If retainStrokes, append the original outline to the compound path
-        if (retainStrokes) {
-          const originalD = pathInfo.element.getAttribute('d')
-          if (originalD) {
-            // Weld the outline path into the fill compound path
-            pathD = pathD + ' ' + originalD
-          }
+        // If retainStrokes and only one color, append outline from original paths
+        if (retainStrokes && uniqueColors.length === 1) {
+          simplifiedHatchedPaths.forEach(({ pathInfo }) => {
+            const originalD = pathInfo.element.getAttribute('d')
+            if (originalD) {
+              pathD = pathD + ' ' + originalD
+            }
+          })
         }
 
         const nodeId = uniqueColors.length > 1
-          ? `hatch-${pathInfo.id}-${color.replace('#', '')}`
-          : `hatch-${pathInfo.id}`
+          ? `fill-${color.replace('#', '')}-${index}`
+          : `fill-${Date.now()}`
         const nodeName = uniqueColors.length > 1
           ? `Fill ${color}`
           : `Fill`
 
-        // Create as a path element (not a group) for proper display in layer tree
+        // Create as a path element
         const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
 
-        // Create element for the node (reuse parser from outer scope)
+        // Create element for the node
         const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
         const pathElement = dummyDoc.querySelector('path') as Element
 
@@ -1251,11 +1225,14 @@ export default function FillTab() {
           customMarkup: pathMarkup,
         }
 
-        const existing = fillNodesByTargetId.get(ownerTargetId) || []
-        existing.push(fillNode)
-        fillNodesByTargetId.set(ownerTargetId, existing)
+        fillNodes.push(fillNode)
       })
-    })
+
+      // Map fill nodes to first target node
+      const fillNodesByTargetId = new Map<string, SVGNode[]>()
+      if (targetNodes.length > 0) {
+        fillNodesByTargetId.set(targetNodes[0].id, fillNodes)
+      }
 
     // Get set of target node IDs for quick lookup
     const targetIdSet = new Set(targetNodes.map(n => n.id))
@@ -1297,6 +1274,26 @@ export default function FillTab() {
     }, 0) // End setTimeout
   }, [targetNodes, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData, setIsProcessing])
 
+  // Enter key handler - triggers Apply Fill when preview is showing
+  useEffect(() => {
+    const handleEnterKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter') return
+
+      const target = e.target as HTMLElement
+      // Don't trigger if user is in an input field
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+
+      // Only trigger if preview is showing and we have paths
+      if (showHatchPreview && fillPaths.length > 0) {
+        e.preventDefault()
+        handleApplyFill()
+      }
+    }
+
+    window.addEventListener('keydown', handleEnterKey)
+    return () => window.removeEventListener('keydown', handleEnterKey)
+  }, [showHatchPreview, fillPaths.length, handleApplyFill])
+
   // Maximum accumulated layers to prevent memory bloat
   const MAX_ACCUMULATED_LAYERS = 100
 
@@ -1304,21 +1301,36 @@ export default function FillTab() {
   const handleAddLayer = useCallback(() => {
     if (simplifiedHatchedPaths.length === 0) return
 
-    // Collect all current lines into accumulated layers (using simplified paths)
-    // Group by path+color to reduce object count (much more efficient than one object per line)
-    const newLayers: FillLayer[] = []
-    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
-      const color = layerColor || pathInfo.color // Use custom color or original
-      // Create one FillLayer per path with all its lines (not one per line)
-      newLayers.push({
-        lines: lines, // All lines for this path in one object
-        color,
-        pathId: pathInfo.id,
-      })
+    // Generate a unique ID for this layer
+    const layerId = `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+    // Collect all lines from current preview into a single layer
+    const allLines: HatchLine[] = []
+    let totalLineCount = 0
+    simplifiedHatchedPaths.forEach(({ lines }) => {
+      allLines.push(...lines)
+      totalLineCount += lines.length
     })
 
+    // Get the first path ID (for reference) and color
+    const firstPath = simplifiedHatchedPaths[0]?.pathInfo
+    const color = layerColor || firstPath?.color || '#000000'
+
+    // Create a single layer with all settings stored for re-population
+    const newLayer: FillLayer = {
+      id: layerId,
+      lines: allLines,
+      color,
+      pathId: firstPath?.id || '',
+      angle,
+      lineSpacing,
+      pattern: fillPattern,
+      inset,
+      lineCount: totalLineCount,
+    }
+
     setAccumulatedLayers(prev => {
-      const combined = [...prev, ...newLayers]
+      const combined = [...prev, newLayer]
       // Limit to prevent memory bloat
       if (combined.length > MAX_ACCUMULATED_LAYERS) {
         console.warn(`[FillTab] Accumulated layers exceeded ${MAX_ACCUMULATED_LAYERS}, trimming oldest layers`)
@@ -1328,17 +1340,81 @@ export default function FillTab() {
     })
 
     // Rotate angle for next layer (cross-hatching effect)
-    const newAngle = (angle + 45) % 180
-    setAngle(newAngle)
+    const nextAngle = (angle + newLayerAngle) % 180
+    setAngle(nextAngle)
 
     // Reset layer color for next layer
     setLayerColor('')
-  }, [simplifiedHatchedPaths, layerColor, angle, setAngle])
+  }, [simplifiedHatchedPaths, layerColor, angle, newLayerAngle, lineSpacing, fillPattern, inset, setAngle])
 
   // Clear all accumulated layers
   const handleClearLayers = useCallback(() => {
     setAccumulatedLayers([])
     setLayerColor('')
+    setSelectedLayerId(null)
+  }, [])
+
+  // Select a layer and re-populate its settings
+  const handleSelectLayer = useCallback((layerId: string) => {
+    const layer = accumulatedLayers.find(l => l.id === layerId)
+    if (!layer) return
+
+    // Toggle selection if clicking the same layer
+    if (selectedLayerId === layerId) {
+      setSelectedLayerId(null)
+      return
+    }
+
+    setSelectedLayerId(layerId)
+
+    // Re-populate settings from the layer
+    setAngle(layer.angle)
+    setLineSpacing(layer.lineSpacing)
+    setFillPattern(layer.pattern)
+    setInset(layer.inset)
+    setLayerColor(layer.color)
+  }, [accumulatedLayers, selectedLayerId])
+
+  // Delete a specific layer
+  const handleDeleteLayer = useCallback((layerId: string) => {
+    setAccumulatedLayers(prev => prev.filter(l => l.id !== layerId))
+    if (selectedLayerId === layerId) {
+      setSelectedLayerId(null)
+    }
+  }, [selectedLayerId])
+
+  // Drag and drop handlers for reordering
+  const handleDragStart = useCallback((layerId: string) => {
+    setDraggedLayerId(layerId)
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent, targetLayerId: string) => {
+    e.preventDefault()
+    if (!draggedLayerId || draggedLayerId === targetLayerId) return
+  }, [draggedLayerId])
+
+  const handleDrop = useCallback((targetLayerId: string) => {
+    if (!draggedLayerId || draggedLayerId === targetLayerId) {
+      setDraggedLayerId(null)
+      return
+    }
+
+    setAccumulatedLayers(prev => {
+      const draggedIndex = prev.findIndex(l => l.id === draggedLayerId)
+      const targetIndex = prev.findIndex(l => l.id === targetLayerId)
+      if (draggedIndex === -1 || targetIndex === -1) return prev
+
+      const newLayers = [...prev]
+      const [dragged] = newLayers.splice(draggedIndex, 1)
+      newLayers.splice(targetIndex, 0, dragged)
+      return newLayers
+    })
+
+    setDraggedLayerId(null)
+  }, [draggedLayerId])
+
+  const handleDragEnd = useCallback(() => {
+    setDraggedLayerId(null)
   }, [])
 
   const handleNavigateToOrder = useCallback(() => {
@@ -1446,6 +1522,150 @@ export default function FillTab() {
           </button>
           <h2>Fill Paths ({fillPaths.length})</h2>
         </div>
+
+        {/* Fill Color and Pen Width controls */}
+        <div className="sidebar-controls">
+          <div className="fill-control compact">
+            <label>Fill Color</label>
+            <div className="control-row color-row">
+              <input
+                type="color"
+                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
+                onInput={(e) => setDraftLayerColor((e.target as HTMLInputElement).value)}
+                onChange={(e) => setLayerColor(e.target.value)}
+                className="layer-color-picker"
+                title="Pick color for this fill layer"
+              />
+              <input
+                type="text"
+                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
+                onChange={(e) => setDraftLayerColor(e.target.value)}
+                onBlur={(e) => setLayerColor(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    setLayerColor((e.target as HTMLInputElement).value)
+                  }
+                }}
+                className="layer-color-input"
+                placeholder="#000000"
+              />
+              {(layerColor || draftLayerColor) && (
+                <button
+                  className="layer-color-reset"
+                  onClick={() => {
+                    setLayerColor('')
+                    setDraftLayerColor('')
+                  }}
+                  title="Reset to original color"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="fill-control compact">
+            <label>Pen Width</label>
+            <div className="control-row">
+              <input
+                type="range"
+                min="0.1"
+                max="2"
+                step="0.1"
+                value={draftPenWidth}
+                onChange={(e) => setDraftPenWidth(Number(e.target.value))}
+                onPointerUp={() => setPenWidth(draftPenWidth)}
+                onKeyUp={() => setPenWidth(draftPenWidth)}
+                className="fill-slider"
+              />
+              <span className="control-value">{draftPenWidth}mm</span>
+            </div>
+          </div>
+
+          <div className="fill-control compact layer-buttons">
+            <button
+              className="apply-btn"
+              disabled={fillPaths.length === 0 || !showHatchPreview}
+              onClick={handleApplyFill}
+              title="Apply all fill layers to the SVG (Enter)"
+            >
+              Apply
+            </button>
+            <button
+              className="new-layer-btn"
+              disabled={fillPaths.length === 0 || !showHatchPreview}
+              onClick={handleAddLayer}
+              title={`Add current pattern as a layer and rotate angle by ${newLayerAngle}°`}
+            >
+              New Layer
+            </button>
+            <div className="new-layer-angle">
+              <span>at</span>
+              <input
+                type="number"
+                min="0"
+                max="180"
+                step="15"
+                value={newLayerAngle}
+                onChange={(e) => setNewLayerAngle(Math.max(0, Math.min(180, Number(e.target.value))))}
+                className="angle-input"
+              />
+              <span>°</span>
+            </div>
+          </div>
+
+          {/* Accumulated layers list */}
+          {accumulatedLayers.length > 0 && (
+            <div className="accumulated-layers-list">
+              <div className="accumulated-layers-header">
+                <span>{accumulatedLayers.length} layer{accumulatedLayers.length !== 1 ? 's' : ''}</span>
+                <button
+                  className="clear-layers-btn-small"
+                  onClick={handleClearLayers}
+                  title="Clear all accumulated layers"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="accumulated-layers-items">
+                {accumulatedLayers.map((layer) => (
+                  <div
+                    key={layer.id}
+                    className={`accumulated-layer-item ${selectedLayerId === layer.id ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''}`}
+                    draggable
+                    onDragStart={() => handleDragStart(layer.id)}
+                    onDragOver={(e) => handleDragOver(e, layer.id)}
+                    onDrop={() => handleDrop(layer.id)}
+                    onDragEnd={handleDragEnd}
+                    onClick={() => handleSelectLayer(layer.id)}
+                    title="Click to load settings, drag to reorder"
+                  >
+                    <span className="layer-drag-handle">⋮⋮</span>
+                    <span
+                      className="layer-color-swatch"
+                      style={{ backgroundColor: layer.color }}
+                    />
+                    <span className="layer-info">
+                      <span className="layer-pattern">{layer.pattern}</span>
+                      <span className="layer-details">{layer.angle}° • {layer.lineCount.toLocaleString()}</span>
+                    </span>
+                    <button
+                      className="layer-delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteLayer(layer.id)
+                      }}
+                      title="Delete this layer"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="sidebar-content fill-paths-full">
           <div className="fill-paths-list expanded">
             {fillPaths.map((path, index) => {
@@ -1905,27 +2125,6 @@ export default function FillTab() {
               </div>
             )}
 
-            <div
-              className={`fill-control selectable ${selectedControl === 'penWidth' ? 'selected' : ''}`}
-              onClick={() => setSelectedControl('penWidth')}
-            >
-              <label>Pen Width</label>
-              <div className="control-row">
-                <input
-                  type="range"
-                  min="0.1"
-                  max="2"
-                  step="0.1"
-                  value={draftPenWidth}
-                  onChange={(e) => setDraftPenWidth(Number(e.target.value))}
-                  onPointerUp={() => setPenWidth(draftPenWidth)}
-                  onKeyUp={() => setPenWidth(draftPenWidth)}
-                  className="fill-slider"
-                />
-                <span className="control-value">{draftPenWidth}mm</span>
-              </div>
-            </div>
-
             <div className="fill-control checkbox">
               <label>
                 <input
@@ -2041,79 +2240,6 @@ export default function FillTab() {
                 </p>
               </div>
             )}
-          </div>
-
-          <div className="fill-section layer-section">
-            <h3>Layer Color</h3>
-            <div className="layer-color-row">
-              <input
-                type="color"
-                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
-                onInput={(e) => setDraftLayerColor((e.target as HTMLInputElement).value)}
-                onChange={(e) => setLayerColor(e.target.value)}
-                className="layer-color-picker"
-                title="Pick color for this fill layer"
-              />
-              <input
-                type="text"
-                value={draftLayerColor || (fillPaths[0]?.color || '#000000')}
-                onChange={(e) => setDraftLayerColor(e.target.value)}
-                onBlur={(e) => setLayerColor(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    setLayerColor((e.target as HTMLInputElement).value)
-                  }
-                }}
-                className="layer-color-input"
-                placeholder="#000000"
-              />
-              {(layerColor || draftLayerColor) && (
-                <button
-                  className="layer-color-reset"
-                  onClick={() => {
-                    setLayerColor('')
-                    setDraftLayerColor('')
-                  }}
-                  title="Reset to original color"
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-            {accumulatedLayers.length > 0 && (
-              <div className="accumulated-layers-info">
-                <span>{accumulatedLayers.length} lines in {new Set(accumulatedLayers.map(l => l.color)).size} layer(s) queued</span>
-                <button
-                  className="clear-layers-btn"
-                  onClick={handleClearLayers}
-                  title="Clear all accumulated layers"
-                >
-                  Clear
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div className="fill-actions secondary">
-            <button
-              className="fill-add-layer-btn"
-              disabled={fillPaths.length === 0 || !showHatchPreview}
-              onClick={handleAddLayer}
-              title="Add current pattern as a layer and rotate angle for next (builds up cross-hatch)"
-            >
-              Add Layer (+45°)
-            </button>
-          </div>
-
-          <div className="fill-actions secondary">
-            <button
-              className="fill-apply-btn"
-              disabled={fillPaths.length === 0 || !showHatchPreview}
-              onClick={handleApplyFill}
-              title={!showHatchPreview ? 'Preview first to see the result' : 'Apply all layers to the SVG'}
-            >
-              Apply Fill{accumulatedLayers.length > 0 ? ` (${new Set(accumulatedLayers.map(l => l.color)).size + 1} layers)` : ''}
-            </button>
           </div>
         </div>
       </aside>

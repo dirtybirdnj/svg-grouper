@@ -60,6 +60,51 @@ function AppContent() {
     return { totalElements, groups, paths }
   }, [layerNodes])
 
+  // Check if selected nodes have fill or stroke paths
+  const selectionState = useMemo(() => {
+    if (selectedNodeIds.size === 0) {
+      return { hasFills: false, hasStrokes: false, hasSelection: false }
+    }
+
+    let hasFills = false
+    let hasStrokes = false
+
+    const checkNode = (node: SVGNode) => {
+      const element = node.element
+      const fill = element.getAttribute('fill')
+      const stroke = element.getAttribute('stroke')
+      const style = element.getAttribute('style') || ''
+
+      // Check for fill
+      const fillMatch = style.match(/fill:\s*([^;]+)/)
+      const fillValue = fillMatch ? fillMatch[1].trim() : fill
+      if (fillValue && fillValue !== 'none' && fillValue !== 'transparent') {
+        hasFills = true
+      }
+
+      // Check for stroke
+      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
+      const strokeValue = strokeMatch ? strokeMatch[1].trim() : stroke
+      if (strokeValue && strokeValue !== 'none' && strokeValue !== 'transparent') {
+        hasStrokes = true
+      }
+
+      // Check children
+      for (const child of node.children) {
+        checkNode(child)
+      }
+    }
+
+    for (const id of selectedNodeIds) {
+      const node = getNodeById(id)
+      if (node) {
+        checkNode(node)
+      }
+    }
+
+    return { hasFills, hasStrokes, hasSelection: true }
+  }, [selectedNodeIds, getNodeById])
+
   // Stroke panel state
   const [showStrokePanel, setShowStrokePanel] = useState(false)
   const [strokeColor, setStrokeColor] = useState('#000000')
@@ -705,10 +750,18 @@ function AppContent() {
                   ref={strokeButtonRef}
                   onClick={handleStrokeClick}
                   className="function-button"
-                  title={selectedNodeIds.size > 0 ? "Modify stroke color and width" : "Select one or more layers first"}
+                  disabled={activeTab === 'fill' || showCrop || selectedNodeIds.size === 0}
+                  title={
+                    activeTab === 'fill' ? "Disabled on Fill tab" :
+                    showCrop ? "Disabled during crop" :
+                    selectedNodeIds.size > 0 ? "Modify stroke color and width" : "Select one or more layers first"
+                  }
                   style={{
-                    background: showStrokePanel ? '#27ae60' : (selectedNodeIds.size > 0 ? '#27ae60' : '#bdc3c7'),
-                    opacity: selectedNodeIds.size > 0 ? 1 : 0.7,
+                    background: (activeTab !== 'fill' && !showCrop && selectedNodeIds.size > 0)
+                      ? (showStrokePanel ? '#27ae60' : '#27ae60')
+                      : '#bdc3c7',
+                    opacity: (activeTab !== 'fill' && !showCrop && selectedNodeIds.size > 0) ? 1 : 0.5,
+                    cursor: (activeTab === 'fill' || showCrop || selectedNodeIds.size === 0) ? 'not-allowed' : 'pointer',
                   }}
                 >
                   ✏ Stroke
@@ -786,10 +839,18 @@ function AppContent() {
               <button
                 onClick={handleFill}
                 className="function-button"
-                title={selectedNodeIds.size === 1 ? "Convert fills to line hatching" : "Select a layer first"}
+                disabled={activeTab === 'fill' || showCrop || !selectionState.hasFills}
+                title={
+                  activeTab === 'fill' ? "Already on Fill tab" :
+                  showCrop ? "Disabled during crop" :
+                  !selectionState.hasSelection ? "Select a layer first" :
+                  !selectionState.hasFills ? "Selection must contain filled shapes" :
+                  "Convert fills to line hatching"
+                }
                 style={{
-                  background: selectedNodeIds.size === 1 ? '#9b59b6' : '#bdc3c7',
-                  opacity: selectedNodeIds.size === 1 ? 1 : 0.7,
+                  background: (activeTab !== 'fill' && !showCrop && selectionState.hasFills) ? '#9b59b6' : '#bdc3c7',
+                  opacity: (activeTab !== 'fill' && !showCrop && selectionState.hasFills) ? 1 : 0.5,
+                  cursor: (activeTab === 'fill' || showCrop || !selectionState.hasFills) ? 'not-allowed' : 'pointer',
                 }}
               >
                 ▤ Fill
@@ -797,10 +858,18 @@ function AppContent() {
               <button
                 onClick={handleOrder}
                 className="function-button"
-                title={selectedNodeIds.size === 1 ? "Optimize line drawing order for pen plotters" : "Select a layer first"}
+                disabled={activeTab === 'fill' || showCrop || !selectionState.hasStrokes}
+                title={
+                  activeTab === 'fill' ? "Disabled on Fill tab" :
+                  showCrop ? "Disabled during crop" :
+                  !selectionState.hasSelection ? "Select a layer first" :
+                  !selectionState.hasStrokes ? "Selection must contain strokes/lines" :
+                  "Optimize line drawing order for pen plotters"
+                }
                 style={{
-                  background: selectedNodeIds.size === 1 ? '#e67e22' : '#bdc3c7',
-                  opacity: selectedNodeIds.size === 1 ? 1 : 0.7,
+                  background: (activeTab !== 'fill' && !showCrop && selectionState.hasStrokes) ? '#e67e22' : '#bdc3c7',
+                  opacity: (activeTab !== 'fill' && !showCrop && selectionState.hasStrokes) ? 1 : 0.5,
+                  cursor: (activeTab === 'fill' || showCrop || !selectionState.hasStrokes) ? 'not-allowed' : 'pointer',
                 }}
               >
                 ⇄ Order
@@ -808,9 +877,15 @@ function AppContent() {
               <button
                 className="function-button"
                 onClick={handleToggleCrop}
-                title={showCrop ? "Hide Crop" : "Show Crop"}
+                disabled={activeTab === 'fill'}
+                title={
+                  activeTab === 'fill' ? "Disabled on Fill tab" :
+                  showCrop ? "Hide Crop" : "Show Crop"
+                }
                 style={{
-                  background: showCrop ? '#c0392b' : '#e74c3c',
+                  background: activeTab === 'fill' ? '#bdc3c7' : (showCrop ? '#c0392b' : '#e74c3c'),
+                  opacity: activeTab === 'fill' ? 0.5 : 1,
+                  cursor: activeTab === 'fill' ? 'not-allowed' : 'pointer',
                 }}
               >
                 {showCrop ? '✕ Crop' : '◫ Crop'}
