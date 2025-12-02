@@ -1543,6 +1543,7 @@ export default function ExportTab() {
                 width: pageDimensions.widthPx * previewScale,
                 height: pageDimensions.heightPx * previewScale,
                 transform: `translate(${panOffset.x}px, ${panOffset.y}px)`,
+                overflow: clipToPage ? 'hidden' : 'visible',
               }}
             >
               {/* Page background */}

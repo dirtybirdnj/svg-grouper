@@ -487,9 +487,6 @@ export function normalizeSVG(svgContent: string, targetDimensions?: { width: num
 
   const info = analyzeSVGDimensions(svg)
 
-  console.log('[normalizeSVG Debug] Input viewBox:', info.viewBox)
-  console.log('[normalizeSVG Debug] Needs transform:', info.viewBox && (info.viewBox.minX !== 0 || info.viewBox.minY !== 0))
-
   // Use target dimensions or recommended dimensions
   const newWidth = targetDimensions?.width ?? info.recommendedWidth
   const newHeight = targetDimensions?.height ?? info.recommendedHeight
@@ -503,11 +500,8 @@ export function normalizeSVG(svgContent: string, targetDimensions?: { width: num
     const offsetX = -info.viewBox.minX
     const offsetY = -info.viewBox.minY
 
-    console.log('[normalizeSVG Debug] Baking transform into coordinates:', { offsetX, offsetY })
-
     // Transform all path elements
     const paths = svg.querySelectorAll('path')
-    console.log('[normalizeSVG Debug] Transforming', paths.length, 'paths')
     for (const path of paths) {
       const d = path.getAttribute('d')
       if (d) {
@@ -566,14 +560,11 @@ export function normalizeSVG(svgContent: string, targetDimensions?: { width: num
 
     // Update viewBox to start at (0, 0)
     svg.setAttribute('viewBox', `0 0 ${info.viewBox.width} ${info.viewBox.height}`)
-    console.log('[normalizeSVG Debug] Transformation complete')
   } else if (info.viewBox) {
     // ViewBox already starts at (0, 0), just ensure it's set
-    console.log('[normalizeSVG Debug] ViewBox already at origin, no transform needed')
     svg.setAttribute('viewBox', `0 0 ${info.viewBox.width} ${info.viewBox.height}`)
   } else {
     // Add a viewBox if missing
-    console.log('[normalizeSVG Debug] No viewBox, creating one')
     svg.setAttribute('viewBox', `0 0 ${newWidth} ${newHeight}`)
   }
 

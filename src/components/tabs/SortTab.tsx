@@ -195,10 +195,6 @@ export default function SortTab() {
             height: dimInfo.computedHeight
           })
 
-          // Log any issues for debugging
-          if (dimInfo.issues.length > 0) {
-            console.log('[SVG Dimensions] Issues detected:', dimInfo.issues)
-          }
         } catch (e) {
           console.error('[SVG Dimensions] Failed to analyze:', e)
           // Fallback to basic parsing
@@ -990,20 +986,78 @@ export default function SortTab() {
 
   // Sort children by color first, then by element type within each color
   // If shift is held, group by type instead of just sorting
+  // Works on: 1) single group's children, or 2) multiple selected nodes within their parent
   const handleSortByType = async (e?: React.MouseEvent) => {
-    if (selectedNodeIds.size !== 1) return
+    if (selectedNodeIds.size === 0) return
 
     const shouldGroup = e?.shiftKey ?? false
 
     setIsProcessing(true)
     await new Promise(resolve => setTimeout(resolve, 50))
 
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
+    // Determine mode: single group (sort children) or multiple selection (sort selected nodes)
+    const selectedIds = Array.from(selectedNodeIds)
+    let nodesToSort: SVGNode[] = []
+    let parentNode: SVGNode | null = null
+    let isSortingChildren = false
 
-    if (!selectedNode || selectedNode.children.length === 0) {
-      setIsProcessing(false)
-      return
+    if (selectedIds.length === 1) {
+      // Single selection - sort children of the selected group
+      const selectedNode = findNodeById(layerNodes, selectedIds[0])
+      if (!selectedNode || selectedNode.children.length === 0) {
+        setIsProcessing(false)
+        return
+      }
+      nodesToSort = selectedNode.children
+      parentNode = selectedNode
+      isSortingChildren = true
+    } else {
+      // Multiple selection - sort the selected nodes within their common parent
+      // Find all selected nodes
+      const selectedNodes: SVGNode[] = []
+      for (const id of selectedIds) {
+        const node = findNodeById(layerNodes, id)
+        if (node) selectedNodes.push(node)
+      }
+
+      if (selectedNodes.length < 2) {
+        setIsProcessing(false)
+        return
+      }
+
+      // Find common parent by looking at where these nodes exist
+      // They should all be siblings at the same level
+      const findParentOf = (targetId: string, nodes: SVGNode[], parent: SVGNode | null): SVGNode | null => {
+        for (const node of nodes) {
+          if (node.id === targetId) return parent
+          if (node.children.length > 0) {
+            const found = findParentOf(targetId, node.children, node)
+            if (found !== null) return found
+          }
+        }
+        return null
+      }
+
+      // Check if all selected nodes have the same parent
+      const firstParent = findParentOf(selectedIds[0], layerNodes, null)
+      let allSameParent = true
+      for (let i = 1; i < selectedIds.length; i++) {
+        const thisParent = findParentOf(selectedIds[i], layerNodes, null)
+        if (thisParent?.id !== firstParent?.id) {
+          allSameParent = false
+          break
+        }
+      }
+
+      if (!allSameParent) {
+        setStatusMessage('error:Selected nodes must be siblings')
+        setIsProcessing(false)
+        return
+      }
+
+      parentNode = firstParent
+      nodesToSort = selectedNodes
+      isSortingChildren = false
     }
 
     // Get color from element
@@ -1077,7 +1131,7 @@ export default function SortTab() {
       const lines: SVGNode[] = []
       const other: SVGNode[] = []
 
-      selectedNode.children.forEach(child => {
+      nodesToSort.forEach(child => {
         const category = getCategory(child)
         if (category === 'fills') fills.push(child)
         else if (category === 'lines') lines.push(child)
@@ -1086,6 +1140,14 @@ export default function SortTab() {
 
       newChildren = []
 
+      // Get the parent element for DOM operations
+      const parentElement = parentNode?.element || document.querySelector('.canvas-content svg')
+      if (!parentElement) {
+        setStatusMessage('error:Could not find parent element')
+        setIsProcessing(false)
+        return
+      }
+
       // Create Fills group if there are fills
       if (fills.length > 0) {
         const fillGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
@@ -1093,7 +1155,7 @@ export default function SortTab() {
         fillGroup.setAttribute('id', fillGroupId)
 
         fills.forEach(node => fillGroup.appendChild(node.element))
-        selectedNode.element.appendChild(fillGroup)
+        parentElement.appendChild(fillGroup)
 
         newChildren.push({
           id: fillGroupId,
@@ -1112,7 +1174,7 @@ export default function SortTab() {
         lineGroup.setAttribute('id', lineGroupId)
 
         lines.forEach(node => lineGroup.appendChild(node.element))
-        selectedNode.element.appendChild(lineGroup)
+        parentElement.appendChild(lineGroup)
 
         newChildren.push({
           id: lineGroupId,
@@ -1129,8 +1191,8 @@ export default function SortTab() {
 
       setStatusMessage(`Grouped into ${fills.length > 0 ? 'Fills' : ''}${fills.length > 0 && lines.length > 0 ? ' and ' : ''}${lines.length > 0 ? 'Lines' : ''}`)
     } else {
-      // Sort children: first by color, then by type
-      newChildren = [...selectedNode.children].sort((a, b) => {
+      // Sort nodes: first by color, then by type
+      newChildren = [...nodesToSort].sort((a, b) => {
         const colorA = getColor(a)
         const colorB = getColor(b)
         const colorCompare = colorA.localeCompare(colorB)
@@ -1142,25 +1204,56 @@ export default function SortTab() {
       })
 
       // Reorder DOM elements
-      newChildren.forEach(child => {
-        selectedNode.element.appendChild(child.element)
-      })
+      const parentElement = parentNode?.element || document.querySelector('.canvas-content svg')
+      if (parentElement) {
+        newChildren.forEach(child => {
+          parentElement.appendChild(child.element)
+        })
+      }
     }
 
-    // Update the node in the tree
-    const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.map(node => {
-        if (node.id === selectedId) {
-          return { ...node, children: newChildren }
-        }
-        if (node.children.length > 0) {
-          return { ...node, children: updateNodeChildren(node.children) }
-        }
-        return node
-      })
+    // Update the node tree based on mode
+    let updatedNodes: SVGNode[]
+
+    if (isSortingChildren && parentNode) {
+      // Single group selected - update its children
+      const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (node.id === parentNode.id) {
+            return { ...node, children: newChildren }
+          }
+          if (node.children.length > 0) {
+            return { ...node, children: updateNodeChildren(node.children) }
+          }
+          return node
+        })
+      }
+      updatedNodes = updateNodeChildren(layerNodes)
+    } else if (parentNode) {
+      // Multiple selection with a parent - update parent's children
+      // Replace selected nodes with the sorted/grouped result
+      const selectedIdSet = new Set(selectedIds)
+      const updateParentChildren = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (node.id === parentNode.id) {
+            // Filter out old selected nodes and add new sorted ones
+            const otherChildren = node.children.filter(c => !selectedIdSet.has(c.id))
+            return { ...node, children: [...otherChildren, ...newChildren] }
+          }
+          if (node.children.length > 0) {
+            return { ...node, children: updateParentChildren(node.children) }
+          }
+          return node
+        })
+      }
+      updatedNodes = updateParentChildren(layerNodes)
+    } else {
+      // Multiple selection at root level - update root nodes
+      const selectedIdSet = new Set(selectedIds)
+      const otherNodes = layerNodes.filter(n => !selectedIdSet.has(n.id))
+      updatedNodes = [...otherNodes, ...newChildren]
     }
 
-    const updatedNodes = updateNodeChildren(layerNodes)
     setLayerNodes(updatedNodes)
     rebuildSvgFromLayers(updatedNodes)
     setIsProcessing(false)
@@ -2293,28 +2386,6 @@ export default function SortTab() {
     const cropY = (viewportCropTop - svgTopInContainer) / effectiveScale
     const cropWidth = viewportCropWidth / effectiveScale
     const cropHeight = viewportCropHeight / effectiveScale
-
-    // Debug logging
-    console.log('[Crop Debug] svgDimensions:', svgDimensions)
-    console.log('[Crop Debug] containerRect:', { width: containerRect.width, height: containerRect.height })
-    console.log('[Crop Debug] viewportCropBox:', { left: viewportCropLeft, top: viewportCropTop, width: viewportCropWidth, height: viewportCropHeight })
-    console.log('[Crop Debug] svgRect:', { width: svgRect.width, height: svgRect.height, left: svgRect.left, top: svgRect.top })
-    console.log('[Crop Debug] svgInContainer:', { left: svgLeftInContainer, top: svgTopInContainer })
-    console.log('[Crop Debug] effectiveScale:', effectiveScale)
-    console.log('[Crop Debug] cropRect (SVG coords):', { x: cropX, y: cropY, width: cropWidth, height: cropHeight })
-    // Check actual SVG element attributes in DOM
-    const svgElem = container.querySelector('svg')
-    if (svgElem) {
-      console.log('[Crop Debug] SVG DOM attrs:', {
-        width: svgElem.getAttribute('width'),
-        height: svgElem.getAttribute('height'),
-        viewBox: svgElem.getAttribute('viewBox'),
-        style: svgElem.style.cssText,
-        computedWidth: getComputedStyle(svgElem).width,
-        computedHeight: getComputedStyle(svgElem).height
-      })
-    }
-
 
     setStatusMessage('Applying crop...')
     setIsProcessing(true)

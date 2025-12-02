@@ -6,15 +6,28 @@ import { analyzeSVGDimensions } from './svgDimensions'
  * Extracted from SortTab for modularity
  */
 
-// Parse path d attribute to multiple subpath polygons (handles compound paths)
-function pathToSubpaths(d: string): Point[][] {
-  const subpaths: Point[][] = []
+// Subpath with metadata about whether it was closed
+interface ParsedSubpath {
+  points: Point[]
+  isClosed: boolean
+}
+
+// Parse path d attribute to multiple subpaths, tracking open vs closed
+function pathToSubpathsWithMetadata(d: string): ParsedSubpath[] {
+  const subpaths: ParsedSubpath[] = []
   let currentSubpath: Point[] = []
+  let currentIsClosed = false
   const commands = d.match(/[MLHVCSQTAZ][^MLHVCSQTAZ]*/gi) || []
   let currentX = 0
   let currentY = 0
   let startX = 0
   let startY = 0
+
+  const saveCurrentSubpath = () => {
+    if (currentSubpath.length >= 2) {
+      subpaths.push({ points: currentSubpath, isClosed: currentIsClosed })
+    }
+  }
 
   for (const cmd of commands) {
     const type = cmd[0].toUpperCase()
@@ -23,10 +36,9 @@ function pathToSubpaths(d: string): Point[][] {
 
     switch (type) {
       case 'M':
-        if (currentSubpath.length >= 3) {
-          subpaths.push(currentSubpath)
-        }
+        saveCurrentSubpath()
         currentSubpath = []
+        currentIsClosed = false
 
         if (isRelative && subpaths.length > 0) {
           currentX += values[0]
@@ -74,6 +86,7 @@ function pathToSubpaths(d: string): Point[][] {
         }
         break
       case 'Z':
+        currentIsClosed = true
         currentX = startX
         currentY = startY
         break
@@ -131,14 +144,16 @@ function pathToSubpaths(d: string): Point[][] {
     }
   }
 
-  if (currentSubpath.length >= 3) {
-    subpaths.push(currentSubpath)
-  }
-
+  saveCurrentSubpath()
   return subpaths
 }
 
-// Convert polygon points back to path d attribute
+// Legacy function for backward compatibility
+function pathToSubpaths(d: string): Point[][] {
+  return pathToSubpathsWithMetadata(d).map(sp => sp.points)
+}
+
+// Convert polygon points back to path d attribute (closed path)
 function polygonToPath(points: Point[]): string {
   if (points.length < 3) return ''
   const pathParts = points.map((p, i) =>
@@ -146,6 +161,109 @@ function polygonToPath(points: Point[]): string {
   )
   pathParts.push('Z')
   return pathParts.join('')
+}
+
+// Convert polyline points to path d attribute (open path - no Z)
+function polylineToPath(points: Point[]): string {
+  if (points.length < 2) return ''
+  return points.map((p, i) =>
+    i === 0 ? `M${p.x.toFixed(2)},${p.y.toFixed(2)}` : `L${p.x.toFixed(2)},${p.y.toFixed(2)}`
+  ).join('')
+}
+
+// Clip an open polyline to a rectangle using Cohen-Sutherland style clipping
+// Returns multiple line segments (the polyline may be split into multiple pieces)
+function clipPolylineToRect(points: Point[], cropRect: Rect): Point[][] {
+  if (points.length < 2) return []
+
+  const INSIDE = 0, LEFT = 1, RIGHT = 2, BOTTOM = 4, TOP = 8
+  const computeOutCode = (x: number, y: number) => {
+    let code = INSIDE
+    if (x < cropRect.x) code |= LEFT
+    else if (x > cropRect.x + cropRect.width) code |= RIGHT
+    if (y < cropRect.y) code |= TOP
+    else if (y > cropRect.y + cropRect.height) code |= BOTTOM
+    return code
+  }
+
+  const clipSegment = (x1: number, y1: number, x2: number, y2: number): Point[] | null => {
+    let outcode1 = computeOutCode(x1, y1)
+    let outcode2 = computeOutCode(x2, y2)
+    let cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2
+
+    while (true) {
+      if ((outcode1 | outcode2) === 0) {
+        // Both inside
+        return [{ x: cx1, y: cy1 }, { x: cx2, y: cy2 }]
+      } else if ((outcode1 & outcode2) !== 0) {
+        // Both outside same edge
+        return null
+      } else {
+        const outcodeOut = outcode1 !== 0 ? outcode1 : outcode2
+        let x = 0, y = 0
+        if (outcodeOut & BOTTOM) {
+          x = cx1 + (cx2 - cx1) * (cropRect.y + cropRect.height - cy1) / (cy2 - cy1)
+          y = cropRect.y + cropRect.height
+        } else if (outcodeOut & TOP) {
+          x = cx1 + (cx2 - cx1) * (cropRect.y - cy1) / (cy2 - cy1)
+          y = cropRect.y
+        } else if (outcodeOut & RIGHT) {
+          y = cy1 + (cy2 - cy1) * (cropRect.x + cropRect.width - cx1) / (cx2 - cx1)
+          x = cropRect.x + cropRect.width
+        } else if (outcodeOut & LEFT) {
+          y = cy1 + (cy2 - cy1) * (cropRect.x - cx1) / (cx2 - cx1)
+          x = cropRect.x
+        }
+        if (outcodeOut === outcode1) {
+          cx1 = x; cy1 = y
+          outcode1 = computeOutCode(cx1, cy1)
+        } else {
+          cx2 = x; cy2 = y
+          outcode2 = computeOutCode(cx2, cy2)
+        }
+      }
+    }
+  }
+
+  // Clip each segment and collect results
+  const resultSegments: Point[][] = []
+  let currentRun: Point[] = []
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const clipped = clipSegment(points[i].x, points[i].y, points[i + 1].x, points[i + 1].y)
+    if (clipped) {
+      if (currentRun.length === 0) {
+        currentRun.push(clipped[0], clipped[1])
+      } else {
+        // Check if this segment continues from the previous one
+        const lastPoint = currentRun[currentRun.length - 1]
+        const dist = Math.abs(lastPoint.x - clipped[0].x) + Math.abs(lastPoint.y - clipped[0].y)
+        if (dist < 0.01) {
+          // Continues - just add the end point
+          currentRun.push(clipped[1])
+        } else {
+          // Discontinuity - start new segment
+          if (currentRun.length >= 2) {
+            resultSegments.push(currentRun)
+          }
+          currentRun = [clipped[0], clipped[1]]
+        }
+      }
+    } else {
+      // Segment fully outside - end current run
+      if (currentRun.length >= 2) {
+        resultSegments.push(currentRun)
+      }
+      currentRun = []
+    }
+  }
+
+  // Don't forget the last run
+  if (currentRun.length >= 2) {
+    resultSegments.push(currentRun)
+  }
+
+  return resultSegments
 }
 
 // Get points from polygon element
@@ -250,37 +368,43 @@ function clipElement(elem: Element, cropRect: Rect, doc: Document): void {
     const d = elem.getAttribute('d')
     if (!d) return
 
-    const subpaths = pathToSubpaths(d)
+    const subpaths = pathToSubpathsWithMetadata(d)
     if (subpaths.length === 0) return
 
-    const clippedSubpaths: Point[][] = []
-    for (const subpath of subpaths) {
-      if (subpath.length < 3) continue
+    const resultParts: string[] = []
 
-      const clipped = clipPolygonToRect(subpath, cropRect)
-      if (clipped.length >= 3) {
-        const translated = clipped.map(p => ({
-          x: p.x - cropRect.x,
-          y: p.y - cropRect.y
-        }))
-        clippedSubpaths.push(translated)
+    for (const { points, isClosed } of subpaths) {
+      if (points.length < 2) continue
+
+      if (isClosed && points.length >= 3) {
+        // Closed path - use polygon clipping
+        const clipped = clipPolygonToRect(points, cropRect)
+        if (clipped.length >= 3) {
+          const translated = clipped.map(p => ({
+            x: p.x - cropRect.x,
+            y: p.y - cropRect.y
+          }))
+          resultParts.push(polygonToPath(translated))
+        }
+      } else {
+        // Open path - use polyline clipping (contour lines, strokes, etc.)
+        const clippedSegments = clipPolylineToRect(points, cropRect)
+        for (const segment of clippedSegments) {
+          const translated = segment.map(p => ({
+            x: p.x - cropRect.x,
+            y: p.y - cropRect.y
+          }))
+          resultParts.push(polylineToPath(translated))
+        }
       }
     }
 
-    if (clippedSubpaths.length === 0) {
+    if (resultParts.length === 0) {
       elem.parentNode?.removeChild(elem)
       return
     }
 
-    const combinedD = clippedSubpaths.map(points => {
-      const parts = points.map((p, i) =>
-        i === 0 ? `M${p.x.toFixed(2)},${p.y.toFixed(2)}` : `L${p.x.toFixed(2)},${p.y.toFixed(2)}`
-      )
-      parts.push('Z')
-      return parts.join('')
-    }).join(' ')
-
-    elem.setAttribute('d', combinedD)
+    elem.setAttribute('d', resultParts.join(' '))
   } else if (tagName === 'polygon') {
     const points = getPolygonPoints(elem)
     if (points.length < 3) return
@@ -479,37 +603,7 @@ export function cropSVGInBrowser(svgString: string, cropRect: Rect): string {
     height: cropRect.height * scaleY
   }
 
-  // Debug logging
-  console.log('[cropSVGInBrowser Debug] Input cropRect:', cropRect)
-  console.log('[cropSVGInBrowser Debug] viewBox:', viewBox)
-  console.log('[cropSVGInBrowser Debug] scale:', { scaleX, scaleY })
-  console.log('[cropSVGInBrowser Debug] transformedCropRect:', transformedCropRect)
-
   const actualCropRect = transformedCropRect
-
-  // Log sample path bounds for debugging
-  const allPaths = svg.querySelectorAll('path')
-  if (allPaths.length > 0) {
-    const sampleSize = Math.min(3, allPaths.length)
-    for (let i = 0; i < sampleSize; i++) {
-      const d = allPaths[i].getAttribute('d')
-      if (d) {
-        const subpaths = pathToSubpaths(d)
-        const allPoints = subpaths.flat()
-        if (allPoints.length > 0) {
-          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-          for (const p of allPoints) {
-            minX = Math.min(minX, p.x)
-            minY = Math.min(minY, p.y)
-            maxX = Math.max(maxX, p.x)
-            maxY = Math.max(maxY, p.y)
-          }
-          console.log(`[cropSVGInBrowser Debug] Path ${i} bounds:`, { minX, minY, maxX, maxY })
-        }
-      }
-    }
-  }
-  console.log(`[cropSVGInBrowser Debug] Total paths in SVG: ${allPaths.length}`)
 
   // Process all elements recursively
   const processElement = (elem: Element): void => {

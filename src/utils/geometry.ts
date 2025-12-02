@@ -970,15 +970,7 @@ export function clipLinesToPolygonsEvenOdd(
 ): HatchLine[] {
   const clippedLines: HatchLine[] = []
 
-  console.log('[clipLinesToPolygonsEvenOdd] Input:', {
-    linesCount: lines.length,
-    polygonsCount: polygons.length,
-    polygonSizes: polygons.map(p => p.length),
-    inset
-  })
-
   if (polygons.length === 0) {
-    console.log('[clipLinesToPolygonsEvenOdd] No polygons, returning empty')
     return clippedLines
   }
 
@@ -1078,7 +1070,6 @@ export function clipLinesToPolygonsEvenOdd(
     }
   }
 
-  console.log('[clipLinesToPolygonsEvenOdd] Output:', clippedLines.length, 'lines')
   return clippedLines
 }
 

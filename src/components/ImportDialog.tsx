@@ -74,9 +74,7 @@ export default function ImportDialog({ svgContent, fileName, onConfirm, onCancel
       setIsProcessing(true)
       setProcessingError(null)
       try {
-        console.log('[ImportDialog] Calling backend normalizeSVG...')
         processedContent = await window.electron.normalizeSVG({ svg: svgContent })
-        console.log('[ImportDialog] Normalization complete, output size:', processedContent.length)
       } catch (err) {
         console.error('[ImportDialog] Normalization failed:', err)
         setProcessingError(err instanceof Error ? err.message : 'Normalization failed')
