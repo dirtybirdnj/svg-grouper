@@ -2084,7 +2084,37 @@ export default function SortTab() {
           ensureUniqueId(node)
           result.push(node)
         } else if (node.isGroup && node.children.length > 0) {
+          // Get group's transform and styles for inheritance
+          const groupTransform = node.element.getAttribute('transform')
+          const groupFill = node.element.getAttribute('fill')
+          const groupStroke = node.element.getAttribute('stroke')
+
           const ungroupedChildren = ungroupAll(node.children)
+
+          // Apply group's transform and inherited styles to each child
+          for (const child of ungroupedChildren) {
+            if (!child.customMarkup && child.element) {
+              // Apply transform inheritance
+              if (groupTransform) {
+                const childTransform = child.element.getAttribute('transform')
+                const newTransform = childTransform
+                  ? `${groupTransform} ${childTransform}`
+                  : groupTransform
+                child.element.setAttribute('transform', newTransform)
+              }
+
+              // Apply fill inheritance - only if child doesn't have its own fill
+              if (groupFill && !child.element.getAttribute('fill')) {
+                child.element.setAttribute('fill', groupFill)
+              }
+
+              // Apply stroke inheritance - only if child doesn't have its own stroke
+              if (groupStroke && !child.element.getAttribute('stroke')) {
+                child.element.setAttribute('stroke', groupStroke)
+              }
+            }
+          }
+
           const parent = node.element.parentElement
           if (parent) {
             for (const child of ungroupedChildren) {

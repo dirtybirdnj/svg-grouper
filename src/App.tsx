@@ -171,14 +171,42 @@ function AppContent() {
         // Preserve nodes with customMarkup (like line fill patterns) - treat as leaf nodes
         if (node.customMarkup) {
           result.push(node)
-        } else if (node.isGroup && node.element.hasAttribute('transform')) {
-          // Preserve groups with transforms (e.g., from exported files)
-          // Recursively process children but keep the transform group intact
-          const processedChildren = ungroupAll(node.children)
-          result.push({ ...node, children: processedChildren })
         } else if (node.isGroup && node.children.length > 0) {
+          // Get group's transform (if any) - we'll apply it to children before dissolving
+          const groupTransform = node.element.getAttribute('transform')
+
           // Recursively process children first
           const ungroupedChildren = ungroupAll(node.children)
+
+          // Get group's fill/stroke for inheritance
+          const groupFill = node.element.getAttribute('fill')
+          const groupStroke = node.element.getAttribute('stroke')
+
+          // Apply group's transform and inherited styles to each child
+          for (const child of ungroupedChildren) {
+            if (!child.customMarkup && child.element) {
+              // Apply transform inheritance
+              if (groupTransform) {
+                const childTransform = child.element.getAttribute('transform')
+                // Prepend group transform to child's existing transform
+                // Order matters: group transform applies first (outer), then child's (inner)
+                const newTransform = childTransform
+                  ? `${groupTransform} ${childTransform}`
+                  : groupTransform
+                child.element.setAttribute('transform', newTransform)
+              }
+
+              // Apply fill inheritance - only if child doesn't have its own fill
+              if (groupFill && !child.element.getAttribute('fill')) {
+                child.element.setAttribute('fill', groupFill)
+              }
+
+              // Apply stroke inheritance - only if child doesn't have its own stroke
+              if (groupStroke && !child.element.getAttribute('stroke')) {
+                child.element.setAttribute('stroke', groupStroke)
+              }
+            }
+          }
 
           // Try to handle DOM operations if element has a parent
           const parent = node.element.parentElement
