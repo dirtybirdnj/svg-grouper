@@ -40,20 +40,47 @@ export function extractColors(node: SVGNode): string[] {
 }
 
 /**
- * Convert any color format to a standard hex or rgb for display
+ * Convert any color to RGB components
+ */
+function colorToRGB(color: string): { r: number; g: number; b: number } | null {
+  // Handle hex colors
+  const hexMatch = color.match(/^#([0-9A-Fa-f]{3,8})$/)
+  if (hexMatch) {
+    let hex = hexMatch[1]
+    // Expand 3-char hex to 6-char
+    if (hex.length === 3) {
+      hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2]
+    }
+    // Take first 6 chars (ignore alpha if present)
+    hex = hex.substring(0, 6)
+    const r = parseInt(hex.substring(0, 2), 16)
+    const g = parseInt(hex.substring(2, 4), 16)
+    const b = parseInt(hex.substring(4, 6), 16)
+    return { r, g, b }
+  }
+
+  // Handle rgb/rgba
+  const rgbMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/)
+  if (rgbMatch) {
+    return {
+      r: parseInt(rgbMatch[1], 10),
+      g: parseInt(rgbMatch[2], 10),
+      b: parseInt(rgbMatch[3], 10)
+    }
+  }
+
+  return null
+}
+
+/**
+ * Convert any color format to a standard rgb(r,g,b) string for consistent comparison
+ * This ensures #d9e9ff and rgb(217, 233, 255) are treated as the same color
  */
 export function normalizeColor(color: string): string {
-  // If it's already a hex color, return it
-  if (/^#[0-9A-Fa-f]{3,8}$/.test(color)) {
-    return color
+  const rgb = colorToRGB(color.trim())
+  if (rgb) {
+    return `rgb(${rgb.r},${rgb.g},${rgb.b})`
   }
-
-  // If it's rgb/rgba, return as-is
-  if (color.startsWith('rgb')) {
-    return color
-  }
-
-  // For named colors and other formats, return as-is
-  // (browser will handle rendering)
-  return color
+  // For named colors and other formats, return as-is (lowercase for consistency)
+  return color.toLowerCase().trim()
 }

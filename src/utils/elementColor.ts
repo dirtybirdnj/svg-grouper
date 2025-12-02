@@ -78,17 +78,37 @@ export function getElementAttrs(element: Element): {
 /**
  * Get color from an element's attributes and style
  * Checks fill first, then stroke
+ * Falls back to computed styles for CSS-defined colors
  */
 export function getElementColor(element: Element): string | null {
   const { fill, stroke, parsedStyle } = getElementAttrs(element)
 
-  // Check style first (higher specificity)
+  // Check inline style first (highest specificity for inline)
   if (isValidColor(parsedStyle.fill)) return parsedStyle.fill
   if (isValidColor(parsedStyle.stroke)) return parsedStyle.stroke
 
-  // Fall back to attributes
+  // Check direct attributes
   if (isValidColor(fill)) return fill
   if (isValidColor(stroke)) return stroke
+
+  // Fall back to computed styles (catches CSS from <style> blocks)
+  if (element instanceof SVGElement || element instanceof HTMLElement) {
+    try {
+      const computed = getComputedStyle(element)
+      const computedFill = computed.fill
+      const computedStroke = computed.stroke
+
+      // Computed fill/stroke return rgb() strings, check they're not "none" or default black
+      if (computedFill && computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') {
+        return computedFill
+      }
+      if (computedStroke && computedStroke !== 'none' && computedStroke !== 'rgb(0, 0, 0)') {
+        return computedStroke
+      }
+    } catch {
+      // getComputedStyle can fail if element not in DOM
+    }
+  }
 
   return null
 }

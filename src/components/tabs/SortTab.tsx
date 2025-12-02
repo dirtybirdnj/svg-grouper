@@ -2145,7 +2145,8 @@ export default function SortTab() {
         } else {
           color = getElementColor(node.element)
         }
-        const colorKey = color || 'no-color'
+        // Normalize color to ensure consistent grouping (e.g., #fff and rgb(255,255,255) are same)
+        const colorKey = color ? normalizeColor(color) : 'no-color'
         if (!colorGroups.has(colorKey)) {
           colorGroups.set(colorKey, [])
         }
