@@ -223,21 +223,101 @@ def analyze_svg_structure(root, ns):
 LEAF_TAGS = {'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use'}
 
 
-def flatten_groups(root, ns):
+def parse_css_styles(root, ns):
+    """
+    Parse <style> blocks and build a mapping of class/id -> styles.
+    Returns dict like {'class-name': {'fill': '#ff0000', 'stroke': '#000'}, ...}
+    """
+    style_map = {}
+    svg_ns = 'http://www.w3.org/2000/svg'
+
+    # Find all <style> elements
+    for style_elem in root.iter():
+        tag = style_elem.tag.split('}')[-1] if '}' in style_elem.tag else style_elem.tag
+        if tag == 'style' and style_elem.text:
+            css_text = style_elem.text
+
+            # Simple CSS parser for class rules: .classname { property: value; }
+            # Matches patterns like: .water { fill: #d9e9ff; stroke: none; }
+            import re
+            rules = re.findall(r'\.([a-zA-Z0-9_-]+)\s*\{([^}]+)\}', css_text)
+
+            for class_name, properties in rules:
+                props = {}
+                # Parse properties
+                for prop in properties.split(';'):
+                    prop = prop.strip()
+                    if ':' in prop:
+                        key, value = prop.split(':', 1)
+                        key = key.strip().lower()
+                        value = value.strip()
+                        if key in ('fill', 'stroke', 'stroke-width', 'opacity'):
+                            props[key] = value
+
+                if props:
+                    style_map[class_name] = props
+
+    return style_map
+
+
+def get_color_from_css(elem, style_map):
+    """Get fill/stroke from CSS class if element has class attribute."""
+    class_attr = elem.get('class')
+    if not class_attr:
+        return None, None
+
+    # Element can have multiple classes
+    classes = class_attr.split()
+    fill = None
+    stroke = None
+
+    for cls in classes:
+        if cls in style_map:
+            styles = style_map[cls]
+            if 'fill' in styles and styles['fill'] != 'none':
+                fill = styles['fill']
+            if 'stroke' in styles and styles['stroke'] != 'none':
+                stroke = styles['stroke']
+
+    return fill, stroke
+
+
+def flatten_groups(root, ns, style_map=None):
     """
     Flatten all groups by extracting leaf elements and applying inherited styles.
     Removes all <g> elements, keeping only drawable elements.
     """
+    if style_map is None:
+        style_map = {}
+
     svg_ns = 'http://www.w3.org/2000/svg'
     leaf_elements = []
+
+    def get_effective_color(elem, attr_name, inherited_value):
+        """Get effective color considering CSS classes, attributes, and inheritance."""
+        # First check CSS class
+        css_fill, css_stroke = get_color_from_css(elem, style_map)
+        css_value = css_fill if attr_name == 'fill' else css_stroke
+
+        # Get attribute value
+        attr_value = elem.get(attr_name)
+
+        # Priority: CSS class > attribute (if not 'none') > inherited
+        if css_value:
+            return css_value
+        if attr_value and attr_value != 'none':
+            return attr_value
+        if inherited_value and inherited_value != 'none':
+            return inherited_value
+        return None
 
     def extract_leaves(elem, inherited_fill=None, inherited_stroke=None, inherited_transform=None):
         """Recursively extract leaf elements, inheriting styles from parent groups."""
         tag = elem.tag.split('}')[-1] if '}' in elem.tag else elem.tag
 
-        # Get this element's styles
-        fill = elem.get('fill') or inherited_fill
-        stroke = elem.get('stroke') or inherited_stroke
+        # Get this element's effective styles (considering CSS, attrs, inheritance)
+        fill = get_effective_color(elem, 'fill', inherited_fill)
+        stroke = get_effective_color(elem, 'stroke', inherited_stroke)
         transform = elem.get('transform')
 
         # Compose transforms
@@ -251,13 +331,20 @@ def flatten_groups(root, ns):
             for child in list(elem):
                 extract_leaves(child, fill, stroke, composed_transform)
         elif tag in LEAF_TAGS:
-            # Apply inherited styles to leaf
-            if composed_transform and not elem.get('transform'):
+            # Apply composed transform
+            if composed_transform:
                 elem.set('transform', composed_transform)
-            if fill and not elem.get('fill'):
+
+            # Apply effective colors (overwrite 'none' values)
+            if fill:
                 elem.set('fill', fill)
-            if stroke and not elem.get('stroke'):
+            if stroke:
                 elem.set('stroke', stroke)
+
+            # Remove class attribute since we've resolved the styles
+            if elem.get('class'):
+                del elem.attrib['class']
+
             leaf_elements.append(elem)
 
     # Extract all leaves from root children
@@ -302,6 +389,17 @@ def main():
 
     # Parse SVG
     root = ET.fromstring(svg_input)
+
+    # Parse CSS styles from <style> blocks
+    style_map = parse_css_styles(root, namespaces)
+    if style_map:
+        print(f"[normalize_svg] Found {len(style_map)} CSS class rules", file=sys.stderr)
+        for cls, styles in list(style_map.items())[:10]:  # Show first 10
+            print(f"[normalize_svg]   .{cls}: {styles}", file=sys.stderr)
+        if len(style_map) > 10:
+            print(f"[normalize_svg]   ... and {len(style_map) - 10} more", file=sys.stderr)
+    else:
+        print(f"[normalize_svg] No CSS class rules found", file=sys.stderr)
 
     # Analyze structure for debugging
     print(f"[normalize_svg] === SVG Structure Analysis ===", file=sys.stderr)
@@ -360,7 +458,7 @@ def main():
 
     # Flatten all groups - extract leaf elements and apply inherited styles
     print(f"[normalize_svg] Flattening groups...", file=sys.stderr)
-    leaf_count = flatten_groups(root, namespaces)
+    leaf_count = flatten_groups(root, namespaces, style_map)
     print(f"[normalize_svg] Flattening complete: {leaf_count} elements", file=sys.stderr)
 
     # Verify attributes were set correctly
