@@ -5,6 +5,7 @@ import TabNavigation from './components/TabNavigation'
 import { SortTab, FillTab, ExportTab } from './components/tabs'
 import OrderTab from './components/tabs/OrderTab'
 import { SVGNode } from './types/svg'
+import { getElementColor } from './utils/elementColor'
 
 function AppContent() {
   const {
@@ -24,6 +25,7 @@ function AppContent() {
     setStatusMessage,
     layerNodes,
     setLayerNodes,
+    getNodeById,
     selectedNodeIds,
     setSelectedNodeIds,
     setFillTargetNodeIds,
@@ -94,24 +96,6 @@ function AppContent() {
 
     setFlattenArmed(false)
     setStatusMessage('')
-
-    const getElementColor = (element: Element): string | null => {
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-      const style = element.getAttribute('style')
-
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
-        if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
-      }
-
-      if (fill && fill !== 'none' && fill !== 'transparent') return fill
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
-
-      return null
-    }
 
     const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.filter(node => {
@@ -266,16 +250,6 @@ function AppContent() {
 
     const selectedIds = Array.from(selectedNodeIds)
 
-    // Find the selected node
-    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNode(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
-
     // Check if the layer contains fill paths (closed shapes with fill attribute)
     const hasFillPaths = (node: SVGNode): boolean => {
       const element = node.element
@@ -304,7 +278,7 @@ function AppContent() {
     // Validate all selected nodes exist and have fill paths
     const validIds: string[] = []
     for (const id of selectedIds) {
-      const node = findNode(layerNodes, id)
+      const node = getNodeById(id)
       if (!node) {
         setStatusMessage('error:Could not find selected layer')
         return
@@ -333,17 +307,7 @@ function AppContent() {
 
     const selectedId = Array.from(selectedNodeIds)[0]
 
-    // Find the selected node
-    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNode(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
-
-    const selectedNode = findNode(layerNodes, selectedId)
+    const selectedNode = getNodeById(selectedId)
     if (!selectedNode) {
       setStatusMessage('error:Could not find selected layer')
       return
@@ -502,16 +466,8 @@ function AppContent() {
 
     // Get current stroke color from first selected element
     const selectedId = Array.from(selectedNodeIds)[0]
-    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNode(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
 
-    const selectedNode = findNode(layerNodes, selectedId)
+    const selectedNode = getNodeById(selectedId)
     if (selectedNode) {
       // Helper to extract color from an element (checks fill first, then stroke)
       const extractColor = (el: Element): string | null => {
@@ -572,15 +528,6 @@ function AppContent() {
   const applyStroke = () => {
     if (selectedNodeIds.size === 0) return
 
-    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNode(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
-
     // Apply stroke to all selected nodes and their children
     const applyStrokeToNode = (node: SVGNode) => {
       const el = node.element
@@ -609,7 +556,7 @@ function AppContent() {
     }
 
     for (const id of selectedNodeIds) {
-      const node = findNode(layerNodes, id)
+      const node = getNodeById(id)
       if (node) {
         applyStrokeToNode(node)
       }

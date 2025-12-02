@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import FileUpload from '../FileUpload'
 import SVGCanvas from '../SVGCanvas'
@@ -8,7 +8,8 @@ import { SVGNode } from '../../types/svg'
 import { parseSVGProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
 import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
-import { linesToCompoundPath, HatchLine, clipPolygonToRect, Rect, Point, getSubpathsAsPathStrings } from '../../utils/geometry'
+import { linesToCompoundPath, HatchLine, Rect } from '../../utils/geometry'
+import { cropSVGInBrowser, getCropDimensions } from '../../utils/cropSVG'
 import {
   findNodeById,
   updateNodeChildren,
@@ -25,6 +26,8 @@ import {
   getNodeColor,
   getNodeStrokeWidth,
 } from '../../utils/elementColor'
+import { useArrangeTools } from '../../hooks/useArrangeTools'
+import { useToolHandlers } from '../../hooks/useToolHandlers'
 import './SortTab.css'
 
 export default function SortTab() {
@@ -86,19 +89,50 @@ export default function SortTab() {
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const [isIsolated, setIsIsolated] = useState(false)
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
+
+  // Use extracted arrange tools hook
+  const {
+    handleMoveUp,
+    handleMoveDown,
+    handleBringToFront,
+    handleSendToBack,
+  } = useArrangeTools({
+    selectedNodeIds,
+    layerNodes,
+    setLayerNodes,
+    rebuildSvgFromLayers,
+  })
+
+  // Use extracted tool handlers hook
+  const {
+    handleConvertToFills,
+    handleNormalizeColors,
+    handleSeparateCompoundPaths,
+  } = useToolHandlers({
+    selectedNodeIds,
+    layerNodes,
+    rebuildSvgFromLayers,
+    syncSvgContent,
+    skipNextParse,
+    setStatusMessage,
+  })
+
   const [isHighlightPersistent, setIsHighlightPersistent] = useState(false)
   const [showPointMarkers, setShowPointMarkers] = useState<'none' | 'start' | 'end' | 'all'>('none')
   const [pointMarkerCoords, setPointMarkerCoords] = useState<{ x: number; y: number }[]>([])
 
   // Simplification state
   const [simplifyTolerance] = useState<number>(SIMPLIFY_PRESETS.moderate)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_simplifyResult, setSimplifyResult] = useState<{ before: number; after: number } | null>(null)
+
+  // Memoized crop dimensions for display
+  const cropDims = useMemo(
+    () => getCropDimensions(svgDimensions, cropAspectRatio, cropSize),
+    [svgDimensions, cropAspectRatio, cropSize]
+  )
 
   const handleFileLoad = useCallback((content: string, name: string) => {
     // Reset original SVG attributes when loading a new file
     // This ensures the new file's dimensions are captured fresh
-    console.log('[handleFileLoad] Loading new file, resetting originalSvgAttrs')
     originalSvgAttrs.current = null
     setSvgContent(content)
     setFileName(name)
@@ -132,9 +166,7 @@ export default function SortTab() {
           attrs.push(`${attr.name}="${attr.value}"`)
         }
         originalSvgAttrs.current = attrs
-        console.log('[handleSVGParsed] Captured original SVG attributes:', attrs.join(' '))
       } else {
-        console.log('[handleSVGParsed] Original attributes already set:', originalSvgAttrs.current.join(' '))
       }
 
       // Auto-select if there's only one top-level group
@@ -255,8 +287,9 @@ export default function SortTab() {
     return colorStats
   }, [])
 
-  const documentColorStats = collectAllColorsWithCounts(layerNodes)
-  const documentColors = Array.from(documentColorStats.keys())
+  // Memoize color stats to avoid O(n) traversal on every render
+  const documentColorStats = useMemo(() => collectAllColorsWithCounts(layerNodes), [layerNodes])
+  const documentColors = useMemo(() => Array.from(documentColorStats.keys()), [documentColorStats])
 
   // Extract path info for the selected node (when single path is selected)
   const getSelectedPathInfo = useCallback(() => {
@@ -1428,7 +1461,6 @@ export default function SortTab() {
         return levelInfo.level.some(n => n.id === id)
       })
       if (!allAtSameLevel) {
-        console.log('[handleGroupUngroup] Selected nodes are at different levels, cannot group')
         return
       }
 
@@ -1479,158 +1511,6 @@ export default function SortTab() {
     }
   }
 
-  // Move selected node up in the tree (earlier in render order = lower z-index)
-  const handleMoveUp = useCallback(() => {
-    if (selectedNodeIds.size !== 1) return
-    const selectedId = Array.from(selectedNodeIds)[0]
-
-    const moveInArray = (nodes: SVGNode[]): { nodes: SVGNode[]; moved: boolean } => {
-      const idx = nodes.findIndex(n => n.id === selectedId)
-      if (idx > 0) {
-        // Swap with previous sibling
-        const newNodes = [...nodes]
-        const temp = newNodes[idx - 1]
-        newNodes[idx - 1] = newNodes[idx]
-        newNodes[idx] = temp
-        return { nodes: newNodes, moved: true }
-      }
-      // Check children
-      for (let i = 0; i < nodes.length; i++) {
-        if (nodes[i].children.length > 0) {
-          const result = moveInArray(nodes[i].children)
-          if (result.moved) {
-            const newNodes = [...nodes]
-            newNodes[i] = { ...nodes[i], children: result.nodes }
-            return { nodes: newNodes, moved: true }
-          }
-        }
-      }
-      return { nodes, moved: false }
-    }
-
-    const result = moveInArray(layerNodes)
-    if (result.moved) {
-      setLayerNodes(result.nodes)
-      rebuildSvgFromLayers(result.nodes)
-    }
-  }, [selectedNodeIds, layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
-  // Move selected node down in the tree (later in render order = higher z-index)
-  const handleMoveDown = useCallback(() => {
-    if (selectedNodeIds.size !== 1) {
-      console.log('[handleMoveDown] No single selection, size:', selectedNodeIds.size)
-      return
-    }
-    const selectedId = Array.from(selectedNodeIds)[0]
-    console.log('[handleMoveDown] Moving node:', selectedId)
-
-    const moveInArray = (nodes: SVGNode[]): { nodes: SVGNode[]; moved: boolean } => {
-      const idx = nodes.findIndex(n => n.id === selectedId)
-      if (idx >= 0) {
-        console.log('[handleMoveDown] Found at index', idx, 'of', nodes.length)
-        if (idx < nodes.length - 1) {
-          // Swap with next sibling
-          const newNodes = [...nodes]
-          const temp = newNodes[idx + 1]
-          newNodes[idx + 1] = newNodes[idx]
-          newNodes[idx] = temp
-          console.log('[handleMoveDown] Swapped with next sibling')
-          return { nodes: newNodes, moved: true }
-        } else {
-          console.log('[handleMoveDown] Already at end of siblings')
-        }
-      }
-      // Check children
-      for (let i = 0; i < nodes.length; i++) {
-        if (nodes[i].children.length > 0) {
-          const result = moveInArray(nodes[i].children)
-          if (result.moved) {
-            const newNodes = [...nodes]
-            newNodes[i] = { ...nodes[i], children: result.nodes }
-            return { nodes: newNodes, moved: true }
-          }
-        }
-      }
-      return { nodes, moved: false }
-    }
-
-    const result = moveInArray(layerNodes)
-    if (result.moved) {
-      setLayerNodes(result.nodes)
-      rebuildSvgFromLayers(result.nodes)
-    } else {
-      console.log('[handleMoveDown] No move occurred')
-    }
-  }, [selectedNodeIds, layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
-  // Bring selected node to front (last in render order = highest z-index)
-  const handleBringToFront = useCallback(() => {
-    if (selectedNodeIds.size !== 1) return
-    const selectedId = Array.from(selectedNodeIds)[0]
-
-    const bringToFront = (nodes: SVGNode[]): { nodes: SVGNode[]; moved: boolean } => {
-      const idx = nodes.findIndex(n => n.id === selectedId)
-      if (idx >= 0 && idx < nodes.length - 1) {
-        // Move to end
-        const newNodes = nodes.filter(n => n.id !== selectedId)
-        newNodes.push(nodes[idx])
-        return { nodes: newNodes, moved: true }
-      }
-      // Check children
-      for (let i = 0; i < nodes.length; i++) {
-        if (nodes[i].children.length > 0) {
-          const result = bringToFront(nodes[i].children)
-          if (result.moved) {
-            const newNodes = [...nodes]
-            newNodes[i] = { ...nodes[i], children: result.nodes }
-            return { nodes: newNodes, moved: true }
-          }
-        }
-      }
-      return { nodes, moved: false }
-    }
-
-    const result = bringToFront(layerNodes)
-    if (result.moved) {
-      setLayerNodes(result.nodes)
-      rebuildSvgFromLayers(result.nodes)
-    }
-  }, [selectedNodeIds, layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
-  // Send selected node to back (first in render order = lowest z-index)
-  const handleSendToBack = useCallback(() => {
-    if (selectedNodeIds.size !== 1) return
-    const selectedId = Array.from(selectedNodeIds)[0]
-
-    const sendToBack = (nodes: SVGNode[]): { nodes: SVGNode[]; moved: boolean } => {
-      const idx = nodes.findIndex(n => n.id === selectedId)
-      if (idx > 0) {
-        // Move to beginning
-        const newNodes = nodes.filter(n => n.id !== selectedId)
-        newNodes.unshift(nodes[idx])
-        return { nodes: newNodes, moved: true }
-      }
-      // Check children
-      for (let i = 0; i < nodes.length; i++) {
-        if (nodes[i].children.length > 0) {
-          const result = sendToBack(nodes[i].children)
-          if (result.moved) {
-            const newNodes = [...nodes]
-            newNodes[i] = { ...nodes[i], children: result.nodes }
-            return { nodes: newNodes, moved: true }
-          }
-        }
-      }
-      return { nodes, moved: false }
-    }
-
-    const result = sendToBack(layerNodes)
-    if (result.moved) {
-      setLayerNodes(result.nodes)
-      rebuildSvgFromLayers(result.nodes)
-    }
-  }, [selectedNodeIds, layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
   // Register arrange handlers in context
   useEffect(() => {
     arrangeHandlers.current = {
@@ -1643,227 +1523,6 @@ export default function SortTab() {
     }
   }, [handleMoveUp, handleMoveDown, handleBringToFront, handleSendToBack, handleGroupUngroup, arrangeHandlers])
 
-  // Convert paths to fills - changes stroke color to fill color
-  const handleConvertToFills = useCallback(() => {
-    if (selectedNodeIds.size === 0) return
-
-    let converted = 0
-    const processNode = (node: SVGNode) => {
-      const el = node.element
-      const tagName = el.tagName.toLowerCase()
-
-      // Only process path-like elements
-      if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
-        // Get the stroke color
-        let strokeColor = el.getAttribute('stroke')
-        const style = el.getAttribute('style') || ''
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (strokeMatch) {
-          strokeColor = strokeMatch[1].trim()
-        }
-
-        // If there's a stroke color, convert it to fill
-        if (strokeColor && strokeColor !== 'none' && strokeColor !== 'transparent') {
-          el.setAttribute('fill', strokeColor)
-          el.setAttribute('stroke', 'none')
-
-          // Also update style attribute if present
-          if (style) {
-            let newStyle = style
-              .replace(/stroke:\s*[^;]+;?/g, 'stroke:none;')
-              .replace(/fill:\s*[^;]+;?/g, `fill:${strokeColor};`)
-            if (!newStyle.includes('fill:')) {
-              newStyle += `fill:${strokeColor};`
-            }
-            el.setAttribute('style', newStyle)
-          }
-          converted++
-        }
-      }
-
-      // Process children
-      node.children.forEach(processNode)
-    }
-
-    // Process all selected nodes
-    for (const id of selectedNodeIds) {
-      const node = findNodeById(layerNodes, id)
-      if (node) {
-        processNode(node)
-      }
-    }
-
-    if (converted > 0) {
-      skipNextParse.current = true
-      rebuildSvgFromLayers()
-      setStatusMessage(`Converted ${converted} element${converted > 1 ? 's' : ''} to fills`)
-    } else {
-      setStatusMessage('No elements with strokes found to convert')
-    }
-  }, [selectedNodeIds, layerNodes, rebuildSvgFromLayers, skipNextParse, setStatusMessage])
-
-  // Normalize colors - apply selected element's color attributes to all siblings
-  const handleNormalizeColors = useCallback(() => {
-    if (selectedNodeIds.size !== 1) {
-      setStatusMessage('Select exactly one element to normalize colors from')
-      return
-    }
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-    if (!selectedNode) return
-
-    // Find the parent of the selected node
-    let parentNode: SVGNode | null = null
-    const findParent = (nodes: SVGNode[], parent: SVGNode | null): boolean => {
-      for (const node of nodes) {
-        if (node.id === selectedId) {
-          parentNode = parent
-          return true
-        }
-        if (findParent(node.children, node)) return true
-      }
-      return false
-    }
-    findParent(layerNodes, null)
-
-    if (!parentNode) {
-      setStatusMessage('Cannot normalize: selected element has no parent')
-      return
-    }
-
-    // Get the color attributes from the selected element
-    const sourceEl = selectedNode.element
-    const sourceFill = sourceEl.getAttribute('fill')
-    const sourceStroke = sourceEl.getAttribute('stroke')
-    const sourceStrokeWidth = sourceEl.getAttribute('stroke-width')
-    const sourceOpacity = sourceEl.getAttribute('opacity')
-    const sourceFillOpacity = sourceEl.getAttribute('fill-opacity')
-    const sourceStrokeOpacity = sourceEl.getAttribute('stroke-opacity')
-
-    let normalized = 0
-    // Apply to all siblings (other children of the parent)
-    const parent = parentNode as SVGNode
-    for (const sibling of parent.children) {
-      if (sibling.id === selectedId) continue // Skip the source element
-
-      const el = sibling.element
-      // Only apply to path-like elements
-      const tagName = el.tagName.toLowerCase()
-      if (!['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) continue
-
-      // Apply the attributes
-      if (sourceFill) el.setAttribute('fill', sourceFill)
-      if (sourceStroke) el.setAttribute('stroke', sourceStroke)
-      if (sourceStrokeWidth) el.setAttribute('stroke-width', sourceStrokeWidth)
-      if (sourceOpacity) el.setAttribute('opacity', sourceOpacity)
-      if (sourceFillOpacity) el.setAttribute('fill-opacity', sourceFillOpacity)
-      if (sourceStrokeOpacity) el.setAttribute('stroke-opacity', sourceStrokeOpacity)
-
-      normalized++
-    }
-
-    if (normalized > 0) {
-      skipNextParse.current = true
-      rebuildSvgFromLayers()
-      setStatusMessage(`Normalized colors on ${normalized} sibling${normalized > 1 ? 's' : ''}`)
-    } else {
-      setStatusMessage('No sibling elements found to normalize')
-    }
-  }, [selectedNodeIds, layerNodes, rebuildSvgFromLayers, skipNextParse, setStatusMessage])
-
-  // Separate compound paths into individual path elements
-  const handleSeparateCompoundPaths = useCallback(() => {
-    if (selectedNodeIds.size === 0) {
-      setStatusMessage('Select a path or group to separate')
-      return
-    }
-
-    let totalSeparated = 0
-
-    // Helper to process a single path element
-    const processPath = (el: Element, nodeId: string): number => {
-      // Check if element is still in the DOM (may have been processed already)
-      if (!el.parentElement) {
-        console.log(`[SeparateCompoundPaths] Element ${nodeId} not in DOM, skipping`)
-        return 0
-      }
-
-      const d = el.getAttribute('d') || ''
-      const subpathStrings = getSubpathsAsPathStrings(el)
-      console.log(`[SeparateCompoundPaths] Path ${nodeId}: ${d.length} chars, ${subpathStrings.length} subpaths`)
-
-      if (subpathStrings.length <= 1) {
-        return 0 // Not a compound path
-      }
-
-      // Create a group to hold the separated paths
-      const group = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-      group.setAttribute('id', `${nodeId}-separated`)
-
-      // Copy relevant attributes from original path
-      const fill = el.getAttribute('fill')
-      const stroke = el.getAttribute('stroke')
-      const strokeWidth = el.getAttribute('stroke-width')
-      const transform = el.getAttribute('transform')
-      const opacity = el.getAttribute('opacity')
-
-      // Create individual path elements for each subpath
-      for (let i = 0; i < subpathStrings.length; i++) {
-        const newPath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-        newPath.setAttribute('d', subpathStrings[i])
-        newPath.setAttribute('id', `${nodeId}-part${i + 1}`)
-
-        // Copy style attributes
-        if (fill) newPath.setAttribute('fill', fill)
-        if (stroke) newPath.setAttribute('stroke', stroke)
-        if (strokeWidth) newPath.setAttribute('stroke-width', strokeWidth)
-        if (opacity) newPath.setAttribute('opacity', opacity)
-
-        group.appendChild(newPath)
-      }
-
-      // Apply transform to group if present
-      if (transform) group.setAttribute('transform', transform)
-
-      // Replace original element with group in the DOM
-      const parent = el.parentElement!
-      parent.replaceChild(group, el)
-      console.log(`[SeparateCompoundPaths] Separated into ${subpathStrings.length} paths`)
-      return subpathStrings.length
-    }
-
-    // Helper to recursively find and process paths in a node
-    const processNode = (node: SVGNode): number => {
-      let count = 0
-      const el = node.element
-      const tagName = el.tagName.toLowerCase()
-
-      if (tagName === 'path') {
-        count += processPath(el, node.id)
-      } else if (tagName === 'g' || node.children.length > 0) {
-        // Recursively process children
-        for (const child of node.children) {
-          count += processNode(child)
-        }
-      }
-      return count
-    }
-
-    for (const nodeId of selectedNodeIds) {
-      const node = findNodeById(layerNodes, nodeId)
-      if (!node) continue
-      totalSeparated += processNode(node)
-    }
-
-    if (totalSeparated > 0) {
-      skipNextParse.current = false // Re-parse to update layer tree
-      syncSvgContent() // Use syncSvgContent since we modified the DOM directly
-      setStatusMessage(`Separated into ${totalSeparated} individual path${totalSeparated > 1 ? 's' : ''}`)
-    } else {
-      setStatusMessage('No compound paths found in selection (paths must have multiple subpaths)')
-    }
-  }, [selectedNodeIds, layerNodes, syncSvgContent, skipNextParse, setStatusMessage])
 
   // Register tool handlers in context
   useEffect(() => {
@@ -1937,7 +1596,6 @@ export default function SortTab() {
     }
 
     if (totalBefore > 0) {
-      setSimplifyResult({ before: totalBefore, after: totalAfter })
       rebuildSvgFromLayers(layerNodes)
 
       const reduction = Math.round((1 - totalAfter / totalBefore) * 100)
@@ -1948,16 +1606,6 @@ export default function SortTab() {
   // Check if weld is possible (need a selected group with paths)
   const canWeld = (): boolean => {
     if (selectedNodeIds.size === 0) return false
-
-    // Check if any selected node has paths
-    const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNodeById(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
 
     for (const nodeId of selectedNodeIds) {
       const node = findNodeById(layerNodes, nodeId)
@@ -2262,14 +1910,6 @@ export default function SortTab() {
     // Can flip if multiple nodes selected, or if a single selected node has children
     if (selectedNodeIds.size > 1) return true
     if (selectedNodeIds.size === 1) {
-      const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
-        for (const node of nodes) {
-          if (node.id === id) return node
-          const found = findNodeById(node.children, id)
-          if (found) return found
-        }
-        return null
-      }
       const nodeId = Array.from(selectedNodeIds)[0]
       const node = findNodeById(layerNodes, nodeId)
       return node ? node.children.length > 1 : false
@@ -2280,15 +1920,6 @@ export default function SortTab() {
   // Handle flip order - reverse the order of selected nodes or children of a selected group
   const handleFlipOrder = () => {
     if (!canFlipOrder()) return
-
-    const findNodeById = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNodeById(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
 
     if (selectedNodeIds.size === 1) {
       // Single node selected - flip its children
@@ -2383,24 +2014,6 @@ export default function SortTab() {
 
     setFlattenArmed(false)
     setStatusMessage('')
-
-    const getElementColor = (element: Element): string | null => {
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-      const style = element.getAttribute('style')
-
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
-        if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
-      }
-
-      if (fill && fill !== 'none' && fill !== 'transparent') return fill
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
-
-      return null
-    }
 
     const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
       return nodes.filter(node => {
@@ -2519,11 +2132,9 @@ export default function SortTab() {
     }
 
     // Execute flatten operations
-    console.log('[handleFlattenAll] Starting flatten, originalSvgAttrs:', originalSvgAttrs.current?.join(' '))
     let currentNodes = deleteEmptyLayers([...layerNodes])
     currentNodes = ungroupAll(currentNodes)
     currentNodes = groupByColor(currentNodes)
-    console.log('[handleFlattenAll] After flatten operations, originalSvgAttrs:', originalSvgAttrs.current?.join(' '))
 
     setLayerNodes(currentNodes)
     setSelectedNodeIds(new Set())
@@ -2531,636 +2142,38 @@ export default function SortTab() {
     setStatusMessage('Flattened: removed empty layers, ungrouped all, grouped by color')
   }
 
-  const getCropDimensions = (): { width: number; height: number } => {
-    if (!svgDimensions) return { width: 0, height: 0 }
-
-    const [w, h] = cropAspectRatio.split(':').map(Number)
-    const aspectRatio = w / h
-
-    const minDimension = Math.min(svgDimensions.width, svgDimensions.height)
-    const baseSize = minDimension * cropSize
-
-    let width: number
-    let height: number
-
-    if (aspectRatio >= 1) {
-      width = baseSize
-      height = baseSize / aspectRatio
-    } else {
-      height = baseSize
-      width = baseSize * aspectRatio
-    }
-
-    return { width, height }
-  }
-
   const rotateCropAspectRatio = () => {
     const [w, h] = cropAspectRatio.split(':')
     setCropAspectRatio(`${h}:${w}` as '1:2' | '2:3' | '3:4' | '16:9' | '9:16')
   }
 
-  // JavaScript-based crop that preserves fill shapes
-  const cropSVGInBrowser = (svgString: string, cropRect: Rect): string => {
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(svgString, 'image/svg+xml')
-    const svg = doc.documentElement
-
-    // Parse viewBox to handle coordinate transformations
-    // The cropRect is in display coordinates (0 to width, 0 to height)
-    // but element coordinates are in viewBox space
-    const viewBoxAttr = svg.getAttribute('viewBox')
-    let viewBox = { minX: 0, minY: 0, width: cropRect.width, height: cropRect.height }
-    let displayWidth = parseFloat(svg.getAttribute('width') || '0') || cropRect.width
-    let displayHeight = parseFloat(svg.getAttribute('height') || '0') || cropRect.height
-
-    // Handle pt units in width/height
-    const widthAttr = svg.getAttribute('width') || ''
-    const heightAttr = svg.getAttribute('height') || ''
-    if (widthAttr.endsWith('pt')) {
-      displayWidth = parseFloat(widthAttr) * 1.333333 // pt to px conversion
-    }
-    if (heightAttr.endsWith('pt')) {
-      displayHeight = parseFloat(heightAttr) * 1.333333
-    }
-
-    if (viewBoxAttr) {
-      const parts = viewBoxAttr.split(/[\s,]+/).map(parseFloat)
-      if (parts.length === 4) {
-        viewBox = { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] }
-      }
-    }
-
-    // Transform crop rect from display coordinates to viewBox coordinates
-    const scaleX = viewBox.width / displayWidth
-    const scaleY = viewBox.height / displayHeight
-    const transformedCropRect: Rect = {
-      x: viewBox.minX + cropRect.x * scaleX,
-      y: viewBox.minY + cropRect.y * scaleY,
-      width: cropRect.width * scaleX,
-      height: cropRect.height * scaleY
-    }
-
-    console.log('[Crop] ViewBox:', viewBox)
-    console.log('[Crop] Display dimensions:', displayWidth, 'x', displayHeight)
-    console.log('[Crop] Original crop rect:', cropRect)
-    console.log('[Crop] Transformed crop rect:', transformedCropRect)
-
-    // Use transformed crop rect for all operations
-    const actualCropRect = transformedCropRect
-
-    // Parse path d attribute to multiple subpath polygons (handles compound paths)
-    const pathToSubpaths = (d: string): Point[][] => {
-      const subpaths: Point[][] = []
-      let currentSubpath: Point[] = []
-      // Simple regex-based parsing for M, L, H, V, Z commands
-      const commands = d.match(/[MLHVCSQTAZ][^MLHVCSQTAZ]*/gi) || []
-      let currentX = 0
-      let currentY = 0
-      let startX = 0
-      let startY = 0
-
-      for (const cmd of commands) {
-        const type = cmd[0].toUpperCase()
-        const isRelative = cmd[0] === cmd[0].toLowerCase()
-        const values = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n))
-
-        switch (type) {
-          case 'M':
-            // Start a new subpath - save previous if it has points
-            if (currentSubpath.length >= 3) {
-              subpaths.push(currentSubpath)
-            }
-            currentSubpath = []
-
-            if (isRelative && subpaths.length > 0) {
-              currentX += values[0]
-              currentY += values[1]
-            } else {
-              currentX = values[0]
-              currentY = values[1]
-            }
-            startX = currentX
-            startY = currentY
-            currentSubpath.push({ x: currentX, y: currentY })
-            // Handle implicit lineto after M
-            for (let i = 2; i < values.length; i += 2) {
-              if (isRelative) {
-                currentX += values[i]
-                currentY += values[i + 1]
-              } else {
-                currentX = values[i]
-                currentY = values[i + 1]
-              }
-              currentSubpath.push({ x: currentX, y: currentY })
-            }
-            break
-          case 'L':
-            for (let i = 0; i < values.length; i += 2) {
-              if (isRelative) {
-                currentX += values[i]
-                currentY += values[i + 1]
-              } else {
-                currentX = values[i]
-                currentY = values[i + 1]
-              }
-              currentSubpath.push({ x: currentX, y: currentY })
-            }
-            break
-          case 'H':
-            for (const v of values) {
-              currentX = isRelative ? currentX + v : v
-              currentSubpath.push({ x: currentX, y: currentY })
-            }
-            break
-          case 'V':
-            for (const v of values) {
-              currentY = isRelative ? currentY + v : v
-              currentSubpath.push({ x: currentX, y: currentY })
-            }
-            break
-          case 'Z':
-            currentX = startX
-            currentY = startY
-            // Z closes the path but doesn't start a new one - M does that
-            break
-          // For curves, sample points along the curve
-          case 'C': // Cubic bezier
-            for (let i = 0; i < values.length; i += 6) {
-              const x1 = isRelative ? currentX + values[i] : values[i]
-              const y1 = isRelative ? currentY + values[i + 1] : values[i + 1]
-              const x2 = isRelative ? currentX + values[i + 2] : values[i + 2]
-              const y2 = isRelative ? currentY + values[i + 3] : values[i + 3]
-              const x = isRelative ? currentX + values[i + 4] : values[i + 4]
-              const y = isRelative ? currentY + values[i + 5] : values[i + 5]
-              // Sample 10 points along the bezier
-              for (let t = 0.1; t <= 1; t += 0.1) {
-                const mt = 1 - t
-                const px = mt * mt * mt * currentX + 3 * mt * mt * t * x1 + 3 * mt * t * t * x2 + t * t * t * x
-                const py = mt * mt * mt * currentY + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t * y
-                currentSubpath.push({ x: px, y: py })
-              }
-              currentX = x
-              currentY = y
-            }
-            break
-          case 'Q': // Quadratic bezier
-            for (let i = 0; i < values.length; i += 4) {
-              const x1 = isRelative ? currentX + values[i] : values[i]
-              const y1 = isRelative ? currentY + values[i + 1] : values[i + 1]
-              const x = isRelative ? currentX + values[i + 2] : values[i + 2]
-              const y = isRelative ? currentY + values[i + 3] : values[i + 3]
-              // Sample 10 points along the bezier
-              for (let t = 0.1; t <= 1; t += 0.1) {
-                const mt = 1 - t
-                const px = mt * mt * currentX + 2 * mt * t * x1 + t * t * x
-                const py = mt * mt * currentY + 2 * mt * t * y1 + t * t * y
-                currentSubpath.push({ x: px, y: py })
-              }
-              currentX = x
-              currentY = y
-            }
-            break
-          case 'A': // Arc - sample points (approximation)
-            for (let i = 0; i < values.length; i += 7) {
-              const endX = isRelative ? currentX + values[i + 5] : values[i + 5]
-              const endY = isRelative ? currentY + values[i + 6] : values[i + 6]
-              // Simple linear interpolation for arc (rough approximation)
-              for (let t = 0.1; t <= 1; t += 0.1) {
-                currentSubpath.push({
-                  x: currentX + (endX - currentX) * t,
-                  y: currentY + (endY - currentY) * t
-                })
-              }
-              currentX = endX
-              currentY = endY
-            }
-            break
-        }
-      }
-
-      // Don't forget the last subpath
-      if (currentSubpath.length >= 3) {
-        subpaths.push(currentSubpath)
-      }
-
-      return subpaths
-    }
-
-    // Legacy function for compatibility - returns all points flattened
-    const pathToPolygon = (d: string): Point[] => {
-      const subpaths = pathToSubpaths(d)
-      return subpaths.flat()
-    }
-
-    // Convert polygon points back to path d attribute
-    const polygonToPath = (points: Point[]): string => {
-      if (points.length < 3) return ''
-      const pathParts = points.map((p, i) =>
-        i === 0 ? `M${p.x.toFixed(2)},${p.y.toFixed(2)}` : `L${p.x.toFixed(2)},${p.y.toFixed(2)}`
-      )
-      pathParts.push('Z')
-      return pathParts.join('')
-    }
-
-    // Get points from polygon element
-    const getPolygonPoints = (elem: Element): Point[] => {
-      const pointsAttr = elem.getAttribute('points') || ''
-      const coords = pointsAttr.trim().split(/[\s,]+/).map(parseFloat)
-      const points: Point[] = []
-      for (let i = 0; i < coords.length; i += 2) {
-        if (!isNaN(coords[i]) && !isNaN(coords[i + 1])) {
-          points.push({ x: coords[i], y: coords[i + 1] })
-        }
-      }
-      return points
-    }
-
-    // Check if polygon intersects with crop rect (using bounding box)
-    const polygonIntersectsCrop = (points: Point[]): boolean => {
-      if (points.length < 2) return false
-
-      // First, compute bounding box of the polygon
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      for (const p of points) {
-        minX = Math.min(minX, p.x)
-        minY = Math.min(minY, p.y)
-        maxX = Math.max(maxX, p.x)
-        maxY = Math.max(maxY, p.y)
-      }
-
-      // Quick rejection: if bounding boxes don't overlap, no intersection
-      if (maxX < actualCropRect.x || minX > actualCropRect.x + actualCropRect.width ||
-          maxY < actualCropRect.y || minY > actualCropRect.y + actualCropRect.height) {
-        return false
-      }
-
-      // Bounding boxes overlap - this shape MIGHT intersect, so keep it
-      // The actual clipping will determine what part (if any) is visible
-      // This is more permissive but ensures we don't incorrectly reject shapes
-      return true
-    }
-
-    // Check if element is within or intersects crop region
-    const elementIntersectsCrop = (elem: Element): boolean => {
-      const tagName = elem.tagName.toLowerCase()
-
-      if (tagName === 'path') {
-        const d = elem.getAttribute('d')
-        if (!d) return false
-        const points = pathToPolygon(d)
-        return polygonIntersectsCrop(points)
-      }
-
-      if (tagName === 'polygon' || tagName === 'polyline') {
-        const points = getPolygonPoints(elem)
-        return polygonIntersectsCrop(points)
-      }
-
-      if (tagName === 'rect') {
-        const x = parseFloat(elem.getAttribute('x') || '0')
-        const y = parseFloat(elem.getAttribute('y') || '0')
-        const w = parseFloat(elem.getAttribute('width') || '0')
-        const h = parseFloat(elem.getAttribute('height') || '0')
-        return !(x + w < actualCropRect.x || x > actualCropRect.x + actualCropRect.width ||
-                 y + h < actualCropRect.y || y > actualCropRect.y + actualCropRect.height)
-      }
-
-      if (tagName === 'circle') {
-        const cx = parseFloat(elem.getAttribute('cx') || '0')
-        const cy = parseFloat(elem.getAttribute('cy') || '0')
-        const r = parseFloat(elem.getAttribute('r') || '0')
-        return !(cx + r < actualCropRect.x || cx - r > actualCropRect.x + actualCropRect.width ||
-                 cy + r < actualCropRect.y || cy - r > actualCropRect.y + actualCropRect.height)
-      }
-
-      if (tagName === 'ellipse') {
-        const cx = parseFloat(elem.getAttribute('cx') || '0')
-        const cy = parseFloat(elem.getAttribute('cy') || '0')
-        const rx = parseFloat(elem.getAttribute('rx') || '0')
-        const ry = parseFloat(elem.getAttribute('ry') || '0')
-        return !(cx + rx < actualCropRect.x || cx - rx > actualCropRect.x + actualCropRect.width ||
-                 cy + ry < actualCropRect.y || cy - ry > actualCropRect.y + actualCropRect.height)
-      }
-
-      if (tagName === 'line') {
-        const x1 = parseFloat(elem.getAttribute('x1') || '0')
-        const y1 = parseFloat(elem.getAttribute('y1') || '0')
-        const x2 = parseFloat(elem.getAttribute('x2') || '0')
-        const y2 = parseFloat(elem.getAttribute('y2') || '0')
-
-        // Use bounding box intersection (permissive - actual clipping will handle details)
-        const lineMinX = Math.min(x1, x2)
-        const lineMaxX = Math.max(x1, x2)
-        const lineMinY = Math.min(y1, y2)
-        const lineMaxY = Math.max(y1, y2)
-
-        return !(lineMaxX < actualCropRect.x || lineMinX > actualCropRect.x + actualCropRect.width ||
-                 lineMaxY < actualCropRect.y || lineMinY > actualCropRect.y + actualCropRect.height)
-      }
-
-      return true // Default to keeping elements we don't recognize
-    }
-
-    // Clip and transform element
-    const clipElement = (elem: Element): void => {
-      const tagName = elem.tagName.toLowerCase()
-
-      if (tagName === 'path') {
-        const d = elem.getAttribute('d')
-        if (!d) return
-
-        // Parse path to separate subpaths (handles compound paths)
-        const subpaths = pathToSubpaths(d)
-        if (subpaths.length === 0) return
-
-        // Clip each subpath separately
-        const clippedSubpaths: Point[][] = []
-        for (const subpath of subpaths) {
-          if (subpath.length < 3) continue
-
-          const clipped = clipPolygonToRect(subpath, actualCropRect)
-          if (clipped.length >= 3) {
-            // Translate to new origin
-            const translated = clipped.map(p => ({
-              x: p.x - actualCropRect.x,
-              y: p.y - actualCropRect.y
-            }))
-            clippedSubpaths.push(translated)
-          }
-        }
-
-        if (clippedSubpaths.length === 0) {
-          elem.parentNode?.removeChild(elem)
-          return
-        }
-
-        // Combine all clipped subpaths into a single path d string
-        const combinedD = clippedSubpaths.map(points => {
-          const parts = points.map((p, i) =>
-            i === 0 ? `M${p.x.toFixed(2)},${p.y.toFixed(2)}` : `L${p.x.toFixed(2)},${p.y.toFixed(2)}`
-          )
-          parts.push('Z')
-          return parts.join('')
-        }).join(' ')
-
-        elem.setAttribute('d', combinedD)
-      } else if (tagName === 'polygon') {
-        const points = getPolygonPoints(elem)
-        if (points.length < 3) return
-
-        const clipped = clipPolygonToRect(points, actualCropRect)
-        if (clipped.length < 3) {
-          elem.parentNode?.removeChild(elem)
-          return
-        }
-
-        const translated = clipped.map(p => ({
-          x: p.x - actualCropRect.x,
-          y: p.y - actualCropRect.y
-        }))
-        elem.setAttribute('points', translated.map(p => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' '))
-      } else if (tagName === 'rect') {
-        const x = parseFloat(elem.getAttribute('x') || '0')
-        const y = parseFloat(elem.getAttribute('y') || '0')
-        const w = parseFloat(elem.getAttribute('width') || '0')
-        const h = parseFloat(elem.getAttribute('height') || '0')
-
-        // Clip rect bounds
-        const newX = Math.max(x, actualCropRect.x)
-        const newY = Math.max(y, actualCropRect.y)
-        const newX2 = Math.min(x + w, actualCropRect.x + actualCropRect.width)
-        const newY2 = Math.min(y + h, actualCropRect.y + actualCropRect.height)
-
-        if (newX2 <= newX || newY2 <= newY) {
-          elem.parentNode?.removeChild(elem)
-          return
-        }
-
-        elem.setAttribute('x', String(newX - actualCropRect.x))
-        elem.setAttribute('y', String(newY - actualCropRect.y))
-        elem.setAttribute('width', String(newX2 - newX))
-        elem.setAttribute('height', String(newY2 - newY))
-      } else if (tagName === 'circle' || tagName === 'ellipse') {
-        // For circles/ellipses, convert to polygon, clip, then convert to path
-        const cx = parseFloat(elem.getAttribute('cx') || '0')
-        const cy = parseFloat(elem.getAttribute('cy') || '0')
-        let rx: number, ry: number
-        if (tagName === 'circle') {
-          rx = ry = parseFloat(elem.getAttribute('r') || '0')
-        } else {
-          rx = parseFloat(elem.getAttribute('rx') || '0')
-          ry = parseFloat(elem.getAttribute('ry') || '0')
-        }
-
-        // Generate polygon approximation
-        const numPoints = 36
-        const points: Point[] = []
-        for (let i = 0; i < numPoints; i++) {
-          const angle = (i / numPoints) * Math.PI * 2
-          points.push({
-            x: cx + rx * Math.cos(angle),
-            y: cy + ry * Math.sin(angle)
-          })
-        }
-
-        const clipped = clipPolygonToRect(points, actualCropRect)
-        if (clipped.length < 3) {
-          elem.parentNode?.removeChild(elem)
-          return
-        }
-
-        // Convert to path element
-        const translated = clipped.map(p => ({
-          x: p.x - actualCropRect.x,
-          y: p.y - actualCropRect.y
-        }))
-        const pathD = polygonToPath(translated)
-
-        // Replace element with path
-        const pathElem = doc.createElementNS('http://www.w3.org/2000/svg', 'path')
-        pathElem.setAttribute('d', pathD)
-
-        // Copy all attributes except shape-specific ones
-        for (const attr of Array.from(elem.attributes)) {
-          if (!['cx', 'cy', 'r', 'rx', 'ry'].includes(attr.name)) {
-            pathElem.setAttribute(attr.name, attr.value)
-          }
-        }
-
-        elem.parentNode?.replaceChild(pathElem, elem)
-      } else if (tagName === 'line') {
-        const x1 = parseFloat(elem.getAttribute('x1') || '0')
-        const y1 = parseFloat(elem.getAttribute('y1') || '0')
-        const x2 = parseFloat(elem.getAttribute('x2') || '0')
-        const y2 = parseFloat(elem.getAttribute('y2') || '0')
-
-        // Use line clipping from geometry (inline Cohen-Sutherland)
-        const INSIDE = 0, LEFT = 1, RIGHT = 2, BOTTOM = 4, TOP = 8
-        const computeOutCode = (x: number, y: number) => {
-          let code = INSIDE
-          if (x < actualCropRect.x) code |= LEFT
-          else if (x > actualCropRect.x + actualCropRect.width) code |= RIGHT
-          if (y < actualCropRect.y) code |= TOP
-          else if (y > actualCropRect.y + actualCropRect.height) code |= BOTTOM
-          return code
-        }
-
-        let cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2
-        let outcode1 = computeOutCode(cx1, cy1)
-        let outcode2 = computeOutCode(cx2, cy2)
-        let accept = false
-
-        while (true) {
-          if ((outcode1 | outcode2) === 0) {
-            accept = true
-            break
-          } else if ((outcode1 & outcode2) !== 0) {
-            break
-          } else {
-            const outcodeOut = outcode1 !== 0 ? outcode1 : outcode2
-            let x = 0, y = 0
-            if (outcodeOut & BOTTOM) {
-              x = cx1 + (cx2 - cx1) * (actualCropRect.y + actualCropRect.height - cy1) / (cy2 - cy1)
-              y = actualCropRect.y + actualCropRect.height
-            } else if (outcodeOut & TOP) {
-              x = cx1 + (cx2 - cx1) * (actualCropRect.y - cy1) / (cy2 - cy1)
-              y = actualCropRect.y
-            } else if (outcodeOut & RIGHT) {
-              y = cy1 + (cy2 - cy1) * (actualCropRect.x + actualCropRect.width - cx1) / (cx2 - cx1)
-              x = actualCropRect.x + actualCropRect.width
-            } else if (outcodeOut & LEFT) {
-              y = cy1 + (cy2 - cy1) * (actualCropRect.x - cx1) / (cx2 - cx1)
-              x = actualCropRect.x
-            }
-            if (outcodeOut === outcode1) {
-              cx1 = x; cy1 = y
-              outcode1 = computeOutCode(cx1, cy1)
-            } else {
-              cx2 = x; cy2 = y
-              outcode2 = computeOutCode(cx2, cy2)
-            }
-          }
-        }
-
-        if (!accept) {
-          elem.parentNode?.removeChild(elem)
-        } else {
-          elem.setAttribute('x1', String(cx1 - actualCropRect.x))
-          elem.setAttribute('y1', String(cy1 - actualCropRect.y))
-          elem.setAttribute('x2', String(cx2 - actualCropRect.x))
-          elem.setAttribute('y2', String(cy2 - actualCropRect.y))
-        }
-      } else if (tagName === 'polyline') {
-        // For polyline, clip each segment
-        const points = getPolygonPoints(elem)
-        if (points.length < 2) return
-
-        // Translate points
-        const translated = points
-          .filter(p =>
-            p.x >= actualCropRect.x && p.x <= actualCropRect.x + actualCropRect.width &&
-            p.y >= actualCropRect.y && p.y <= actualCropRect.y + actualCropRect.height
-          )
-          .map(p => ({
-            x: p.x - actualCropRect.x,
-            y: p.y - actualCropRect.y
-          }))
-
-        if (translated.length < 2) {
-          elem.parentNode?.removeChild(elem)
-          return
-        }
-
-        elem.setAttribute('points', translated.map(p => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(' '))
-      }
-    }
-
-    // Process all elements recursively
-    const processElement = (elem: Element): void => {
-      const tagName = elem.tagName.toLowerCase()
-
-      // Skip non-graphical elements
-      if (['defs', 'style', 'title', 'desc', 'metadata', 'clippath', 'mask', 'pattern', 'lineargradient', 'radialgradient'].includes(tagName)) {
-        return
-      }
-
-      // For groups, process children
-      if (tagName === 'g' || tagName === 'svg') {
-        const children = Array.from(elem.children)
-        for (const child of children) {
-          processElement(child)
-        }
-        // Remove empty groups
-        if (tagName === 'g' && elem.children.length === 0) {
-          elem.parentNode?.removeChild(elem)
-        }
-        return
-      }
-
-      // Check if element intersects crop
-      if (!elementIntersectsCrop(elem)) {
-        elem.parentNode?.removeChild(elem)
-        return
-      }
-
-      // Clip element
-      clipElement(elem)
-    }
-
-    // Process all children of svg
-    const children = Array.from(svg.children)
-    for (const child of children) {
-      processElement(child)
-    }
-
-    // Update SVG dimensions (use actualCropRect dimensions since elements are now in that coordinate space)
-    svg.setAttribute('width', String(actualCropRect.width))
-    svg.setAttribute('height', String(actualCropRect.height))
-    svg.setAttribute('viewBox', `0 0 ${actualCropRect.width} ${actualCropRect.height}`)
-
-    // Serialize back to string
-    const serializer = new XMLSerializer()
-    return serializer.serializeToString(svg)
-  }
-
   // Apply crop to SVG
   const handleApplyCrop = async () => {
-    console.log('[Crop] handleApplyCrop called')
-    console.log('[Crop] svgContent exists:', !!svgContent)
-    console.log('[Crop] svgDimensions:', svgDimensions)
 
     if (!svgContent || !svgDimensions) {
       setStatusMessage('error:No SVG content to crop')
-      console.log('[Crop] Aborting: missing requirements')
       return
     }
 
     // Get crop dimensions in SVG coordinates
-    const cropDims = getCropDimensions()
-    console.log('[Crop] Crop dimensions:', cropDims)
+    const cropDims = getCropDimensions(svgDimensions, cropAspectRatio, cropSize)
 
     // Get the canvas container dimensions
     const container = canvasContainerRef.current
     if (!container) {
       setStatusMessage('error:Could not find canvas container')
-      console.log('[Crop] Aborting: no canvas container')
       return
     }
-
-    // Get container rect for coordinate transform
-    const containerRect = container.getBoundingClientRect()
 
     // Find the actual SVG element to get its rendered size
     const svgElement = container.querySelector('svg')
     if (!svgElement) {
-      console.log('[Crop] ERROR: Could not find SVG element')
       setStatusMessage('error:Could not find SVG element')
       return
     }
 
     // Get the SVG element's bounding rect to see its actual rendered size
     const svgRect = svgElement.getBoundingClientRect()
-    console.log('[Crop] SVG element rect:', svgRect.width.toFixed(2), 'x', svgRect.height.toFixed(2))
 
     // The SVG is displayed with CSS max-width: 90%; max-height: 90%
     // This means its base (untransformed) size is constrained to fit in 90% of the container
@@ -3169,22 +2182,13 @@ export default function SortTab() {
     // So the SVG's rendered size = (baseSize * scale) where baseSize fits in 90% of container
     // We can calculate baseSize from: renderedSize / scale = baseSize
     const baseSvgWidth = svgRect.width / scale
-    const baseSvgHeight = svgRect.height / scale
-    console.log('[Crop] SVG base size (before zoom):', baseSvgWidth.toFixed(2), 'x', baseSvgHeight.toFixed(2))
 
     // The base scale is the ratio of base rendered size to SVG coordinate size
     const baseScale = baseSvgWidth / svgDimensions.width
-    console.log('[Crop] Base scale (SVG coords to base pixels):', baseScale.toFixed(4))
 
     // Total effective scale from SVG coords to current viewport pixels
     const effectiveScale = baseScale * scale
 
-    console.log('[Crop] Container size:', containerRect.width, 'x', containerRect.height)
-    console.log('[Crop] SVG dimensions:', svgDimensions.width, 'x', svgDimensions.height)
-    console.log('[Crop] Base scale (fit to container):', baseScale.toFixed(4))
-    console.log('[Crop] User zoom scale:', scale.toFixed(4))
-    console.log('[Crop] Effective scale:', effectiveScale.toFixed(4))
-    console.log('[Crop] Current offset:', offset)
 
     // The crop overlay is centered at the viewport center.
     // The SVG (after base scale + translation + user scale) has its center at:
@@ -3199,41 +2203,30 @@ export default function SortTab() {
     const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
     const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
 
-    console.log('[Crop] SVG coord at viewport center:', { svgCenterX: svgCenterX.toFixed(2), svgCenterY: svgCenterY.toFixed(2) })
 
     // Crop box in SVG coordinates - centered at the viewport center's SVG position
     let cropX = svgCenterX - cropDims.width / 2
     let cropY = svgCenterY - cropDims.height / 2
-    console.log('[Crop] Raw crop box: x=', cropX.toFixed(2), 'y=', cropY.toFixed(2), 'w=', cropDims.width.toFixed(2), 'h=', cropDims.height.toFixed(2))
 
     // Clamp crop box to SVG bounds
     if (cropX < 0) {
-      console.log('[Crop] Clamping X from', cropX.toFixed(2), 'to 0')
       cropX = 0
     }
     if (cropY < 0) {
-      console.log('[Crop] Clamping Y from', cropY.toFixed(2), 'to 0')
       cropY = 0
     }
     if (cropX + cropDims.width > svgDimensions.width) {
-      const oldX = cropX
       cropX = svgDimensions.width - cropDims.width
-      console.log('[Crop] Clamping X from', oldX.toFixed(2), 'to', cropX.toFixed(2), '(right edge)')
     }
     if (cropY + cropDims.height > svgDimensions.height) {
-      const oldY = cropY
       cropY = svgDimensions.height - cropDims.height
-      console.log('[Crop] Clamping Y from', oldY.toFixed(2), 'to', cropY.toFixed(2), '(bottom edge)')
     }
 
-    console.log('[Crop] Final crop box: x=', cropX.toFixed(2), 'y=', cropY.toFixed(2), 'w=', cropDims.width.toFixed(2), 'h=', cropDims.height.toFixed(2))
 
     setStatusMessage('Applying crop...')
     setIsProcessing(true)
 
     try {
-      console.log('[Crop] Using JavaScript-based crop (preserves fills)')
-      console.log('[Crop] Input SVG length:', svgContent.length)
 
       // Use JavaScript-based crop that preserves fill shapes
       const cropRect: Rect = {
@@ -3245,8 +2238,6 @@ export default function SortTab() {
 
       const croppedSvg = cropSVGInBrowser(svgContent, cropRect)
 
-      console.log('[Crop] Received cropped SVG, length:', croppedSvg.length)
-      console.log('[Crop] First 500 chars of result:', croppedSvg.substring(0, 500))
 
       // Treat the cropped SVG as a new file - reset all state
       // Clear layer nodes and selection
@@ -3279,7 +2270,6 @@ export default function SortTab() {
       setSvgContent(croppedSvg)
 
       setStatusMessage(`Cropped to ${cropDims.width.toFixed(0)} × ${cropDims.height.toFixed(0)} px`)
-      console.log('[Crop] Crop complete, all state reset for new SVG')
     } catch (err) {
       console.error('[Crop] Crop failed:', err)
       setStatusMessage(`error:Crop failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -3291,7 +2281,6 @@ export default function SortTab() {
   // Listen for apply-crop event from header button
   useEffect(() => {
     const handleApplyCropEvent = () => {
-      console.log('[Crop] Received apply-crop event')
       handleApplyCrop()
     }
 
@@ -3524,7 +2513,7 @@ export default function SortTab() {
               className="crop-size-slider"
             />
             <span style={{ fontSize: '0.85rem', color: '#666', marginLeft: '0.5rem', marginRight: '0.5rem' }}>
-              {(getCropDimensions().width / 96).toFixed(1)} × {(getCropDimensions().height / 96).toFixed(1)} in • {getCropDimensions().width.toFixed(0)} × {getCropDimensions().height.toFixed(0)} px
+              {(cropDims.width / 96).toFixed(1)} × {(cropDims.height / 96).toFixed(1)} in • {cropDims.width.toFixed(0)} × {cropDims.height.toFixed(0)} px
             </span>
             <div className="crop-ratio-buttons">
               <button

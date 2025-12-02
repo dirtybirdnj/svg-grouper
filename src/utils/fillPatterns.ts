@@ -2023,7 +2023,6 @@ export function optimizeLineOrderMultiPass(
   const skipTwoOptImprovement = hatchedPaths.length > OPTIMIZATION_SHAPE_THRESHOLD
 
   if (skipWithinShapeOptimization) {
-    console.log(`[Optimization] Skipping within-shape optimization (${totalLines} lines > ${OPTIMIZATION_LINE_THRESHOLD} threshold)`)
   }
 
   // ===== PASS 1: Initial ordering with nearest-neighbor =====

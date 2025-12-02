@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
+import { findNodeById } from '../../utils/nodeUtils'
 import {
   Point,
   HatchLine,
@@ -320,11 +321,9 @@ async function generateFillsLocally(
     if (useEvenOdd && pathInput.rawSubpaths && pathInput.rawSubpaths.length > 1) {
       const subpaths = pathInput.rawSubpaths
       firstValidPolygon = subpaths[0] // Use first subpath as representative polygon
-      console.log('[generateFillsLocally] EVENODD branch for', pathInput.id, 'with', subpaths.length, 'subpaths, pattern:', fillPattern)
 
       // Patterns that support evenodd: lines, crosshatch, spiral (global patterns)
       if (fillPattern === 'lines') {
-        console.log('[generateFillsLocally] Calling clipLinesToPolygonsEvenOdd with', globalLines.length, 'global lines')
         allLines = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
         if (crossHatch) {
           allLines = [...allLines, ...clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)]
@@ -336,7 +335,6 @@ async function generateFillsLocally(
         allLines = [...lines1, ...lines2]
       } else if (fillPattern === 'spiral') {
         // Spiral with evenodd - clip the global spiral using evenodd rule
-        console.log('[generateFillsLocally] Spiral evenodd with', globalSpiralLines.length, 'spiral lines')
         allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
       } else {
         // For other patterns (concentric, etc.), fall through to normal processing
@@ -583,18 +581,9 @@ export default function FillTab() {
   const targetNodes = useMemo(() => {
     if (fillTargetNodeIds.length === 0) return []
 
-    const findNode = (nodes: SVGNode[], id: string): SVGNode | null => {
-      for (const node of nodes) {
-        if (node.id === id) return node
-        const found = findNode(node.children, id)
-        if (found) return found
-      }
-      return null
-    }
-
     const found: SVGNode[] = []
     for (const id of fillTargetNodeIds) {
-      const node = findNode(layerNodes, id)
+      const node = findNodeById(layerNodes, id)
       if (node) found.push(node)
     }
     return found
@@ -852,7 +841,6 @@ export default function FillTab() {
           if (useEvenOdd && path.type === 'path') {
             const d = path.element.getAttribute('d') || ''
             rawSubpaths = parsePathIntoSubpaths(d)
-            console.log('[FillTab] Evenodd subpaths for', path.id, ':', rawSubpaths?.length, 'subpaths with point counts:', rawSubpaths?.map(sp => sp.length))
           }
 
           pathInputs.push({
@@ -861,7 +849,6 @@ export default function FillTab() {
             polygons,
             rawSubpaths
           })
-          console.log('[FillTab] pathInput:', path.id, 'polygons:', polygons.length, 'rawSubpaths:', rawSubpaths?.length)
 
           // Yield to browser periodically to keep UI responsive
           if (i > 0 && i % BATCH_SIZE === 0) {
@@ -925,7 +912,6 @@ export default function FillTab() {
             const totalCount = pathsToProcess.length
             const unfilledCount = totalCount - filledCount
             if (unfilledCount > 0) {
-              console.log(`Fill summary: ${filledCount}/${totalCount} shapes filled. ${unfilledCount} shapes have no fill lines.`)
             }
           } else {
             console.error('Fill generation failed:', result.error)
@@ -933,7 +919,6 @@ export default function FillTab() {
           }
         } else {
           // Fallback: Run fill generation locally (for web browser or missing IPC)
-          console.log('Running fill generation locally (no IPC available)')
           const results = await generateFillsLocally(
             pathInputs,
             pathsToProcess,

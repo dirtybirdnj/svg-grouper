@@ -1,28 +1,94 @@
 import { SVGNode } from '../types/svg'
 import { normalizeColor } from './colorExtractor'
 
+// Pre-compiled regex patterns for style attribute parsing
+const STYLE_FILL_REGEX = /fill:\s*([^;]+)/
+const STYLE_STROKE_REGEX = /stroke:\s*([^;]+)/
+const STYLE_STROKE_WIDTH_REGEX = /stroke-width:\s*([^;]+)/
+const STYLE_OPACITY_REGEX = /opacity:\s*([^;]+)/
+const STYLE_FILL_OPACITY_REGEX = /fill-opacity:\s*([^;]+)/
+const STYLE_STROKE_OPACITY_REGEX = /stroke-opacity:\s*([^;]+)/
+
+/**
+ * Parsed style attributes from a style string
+ */
+export interface ParsedStyle {
+  fill?: string
+  stroke?: string
+  strokeWidth?: string
+  opacity?: string
+  fillOpacity?: string
+  strokeOpacity?: string
+}
+
+/**
+ * Parse a style attribute string into an object
+ * Uses pre-compiled regex for efficiency
+ */
+export function parseStyleAttribute(style: string | null): ParsedStyle {
+  if (!style) return {}
+
+  const result: ParsedStyle = {}
+
+  const fillMatch = STYLE_FILL_REGEX.exec(style)
+  if (fillMatch) result.fill = fillMatch[1].trim()
+
+  const strokeMatch = STYLE_STROKE_REGEX.exec(style)
+  if (strokeMatch) result.stroke = strokeMatch[1].trim()
+
+  const strokeWidthMatch = STYLE_STROKE_WIDTH_REGEX.exec(style)
+  if (strokeWidthMatch) result.strokeWidth = strokeWidthMatch[1].trim()
+
+  const opacityMatch = STYLE_OPACITY_REGEX.exec(style)
+  if (opacityMatch) result.opacity = opacityMatch[1].trim()
+
+  const fillOpacityMatch = STYLE_FILL_OPACITY_REGEX.exec(style)
+  if (fillOpacityMatch) result.fillOpacity = fillOpacityMatch[1].trim()
+
+  const strokeOpacityMatch = STYLE_STROKE_OPACITY_REGEX.exec(style)
+  if (strokeOpacityMatch) result.strokeOpacity = strokeOpacityMatch[1].trim()
+
+  return result
+}
+
+/**
+ * Check if a color value is valid (not none/transparent/empty)
+ */
+export function isValidColor(color: string | undefined | null): color is string {
+  return !!(color && color !== 'none' && color !== 'transparent')
+}
+
+/**
+ * Get all attributes needed for color extraction at once
+ */
+export function getElementAttrs(element: Element): {
+  fill: string | null
+  stroke: string | null
+  strokeWidth: string | null
+  parsedStyle: ParsedStyle
+} {
+  return {
+    fill: element.getAttribute('fill'),
+    stroke: element.getAttribute('stroke'),
+    strokeWidth: element.getAttribute('stroke-width'),
+    parsedStyle: parseStyleAttribute(element.getAttribute('style'))
+  }
+}
+
 /**
  * Get color from an element's attributes and style
  * Checks fill first, then stroke
  */
 export function getElementColor(element: Element): string | null {
-  const fill = element.getAttribute('fill')
-  const stroke = element.getAttribute('stroke')
-  const style = element.getAttribute('style')
+  const { fill, stroke, parsedStyle } = getElementAttrs(element)
 
-  if (style) {
-    const fillMatch = style.match(/fill:\s*([^;]+)/)
-    const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-    if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1].trim() !== 'transparent') {
-      return fillMatch[1].trim()
-    }
-    if (strokeMatch && strokeMatch[1] !== 'none' && strokeMatch[1].trim() !== 'transparent') {
-      return strokeMatch[1].trim()
-    }
-  }
+  // Check style first (higher specificity)
+  if (isValidColor(parsedStyle.fill)) return parsedStyle.fill
+  if (isValidColor(parsedStyle.stroke)) return parsedStyle.stroke
 
-  if (fill && fill !== 'none' && fill !== 'transparent') return fill
-  if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
+  // Fall back to attributes
+  if (isValidColor(fill)) return fill
+  if (isValidColor(stroke)) return stroke
 
   return null
 }
@@ -31,21 +97,15 @@ export function getElementColor(element: Element): string | null {
  * Get stroke color from an element (prioritizes stroke over fill)
  */
 export function getElementStrokeColor(element: Element): string | null {
-  const stroke = element.getAttribute('stroke')
-  const fill = element.getAttribute('fill')
-  const style = element.getAttribute('style') || ''
+  const { fill, stroke, parsedStyle } = getElementAttrs(element)
 
-  const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-  if (strokeMatch && strokeMatch[1] !== 'none' && strokeMatch[1].trim() !== 'transparent') {
-    return strokeMatch[1].trim()
-  }
-  if (stroke && stroke !== 'none' && stroke !== 'transparent') return stroke
+  // Check style first (higher specificity), prioritize stroke
+  if (isValidColor(parsedStyle.stroke)) return parsedStyle.stroke
+  if (isValidColor(stroke)) return stroke
 
-  const fillMatch = style.match(/fill:\s*([^;]+)/)
-  if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1].trim() !== 'transparent') {
-    return fillMatch[1].trim()
-  }
-  if (fill && fill !== 'none' && fill !== 'transparent') return fill
+  // Fall back to fill
+  if (isValidColor(parsedStyle.fill)) return parsedStyle.fill
+  if (isValidColor(fill)) return fill
 
   return null
 }
@@ -54,11 +114,10 @@ export function getElementStrokeColor(element: Element): string | null {
  * Get stroke width from an element
  */
 export function getElementStrokeWidth(element: Element): string | null {
-  const strokeWidth = element.getAttribute('stroke-width')
-  const style = element.getAttribute('style') || ''
+  const { strokeWidth, parsedStyle } = getElementAttrs(element)
 
-  const widthMatch = style.match(/stroke-width:\s*([^;]+)/)
-  if (widthMatch) return widthMatch[1].trim()
+  // Style has higher specificity
+  if (parsedStyle.strokeWidth) return parsedStyle.strokeWidth
   if (strokeWidth) return strokeWidth
   return null
 }
@@ -100,64 +159,39 @@ export function getNodeStrokeWidth(node: SVGNode, defaultWidth: string = '1'): s
 }
 
 /**
+ * Check if element has fill and/or stroke
+ * Returns { hasFill, hasStroke } for use by classification functions
+ */
+function getElementFillStrokeState(element: Element): { hasFill: boolean; hasStroke: boolean } {
+  const { fill, stroke, parsedStyle } = getElementAttrs(element)
+
+  const hasFill = isValidColor(parsedStyle.fill) || isValidColor(fill)
+  const hasStroke = isValidColor(parsedStyle.stroke) || isValidColor(stroke)
+
+  return { hasFill, hasStroke }
+}
+
+/**
  * Check if an element has a fill (not stroke-only)
  */
 export function isElementFill(element: Element): boolean {
-  const fill = element.getAttribute('fill')
-  const stroke = element.getAttribute('stroke')
-  const style = element.getAttribute('style') || ''
-
-  const hasFillStyle = style.includes('fill:') &&
-    !style.includes('fill:none') &&
-    !style.includes('fill: none')
-  const hasStrokeStyle = style.includes('stroke:') &&
-    !style.includes('stroke:none') &&
-    !style.includes('stroke: none')
-
-  const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
-  const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
-
-  return !!(hasFill && !hasStroke)
+  const { hasFill, hasStroke } = getElementFillStrokeState(element)
+  return hasFill && !hasStroke
 }
 
 /**
  * Check if an element is stroke-only (no fill)
  */
 export function isElementStroke(element: Element): boolean {
-  const fill = element.getAttribute('fill')
-  const stroke = element.getAttribute('stroke')
-  const style = element.getAttribute('style') || ''
-
-  const hasFillStyle = style.includes('fill:') &&
-    !style.includes('fill:none') &&
-    !style.includes('fill: none')
-  const hasStrokeStyle = style.includes('stroke:') &&
-    !style.includes('stroke:none') &&
-    !style.includes('stroke: none')
-
-  const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
-  const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
-
-  return !!(hasStroke && !hasFill)
+  const { hasFill, hasStroke } = getElementFillStrokeState(element)
+  return hasStroke && !hasFill
 }
 
 /**
  * Get element type classification
  */
 export function getElementTypeClass(element: Element): 'fill' | 'stroke' | 'both' | 'none' {
-  const fill = element.getAttribute('fill')
-  const stroke = element.getAttribute('stroke')
-  const style = element.getAttribute('style') || ''
-
-  const hasFillStyle = style.includes('fill:') &&
-    !style.includes('fill:none') &&
-    !style.includes('fill: none')
-  const hasStrokeStyle = style.includes('stroke:') &&
-    !style.includes('stroke:none') &&
-    !style.includes('stroke: none')
-
-  const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
-  const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
+  const { hasFill, hasStroke } = getElementFillStrokeState(element)
 
   if (hasFill && hasStroke) return 'both'
   if (hasFill) return 'fill'

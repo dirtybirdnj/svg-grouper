@@ -1,6 +1,23 @@
-import { createContext, useContext, useState, useCallback, useRef, ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useRef, useMemo, ReactNode } from 'react'
 import { SVGNode } from '../types/svg'
 import { TabKey } from '../types/tabs'
+
+/**
+ * Build an index of all nodes in the tree for O(1) lookups
+ */
+function buildNodeIndex(nodes: SVGNode[]): Map<string, SVGNode> {
+  const index = new Map<string, SVGNode>()
+  const addToIndex = (nodeList: SVGNode[]) => {
+    for (const node of nodeList) {
+      index.set(node.id, node)
+      if (node.children.length > 0) {
+        addToIndex(node.children)
+      }
+    }
+  }
+  addToIndex(nodes)
+  return index
+}
 
 interface LoadingState {
   isLoading: boolean
@@ -73,6 +90,8 @@ interface AppContextType {
   // Layer state
   layerNodes: SVGNode[]
   setLayerNodes: (nodes: SVGNode[]) => void
+  /** O(1) lookup of node by ID - uses cached index */
+  getNodeById: (id: string) => SVGNode | undefined
   selectedNodeIds: Set<string>
   setSelectedNodeIds: (ids: Set<string> | ((prev: Set<string>) => Set<string>)) => void
   lastSelectedNodeId: string | null
@@ -135,6 +154,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Layer state
   const [layerNodes, setLayerNodes] = useState<SVGNode[]>([])
+
+  // Node index for O(1) lookups - rebuilt when layerNodes changes
+  const nodeIndex = useMemo(() => buildNodeIndex(layerNodes), [layerNodes])
+
+  // O(1) node lookup function
+  const getNodeById = useCallback((id: string): SVGNode | undefined => {
+    return nodeIndex.get(id)
+  }, [nodeIndex])
+
   const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set())
   const [lastSelectedNodeId, setLastSelectedNodeId] = useState<string | null>(null)
 
@@ -171,6 +199,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     separateCompoundPaths: () => void
   } | null>(null)
 
+  // Ref to track pending refresh timeout (for cleanup)
+  const refreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
   const syncSvgContent = useCallback(() => {
     if (svgElementRef.current) {
       const serializer = new XMLSerializer()
@@ -191,7 +222,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let svgAttrs: string[]
     if (originalSvgAttrs.current && originalSvgAttrs.current.length > 0) {
       svgAttrs = originalSvgAttrs.current
-      console.log('[rebuildSvgFromLayers] Using preserved original attributes:', svgAttrs.join(' '))
     } else {
       // Get the root SVG element's attributes
       const rootSvg = svgElementRef.current
@@ -201,7 +231,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       // Store for future rebuilds
       originalSvgAttrs.current = svgAttrs
-      console.log('[rebuildSvgFromLayers] Captured attributes from current SVG:', svgAttrs.join(' '))
     }
 
     // Build content from layer nodes
@@ -299,9 +328,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     skipNextParse.current = true
     setSvgContent(newSvgContent)
 
+    // Clear any pending refresh timeout to prevent memory leaks
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current)
+    }
+
     // Schedule element reference refresh after DOM updates
     // This ensures layer nodes have fresh element references
-    setTimeout(() => {
+    refreshTimeoutRef.current = setTimeout(() => {
+      refreshTimeoutRef.current = null
       if (svgElementRef.current) {
         const refreshRefs = (nodes: SVGNode[]): SVGNode[] => {
           return nodes.map(node => {
@@ -429,6 +464,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshElementRefs,
     layerNodes,
     setLayerNodes,
+    getNodeById,
     selectedNodeIds,
     setSelectedNodeIds,
     lastSelectedNodeId,

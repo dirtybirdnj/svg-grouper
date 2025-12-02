@@ -3,6 +3,12 @@ import { useAppContext, OrderLine } from '../../context/AppContext'
 import { Point, distance } from '../../utils/geometry'
 import './OrderTab.css'
 
+// Sanitize color to prevent XSS in SVG innerHTML
+const COLOR_REGEX = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)|rgba\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*[\d.]+\s*\)|[a-zA-Z]+)$/
+function sanitizeColor(color: string): string {
+  return COLOR_REGEX.test(color) ? color : '#333'
+}
+
 interface OrderedLine extends OrderLine {
   originalIndex: number
   reversed: boolean
@@ -334,7 +340,7 @@ export default function OrderTab() {
       for (let i = 0; i < visibleCount; i++) {
         const line = optimizedLines[i]
         if (!line) continue
-        const color = colorByLayer ? (line.color || '#333') : getGradientColor(totalLines > 1 ? i / (totalLines - 1) : 0)
+        const color = colorByLayer ? sanitizeColor(line.color || '#333') : getGradientColor(totalLines > 1 ? i / (totalLines - 1) : 0)
         if (!colorGroups.has(color)) {
           colorGroups.set(color, [])
         }
@@ -350,7 +356,7 @@ export default function OrderTab() {
         if (!line) return ''
         let color: string
         if (colorByLayer) {
-          color = line.color || '#333'
+          color = sanitizeColor(line.color || '#333')
         } else {
           const position = totalLines > 1 ? index / (totalLines - 1) : 0
           color = getGradientColor(position)

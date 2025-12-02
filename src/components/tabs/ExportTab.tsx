@@ -1049,7 +1049,6 @@ export default function ExportTab() {
       if (window.electron?.exportMultipleFiles) {
         const result = await window.electron.exportMultipleFiles({ files, baseName })
         if (result.success) {
-          console.log(`Exported ${files.length} files to ${result.exportDir}`)
         } else if (result.error !== 'Export cancelled') {
           alert(`Export failed: ${result.error}`)
         }
