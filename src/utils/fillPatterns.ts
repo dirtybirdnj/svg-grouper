@@ -1753,75 +1753,6 @@ export function generateCustomTileLines(
 
 // distance() is now imported from geometry.ts
 
-// Optimize lines within a single shape using nearest-neighbor algorithm
-function optimizeLinesWithinShape(
-  lines: HatchLine[],
-  pathId: string,
-  color: string,
-  startingPoint: Point,
-  startingIndex: number
-): { orderedLines: OrderedLine[]; endPoint: Point } {
-  if (lines.length === 0) return { orderedLines: [], endPoint: startingPoint }
-
-  const result: OrderedLine[] = []
-  const remaining = [...lines]
-  let currentPoint = startingPoint
-  let globalIndex = startingIndex
-
-  while (remaining.length > 0) {
-    let bestIndex = 0
-    let bestDistance = Infinity
-    let shouldReverse = false
-
-    for (let i = 0; i < remaining.length; i++) {
-      const line = remaining[i]
-      const start = { x: line.x1, y: line.y1 }
-      const end = { x: line.x2, y: line.y2 }
-
-      const distToStart = distance(currentPoint, start)
-      if (distToStart < bestDistance) {
-        bestDistance = distToStart
-        bestIndex = i
-        shouldReverse = false
-      }
-
-      const distToEnd = distance(currentPoint, end)
-      if (distToEnd < bestDistance) {
-        bestDistance = distToEnd
-        bestIndex = i
-        shouldReverse = true
-      }
-    }
-
-    const chosenLine = remaining.splice(bestIndex, 1)[0]
-
-    if (shouldReverse) {
-      result.push({
-        x1: chosenLine.x2,
-        y1: chosenLine.y2,
-        x2: chosenLine.x1,
-        y2: chosenLine.y1,
-        pathId,
-        color,
-        originalIndex: globalIndex++,
-        reversed: true
-      })
-      currentPoint = { x: chosenLine.x1, y: chosenLine.y1 }
-    } else {
-      result.push({
-        ...chosenLine,
-        pathId,
-        color,
-        originalIndex: globalIndex++,
-        reversed: false
-      })
-      currentPoint = { x: chosenLine.x2, y: chosenLine.y2 }
-    }
-  }
-
-  return { orderedLines: result, endPoint: currentPoint }
-}
-
 // Calculate the centroid of a set of lines
 function calculateShapeCentroid(lines: HatchLine[]): Point {
   if (lines.length === 0) return { x: 0, y: 0 }
@@ -1880,6 +1811,205 @@ function reverseShapeLines(lines: OrderedLine[]): OrderedLine[] {
 // Thresholds for optimization - skip expensive algorithms for large datasets
 const OPTIMIZATION_LINE_THRESHOLD = 5000 // Skip within-shape optimization above this
 const OPTIMIZATION_SHAPE_THRESHOLD = 200 // Skip 2-opt improvement above this many shapes
+const ENDPOINT_TOLERANCE = 0.01 // Tolerance for matching endpoints (in SVG units)
+
+// ============= LINE JOINING OPTIMIZATION =============
+// Joins lines that share endpoints into continuous paths to reduce pen lifts
+
+interface EndpointEntry {
+  lineIndex: number
+  isStart: boolean // true = start of line, false = end of line
+}
+
+// Build spatial index of endpoints using a grid for O(1) lookup
+function buildEndpointGrid(
+  lines: HatchLine[],
+  tolerance: number
+): Map<string, EndpointEntry[]> {
+  const grid = new Map<string, EndpointEntry[]>()
+  const cellSize = tolerance * 10 // Grid cell size
+
+  const getKey = (x: number, y: number): string => {
+    const cx = Math.floor(x / cellSize)
+    const cy = Math.floor(y / cellSize)
+    return `${cx},${cy}`
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    // Add start point
+    const startKey = getKey(line.x1, line.y1)
+    if (!grid.has(startKey)) grid.set(startKey, [])
+    grid.get(startKey)!.push({ lineIndex: i, isStart: true })
+
+    // Add end point
+    const endKey = getKey(line.x2, line.y2)
+    if (!grid.has(endKey)) grid.set(endKey, [])
+    grid.get(endKey)!.push({ lineIndex: i, isStart: false })
+  }
+
+  return grid
+}
+
+// Find all endpoints near a given point
+function findNearbyEndpoints(
+  point: Point,
+  grid: Map<string, EndpointEntry[]>,
+  lines: HatchLine[],
+  usedLines: Set<number>,
+  tolerance: number
+): Array<{ entry: EndpointEntry; dist: number }> {
+  const cellSize = tolerance * 10
+  const cx = Math.floor(point.x / cellSize)
+  const cy = Math.floor(point.y / cellSize)
+
+  const results: Array<{ entry: EndpointEntry; dist: number }> = []
+
+  // Check current cell and all 8 neighbors
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const key = `${cx + dx},${cy + dy}`
+      const entries = grid.get(key)
+      if (!entries) continue
+
+      for (const entry of entries) {
+        if (usedLines.has(entry.lineIndex)) continue
+
+        const line = lines[entry.lineIndex]
+        const endPoint = entry.isStart
+          ? { x: line.x1, y: line.y1 }
+          : { x: line.x2, y: line.y2 }
+
+        const dist = distance(point, endPoint)
+        if (dist <= tolerance) {
+          results.push({ entry, dist })
+        }
+      }
+    }
+  }
+
+  // Sort by distance
+  results.sort((a, b) => a.dist - b.dist)
+  return results
+}
+
+// Join lines into continuous paths
+export function joinContinuousLines(
+  lines: HatchLine[],
+  pathId: string,
+  color: string,
+  startingPoint: Point,
+  startingIndex: number,
+  tolerance: number = ENDPOINT_TOLERANCE
+): { orderedLines: OrderedLine[]; endPoint: Point } {
+  if (lines.length === 0) return { orderedLines: [], endPoint: startingPoint }
+
+  const grid = buildEndpointGrid(lines, tolerance)
+  const usedLines = new Set<number>()
+  const result: OrderedLine[] = []
+  let currentPoint = startingPoint
+  let globalIndex = startingIndex
+
+  while (usedLines.size < lines.length) {
+    // First, try to find a line that connects to current position
+    const connected = findNearbyEndpoints(currentPoint, grid, lines, usedLines, tolerance)
+
+    if (connected.length > 0) {
+      // Found a connecting line - use it
+      const { entry } = connected[0]
+      const line = lines[entry.lineIndex]
+      usedLines.add(entry.lineIndex)
+
+      // If we connected to the END of the line, reverse it
+      const shouldReverse = !entry.isStart
+
+      if (shouldReverse) {
+        result.push({
+          x1: line.x2,
+          y1: line.y2,
+          x2: line.x1,
+          y2: line.y1,
+          pathId,
+          color,
+          originalIndex: globalIndex++,
+          reversed: true
+        })
+        currentPoint = { x: line.x1, y: line.y1 }
+      } else {
+        result.push({
+          x1: line.x1,
+          y1: line.y1,
+          x2: line.x2,
+          y2: line.y2,
+          pathId,
+          color,
+          originalIndex: globalIndex++,
+          reversed: false
+        })
+        currentPoint = { x: line.x2, y: line.y2 }
+      }
+    } else {
+      // No connecting line found - need to lift pen and find nearest unvisited line
+      let bestIndex = -1
+      let bestDistance = Infinity
+      let bestIsStart = true
+
+      for (let i = 0; i < lines.length; i++) {
+        if (usedLines.has(i)) continue
+
+        const line = lines[i]
+        const distToStart = distance(currentPoint, { x: line.x1, y: line.y1 })
+        const distToEnd = distance(currentPoint, { x: line.x2, y: line.y2 })
+
+        if (distToStart < bestDistance) {
+          bestDistance = distToStart
+          bestIndex = i
+          bestIsStart = true
+        }
+        if (distToEnd < bestDistance) {
+          bestDistance = distToEnd
+          bestIndex = i
+          bestIsStart = false
+        }
+      }
+
+      if (bestIndex >= 0) {
+        const line = lines[bestIndex]
+        usedLines.add(bestIndex)
+
+        if (!bestIsStart) {
+          // Start from end, so reverse
+          result.push({
+            x1: line.x2,
+            y1: line.y2,
+            x2: line.x1,
+            y2: line.y1,
+            pathId,
+            color,
+            originalIndex: globalIndex++,
+            reversed: true
+          })
+          currentPoint = { x: line.x1, y: line.y1 }
+        } else {
+          result.push({
+            x1: line.x1,
+            y1: line.y1,
+            x2: line.x2,
+            y2: line.y2,
+            pathId,
+            color,
+            originalIndex: globalIndex++,
+            reversed: false
+          })
+          currentPoint = { x: line.x2, y: line.y2 }
+        }
+      }
+    }
+  }
+
+  return { orderedLines: result, endPoint: currentPoint }
+}
 
 // Multi-pass optimization for line ordering with 2-opt improvement
 export function optimizeLineOrderMultiPass(
@@ -1958,8 +2088,8 @@ export function optimizeLineOrderMultiPass(
         ? { x: orderedLines[orderedLines.length - 1].x2, y: orderedLines[orderedLines.length - 1].y2 }
         : penPosition
     } else {
-      // Full optimization: nearest-neighbor within each shape
-      const result = optimizeLinesWithinShape(
+      // Full optimization: join continuous lines and nearest-neighbor for disconnected ones
+      const result = joinContinuousLines(
         shape.lines,
         shape.pathId,
         shape.color,

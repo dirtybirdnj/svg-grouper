@@ -24,6 +24,74 @@ export function distance(p1: Point, p2: Point): number {
   return Math.sqrt(dx * dx + dy * dy)
 }
 
+// Get all subpaths from a path element as separate path d strings
+export function getSubpathsAsPathStrings(element: Element): string[] {
+  const tagName = element.tagName.toLowerCase()
+  if (tagName !== 'path') return []
+
+  const d = element.getAttribute('d') || ''
+  if (!d.trim()) return []
+
+  // Split path data by M/m commands while preserving original commands
+  // Use regex to find M or m commands and split accordingly
+  const mCommandRegex = /[Mm][^Mm]*/g
+  const matches = d.match(mCommandRegex)
+
+  if (!matches || matches.length === 0) return []
+  if (matches.length === 1) return [] // Single subpath, not a compound path
+
+  // Track current position for converting relative to absolute
+  let currentX = 0
+  let currentY = 0
+  const subpathStrings: string[] = []
+
+  for (const match of matches) {
+    const trimmed = match.trim()
+    if (!trimmed) continue
+
+    // Parse the first command to get starting position
+    const isRelative = trimmed.startsWith('m')
+    const coordStr = trimmed.slice(1).trim()
+
+    // Extract first coordinate pair
+    const coordMatch = coordStr.match(/^[\s,]*(-?[\d.]+)[\s,]+(-?[\d.]+)/)
+    if (coordMatch) {
+      const x = parseFloat(coordMatch[1])
+      const y = parseFloat(coordMatch[2])
+
+      if (isRelative && subpathStrings.length > 0) {
+        // Relative m - convert to absolute
+        const absX = currentX + x
+        const absY = currentY + y
+        // Replace the relative coordinates with absolute
+        const restOfPath = coordStr.slice(coordMatch[0].length)
+        subpathStrings.push(`M ${absX} ${absY} ${restOfPath}`)
+        currentX = absX
+        currentY = absY
+      } else {
+        // Absolute M or first subpath
+        subpathStrings.push(isRelative ? 'M' + trimmed.slice(1) : trimmed)
+        currentX = x
+        currentY = y
+      }
+
+      // Try to find the last position in this subpath for the next relative m
+      // Look for the last coordinate pair before Z
+      const allCoords = trimmed.match(/-?[\d.]+/g)
+      if (allCoords && allCoords.length >= 2) {
+        // Take the last two numbers as x,y (rough approximation)
+        currentX = parseFloat(allCoords[allCoords.length - 2])
+        currentY = parseFloat(allCoords[allCoords.length - 1])
+      }
+    } else {
+      // Couldn't parse coordinates, just add as-is
+      subpathStrings.push(trimmed)
+    }
+  }
+
+  return subpathStrings
+}
+
 // Parse SVG path data into separate subpaths (split at M commands after Z)
 export function parsePathIntoSubpaths(d: string): Point[][] {
   const commands = d.match(/[MLHVCSQTAZmlhvcsqtaz][^MLHVCSQTAZmlhvcsqtaz]*/gi) || []
@@ -367,6 +435,106 @@ export function getPolygonsFromSubpaths(subpaths: Point[][]): PolygonWithHoles[]
   return results
 }
 
+// Check if polygon A is contained within polygon B using multiple sample points
+// More robust than just checking centroid for complex/concave shapes
+function isPolygonContainedIn(inner: Point[], outer: Point[]): boolean {
+  if (inner.length === 0 || outer.length === 0) return false
+
+  // Sample multiple points from the inner polygon
+  const samplePoints: Point[] = []
+
+  // Add centroid
+  samplePoints.push(polygonCentroid(inner))
+
+  // Add some vertices (evenly spaced)
+  const step = Math.max(1, Math.floor(inner.length / 5))
+  for (let i = 0; i < inner.length; i += step) {
+    samplePoints.push(inner[i])
+  }
+
+  // Count how many sample points are inside the outer polygon
+  let insideCount = 0
+  for (const p of samplePoints) {
+    if (isPointInsidePolygon(p, outer)) insideCount++
+  }
+
+  // Consider contained if majority of samples are inside
+  return insideCount > samplePoints.length / 2
+}
+
+// Get polygons with ALL nested regions fillable
+// Unlike getPolygonsFromSubpaths which only fills outer regions (treating inner as holes),
+// this returns a fillable region for EVERY level of nesting
+export function getPolygonsFromSubpathsNested(subpaths: Point[][]): PolygonWithHoles[] {
+  if (subpaths.length === 0) return []
+  if (subpaths.length === 1) return [{ outer: subpaths[0], holes: [] }]
+
+  interface SubpathInfo {
+    index: number
+    subpath: Point[]
+    area: number
+    centroid: Point
+    parent: number | null  // Index of containing polygon
+    children: number[]     // Indices of directly contained polygons
+  }
+
+  // Calculate info for each subpath
+  const infos: SubpathInfo[] = subpaths.map((subpath, index) => ({
+    index,
+    subpath,
+    area: Math.abs(calcPolygonArea(subpath)),
+    centroid: polygonCentroid(subpath),
+    parent: null,
+    children: []
+  }))
+
+  // Sort by area descending for processing
+  const sortedByArea = [...infos].sort((a, b) => b.area - a.area)
+
+  // Build containment hierarchy
+  // For each polygon, find the smallest polygon that contains it
+  for (let i = 0; i < sortedByArea.length; i++) {
+    const current = sortedByArea[i]
+
+    // Look for smallest containing polygon (larger than current)
+    // We iterate from just-larger to largest, finding the first one that contains us
+    // without any intermediate polygon also containing us
+    let foundParent = false
+    for (let j = i - 1; j >= 0 && !foundParent; j--) {
+      const larger = sortedByArea[j]
+      if (isPolygonContainedIn(current.subpath, larger.subpath)) {
+        // Check if there's an intermediate polygon (between larger and current in size)
+        // that also contains current - if so, skip larger and keep looking
+        let hasIntermediateParent = false
+        for (let k = j + 1; k < i; k++) {
+          const intermediate = sortedByArea[k]
+          if (isPolygonContainedIn(current.subpath, intermediate.subpath)) {
+            // Current is inside this intermediate polygon, so larger isn't the direct parent
+            hasIntermediateParent = true
+            break
+          }
+        }
+
+        if (!hasIntermediateParent) {
+          current.parent = larger.index
+          larger.children.push(current.index)
+          foundParent = true
+        }
+      }
+    }
+  }
+
+  // Generate results: each polygon becomes a fillable region with direct children as holes
+  const results: PolygonWithHoles[] = []
+
+  for (const info of infos) {
+    const holes: Point[][] = info.children.map(childIdx => infos[childIdx].subpath)
+    results.push({ outer: info.subpath, holes })
+  }
+
+  return results
+}
+
 // Get polygon points from an SVG element (returns first/largest polygon only)
 // For compound paths with disconnected regions, use getAllPolygonsFromElement instead
 export function getPolygonPoints(element: Element): PolygonWithHoles {
@@ -374,8 +542,19 @@ export function getPolygonPoints(element: Element): PolygonWithHoles {
   return polygons.length > 0 ? polygons[0] : { outer: [], holes: [] }
 }
 
+// Subpath handling mode for getAllPolygonsFromElement
+export type SubpathMode = 'default' | 'independent' | 'nested' | 'evenodd'
+// - 'default': Inner shapes are treated as holes (not filled)
+// - 'independent': Each subpath is filled separately (holes get filled over)
+// - 'nested': All nested regions are fillable (outer has holes, each hole also gets filled)
+// - 'evenodd': Use SVG evenodd fill rule - fills areas inside odd number of boundaries
+
 // Get ALL polygons from an SVG element (handles compound paths with disconnected regions)
-export function getAllPolygonsFromElement(element: Element): PolygonWithHoles[] {
+// subpathMode controls how nested shapes are handled:
+//   'default' - inner shapes are holes (excluded from fill)
+//   'independent' - each subpath filled separately (ignores nesting)
+//   'nested' - all regions filled (outer with holes + each inner region)
+export function getAllPolygonsFromElement(element: Element, subpathMode: SubpathMode = 'default'): PolygonWithHoles[] {
   const tagName = element.tagName.toLowerCase()
 
   if (tagName === 'polygon') {
@@ -419,7 +598,17 @@ export function getAllPolygonsFromElement(element: Element): PolygonWithHoles[] 
     const subpaths = parsePathIntoSubpaths(d)
     if (subpaths.length === 0) return []
     if (subpaths.length === 1) return [{ outer: subpaths[0], holes: [] }]
-    // Use the new function that properly handles disconnected regions
+
+    // Handle different modes
+    if (subpathMode === 'independent') {
+      // Each subpath becomes its own polygon (no hole detection)
+      return subpaths.map(sp => ({ outer: sp, holes: [] }))
+    } else if (subpathMode === 'nested') {
+      // All nested regions get filled (outer + each inner)
+      return getPolygonsFromSubpathsNested(subpaths)
+    }
+
+    // Default: Use the function that detects holes based on containment
     return getPolygonsFromSubpaths(subpaths)
   }
 
@@ -757,6 +946,139 @@ export function clipLinesToPolygon(
     }
   }
 
+  return clippedLines
+}
+
+// Check if a point is inside using evenodd rule across multiple polygons
+// Returns true if point is inside an ODD number of polygon boundaries
+export function isPointInsideEvenOdd(point: Point, polygons: Point[][]): boolean {
+  let crossingCount = 0
+  for (const polygon of polygons) {
+    if (pointInPolygon(point, polygon)) {
+      crossingCount++
+    }
+  }
+  return crossingCount % 2 === 1
+}
+
+// Clip lines using evenodd fill rule across multiple polygons (subpaths)
+// This correctly handles compound paths where areas inside an odd number of boundaries are filled
+export function clipLinesToPolygonsEvenOdd(
+  lines: HatchLine[],
+  polygons: Point[][],
+  inset: number = 0
+): HatchLine[] {
+  const clippedLines: HatchLine[] = []
+
+  console.log('[clipLinesToPolygonsEvenOdd] Input:', {
+    linesCount: lines.length,
+    polygonsCount: polygons.length,
+    polygonSizes: polygons.map(p => p.length),
+    inset
+  })
+
+  if (polygons.length === 0) {
+    console.log('[clipLinesToPolygonsEvenOdd] No polygons, returning empty')
+    return clippedLines
+  }
+
+  // Apply inset to all polygons
+  const workingPolygons = polygons.map(polygon => {
+    if (polygon.length < 3) return polygon
+    if (inset > 0) {
+      const centroidX = polygon.reduce((sum, p) => sum + p.x, 0) / polygon.length
+      const centroidY = polygon.reduce((sum, p) => sum + p.y, 0) / polygon.length
+      return polygon.map(p => {
+        const dx = p.x - centroidX
+        const dy = p.y - centroidY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < inset) return { x: centroidX, y: centroidY }
+        const scale = (dist - inset) / dist
+        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
+      })
+    }
+    return polygon
+  })
+
+  // Compute combined bounding box for fast rejection
+  let bboxMinX = Infinity, bboxMinY = Infinity, bboxMaxX = -Infinity, bboxMaxY = -Infinity
+  for (const polygon of workingPolygons) {
+    for (const p of polygon) {
+      if (p.x < bboxMinX) bboxMinX = p.x
+      if (p.y < bboxMinY) bboxMinY = p.y
+      if (p.x > bboxMaxX) bboxMaxX = p.x
+      if (p.y > bboxMaxY) bboxMaxY = p.y
+    }
+  }
+
+  for (const line of lines) {
+    // Fast bbox rejection
+    const lineMinX = Math.min(line.x1, line.x2)
+    const lineMaxX = Math.max(line.x1, line.x2)
+    const lineMinY = Math.min(line.y1, line.y2)
+    const lineMaxY = Math.max(line.y1, line.y2)
+
+    if (lineMaxX < bboxMinX || lineMinX > bboxMaxX ||
+        lineMaxY < bboxMinY || lineMinY > bboxMaxY) {
+      continue
+    }
+
+    const p1 = { x: line.x1, y: line.y1 }
+    const p2 = { x: line.x2, y: line.y2 }
+
+    // Find all intersections with all polygon boundaries
+    const allIntersections: { point: Point; t: number }[] = []
+    const dx = p2.x - p1.x
+    const dy = p2.y - p1.y
+    const len = Math.sqrt(dx * dx + dy * dy)
+
+    for (const polygon of workingPolygons) {
+      const intersections = linePolygonIntersections(line, polygon)
+      for (const intersection of intersections) {
+        const t = len > 0.001
+          ? (Math.abs(dx) > Math.abs(dy)
+              ? (intersection.x - p1.x) / dx
+              : (intersection.y - p1.y) / dy)
+          : 0
+        // Only add intersections within the line segment
+        if (t >= -0.001 && t <= 1.001) {
+          allIntersections.push({ point: intersection, t: Math.max(0, Math.min(1, t)) })
+        }
+      }
+    }
+
+    // Add endpoints
+    allIntersections.push({ point: p1, t: 0 })
+    allIntersections.push({ point: p2, t: 1 })
+
+    // Sort by t parameter and remove near-duplicates
+    allIntersections.sort((a, b) => a.t - b.t)
+    const uniquePoints: { point: Point; t: number }[] = []
+    for (const pt of allIntersections) {
+      if (uniquePoints.length === 0 || pt.t - uniquePoints[uniquePoints.length - 1].t > 0.0001) {
+        uniquePoints.push(pt)
+      }
+    }
+
+    // Walk the line, keeping segments whose midpoints are inside (odd crossing count)
+    for (let j = 0; j < uniquePoints.length - 1; j++) {
+      const segStart = uniquePoints[j].point
+      const segEnd = uniquePoints[j + 1].point
+      const midpoint = {
+        x: (segStart.x + segEnd.x) / 2,
+        y: (segStart.y + segEnd.y) / 2
+      }
+
+      if (isPointInsideEvenOdd(midpoint, workingPolygons)) {
+        clippedLines.push({
+          x1: segStart.x, y1: segStart.y,
+          x2: segEnd.x, y2: segEnd.y
+        })
+      }
+    }
+  }
+
+  console.log('[clipLinesToPolygonsEvenOdd] Output:', clippedLines.length, 'lines')
   return clippedLines
 }
 

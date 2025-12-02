@@ -7,6 +7,7 @@ import {
   Rect,
   generateGlobalHatchLines,
   clipLinesToPolygon,
+  clipLinesToPolygonsEvenOdd,
   clipLinesToRect,
   clipPolygonWithHolesToRect,
 } from '../src/utils/geometry'
@@ -42,6 +43,7 @@ interface FillPathInput {
   id: string
   color: string
   polygons: PolygonWithHoles[]
+  rawSubpaths?: Point[][] // For evenodd mode - all subpaths as flat arrays
 }
 
 // Output data for a filled path
@@ -72,6 +74,7 @@ interface FillGenerationParams {
   customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
+  useEvenOdd: boolean // Use evenodd fill rule for compound paths
 }
 
 // Worker message types
@@ -107,6 +110,7 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
     customTileRotateOffset,
     enableCrop,
     cropInset,
+    useEvenOdd,
   } = params
 
   try {
@@ -171,86 +175,129 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
       let allLines: HatchLine[] = []
       let firstValidPolygon: Point[] | null = null
 
-      for (const polygonData of allPolygons) {
-        if (polygonData.outer.length < 3) continue
-        if (!firstValidPolygon) firstValidPolygon = polygonData.outer
+      // Handle evenodd fill mode for compound paths
+      // This uses clipLinesToPolygonsEvenOdd to clip against ALL subpaths at once
+      if (useEvenOdd && pathInput.rawSubpaths && pathInput.rawSubpaths.length > 1) {
+        const subpaths = pathInput.rawSubpaths
+        firstValidPolygon = subpaths[0]
 
-        let lines: HatchLine[] = []
+        if (fillPattern === 'lines') {
+          allLines = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
+          if (crossHatch) {
+            const crossLines = clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)
+            for (const cl of crossLines) {
+              allLines.push(cl)
+            }
+          }
+        } else if (fillPattern === 'crosshatch') {
+          const lines1 = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
+          const lines2 = clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)
+          allLines = [...lines1, ...lines2]
+        } else if (fillPattern === 'spiral') {
+          // Spiral with evenodd - clip the global spiral using evenodd rule
+          allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
+        } else {
+          // For other patterns (concentric, etc.), process each subpath independently
+          for (const subpath of subpaths) {
+            if (subpath.length < 3) continue
+            const polygonData: PolygonWithHoles = { outer: subpath, holes: [] }
+            let lines: HatchLine[] = []
 
-        switch (fillPattern) {
-          case 'concentric':
-            lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
-            break
-          case 'wiggle':
-            lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-            break
-          case 'spiral':
-            if (singleSpiral) {
-              lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-            } else {
-              lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+            switch (fillPattern) {
+              case 'concentric':
+                lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                break
+              default:
+                break
             }
-            break
-          case 'honeycomb':
-            lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-            break
-          case 'gyroid':
-            lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-            break
-          case 'crosshatch':
-            lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-            break
-          case 'zigzag':
-            lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
-            break
-          case 'radial':
-            lines = generateRadialLines(polygonData, lineSpacing, inset)
-            break
-          case 'crossspiral':
-            lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-            break
-          case 'hilbert':
-            if (singleHilbert) {
-              lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
-            } else {
-              lines = generateHilbertLines(polygonData, lineSpacing, inset)
+            for (const line of lines) {
+              allLines.push(line)
             }
-            break
-          case 'fermat':
-            if (singleFermat) {
-              lines = clipFermatToPolygon(globalFermatLines, polygonData, inset)
-            } else {
-              lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-            }
-            break
-          case 'wave':
-            lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-            break
-          case 'scribble':
-            lines = generateScribbleLines(polygonData, lineSpacing, inset)
-            break
-          case 'custom':
-            lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
-            break
-          case 'lines':
-          default: {
-            // Use pre-generated global lines and clip to this polygon
-            const clippedLines = clipLinesToPolygon(globalLines, polygonData, inset)
-            lines = cropRect ? clipLinesToRect(clippedLines, cropRect) : clippedLines
-            if (crossHatch) {
-              const clippedCrossLines = clipLinesToPolygon(globalCrossLines, polygonData, inset)
-              const croppedCrossLines = cropRect ? clipLinesToRect(clippedCrossLines, cropRect) : clippedCrossLines
-              for (const cl of croppedCrossLines) {
-                lines.push(cl)
-              }
-            }
-            break
           }
         }
+      } else {
+        // Standard per-polygon processing
+        for (const polygonData of allPolygons) {
+          if (polygonData.outer.length < 3) continue
+          if (!firstValidPolygon) firstValidPolygon = polygonData.outer
 
-        // Use push to avoid O(n²) array allocations from spread operator
-        for (const line of lines) {
-          allLines.push(line)
+          let lines: HatchLine[] = []
+
+          switch (fillPattern) {
+            case 'concentric':
+              lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+              break
+            case 'wiggle':
+              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              break
+            case 'spiral':
+              if (singleSpiral) {
+                lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+              } else {
+                lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              }
+              break
+            case 'honeycomb':
+              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+              break
+            case 'gyroid':
+              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+              break
+            case 'crosshatch':
+              lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
+              break
+            case 'zigzag':
+              lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+              break
+            case 'radial':
+              lines = generateRadialLines(polygonData, lineSpacing, inset)
+              break
+            case 'crossspiral':
+              lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              break
+            case 'hilbert':
+              if (singleHilbert) {
+                lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+              } else {
+                lines = generateHilbertLines(polygonData, lineSpacing, inset)
+              }
+              break
+            case 'fermat':
+              if (singleFermat) {
+                lines = clipFermatToPolygon(globalFermatLines, polygonData, inset)
+              } else {
+                lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              }
+              break
+            case 'wave':
+              lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              break
+            case 'scribble':
+              lines = generateScribbleLines(polygonData, lineSpacing, inset)
+              break
+            case 'custom':
+              lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
+              break
+            case 'lines':
+            default: {
+              // Use pre-generated global lines and clip to this polygon
+              const clippedLines = clipLinesToPolygon(globalLines, polygonData, inset)
+              lines = cropRect ? clipLinesToRect(clippedLines, cropRect) : clippedLines
+              if (crossHatch) {
+                const clippedCrossLines = clipLinesToPolygon(globalCrossLines, polygonData, inset)
+                const croppedCrossLines = cropRect ? clipLinesToRect(clippedCrossLines, cropRect) : clippedCrossLines
+                for (const cl of croppedCrossLines) {
+                  lines.push(cl)
+                }
+              }
+              break
+            }
+          }
+
+          // Use push to avoid O(n²) array allocations from spread operator
+          for (const line of lines) {
+            allLines.push(line)
+          }
         }
       }
 

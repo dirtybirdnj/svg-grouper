@@ -67,6 +67,7 @@ interface AppContextType {
   toolHandlers: React.MutableRefObject<{
     convertToFills: () => void
     normalizeColors: () => void
+    separateCompoundPaths: () => void
   } | null>
 
   // Layer state
@@ -167,6 +168,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const toolHandlers = useRef<{
     convertToFills: () => void
     normalizeColors: () => void
+    separateCompoundPaths: () => void
   } | null>(null)
 
   const syncSvgContent = useCallback(() => {

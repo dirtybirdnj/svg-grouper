@@ -17,6 +17,7 @@ export interface FillPathInput {
   id: string
   color: string
   polygons: PolygonWithHoles[]
+  rawSubpaths?: Point[][] // For evenodd mode - all subpaths as flat arrays
 }
 
 // Output data for a filled path
@@ -47,6 +48,7 @@ export interface FillGenerationParams {
   customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
+  useEvenOdd: boolean // Use evenodd fill rule for compound paths
 }
 
 // Result of fill generation

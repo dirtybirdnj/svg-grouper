@@ -354,6 +354,38 @@ function AppContent() {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
 
     const extractLines = (node: SVGNode) => {
+      // Helper to extract lines from path data string
+      const extractFromPathData = (d: string, stroke: string, pathId: string) => {
+        const lineRegex = /M\s*([\d.-]+)[,\s]+([\d.-]+)\s*L\s*([\d.-]+)[,\s]+([\d.-]+)/gi
+        let lineMatch
+        while ((lineMatch = lineRegex.exec(d)) !== null) {
+          const x1 = parseFloat(lineMatch[1])
+          const y1 = parseFloat(lineMatch[2])
+          const x2 = parseFloat(lineMatch[3])
+          const y2 = parseFloat(lineMatch[4])
+
+          lines.push({ x1, y1, x2, y2, color: stroke, pathId })
+
+          minX = Math.min(minX, x1, x2)
+          minY = Math.min(minY, y1, y2)
+          maxX = Math.max(maxX, x1, x2)
+          maxY = Math.max(maxY, y1, y2)
+        }
+      }
+
+      // Check for customMarkup first (used by fill layers)
+      if (node.customMarkup) {
+        // Parse customMarkup to extract path data and stroke color
+        const pathMatch = node.customMarkup.match(/<path[^>]*d="([^"]*)"[^>]*>/)
+        const strokeMatch = node.customMarkup.match(/stroke="([^"]*)"/)
+        if (pathMatch) {
+          const d = pathMatch[1]
+          const stroke = strokeMatch ? strokeMatch[1] : '#000'
+          extractFromPathData(d, stroke, node.id)
+        }
+        return // Don't process element if we have customMarkup
+      }
+
       const element = node.element
       const tagName = element.tagName.toLowerCase()
 
@@ -375,23 +407,7 @@ function AppContent() {
         const d = element.getAttribute('d') || ''
         const stroke = element.getAttribute('stroke') || '#000'
 
-        // Match all M...L segments in compound paths (e.g., "M1,2 L3,4 M5,6 L7,8")
-        // Regex matches: M x,y L x,y patterns throughout the path data
-        const lineRegex = /M\s*([\d.-]+)[,\s]+([\d.-]+)\s*L\s*([\d.-]+)[,\s]+([\d.-]+)/gi
-        let lineMatch
-        while ((lineMatch = lineRegex.exec(d)) !== null) {
-          const x1 = parseFloat(lineMatch[1])
-          const y1 = parseFloat(lineMatch[2])
-          const x2 = parseFloat(lineMatch[3])
-          const y2 = parseFloat(lineMatch[4])
-
-          lines.push({ x1, y1, x2, y2, color: stroke, pathId: node.id })
-
-          minX = Math.min(minX, x1, x2)
-          minY = Math.min(minY, y1, y2)
-          maxX = Math.max(maxX, x1, x2)
-          maxY = Math.max(maxY, y1, y2)
-        }
+        extractFromPathData(d, stroke, node.id)
       } else if (tagName === 'polyline') {
         // Extract lines from polyline points
         const pointsAttr = element.getAttribute('points') || ''
@@ -701,6 +717,9 @@ function AppContent() {
           break
         case 'normalize-colors':
           toolHandlers.current?.normalizeColors()
+          break
+        case 'separate-compound-paths':
+          toolHandlers.current?.separateCompoundPaths()
           break
       }
     })

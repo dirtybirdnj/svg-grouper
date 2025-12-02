@@ -6,12 +6,15 @@ import {
   HatchLine,
   PolygonWithHoles,
   Rect,
+  SubpathMode,
   getAllPolygonsFromElement,
   generateGlobalHatchLines,
   clipLinesToPolygon,
+  clipLinesToPolygonsEvenOdd,
   clipLinesToRect,
   clipPolygonWithHolesToRect,
   linesToCompoundPath,
+  parsePathIntoSubpaths,
 } from '../../utils/geometry'
 import {
   FillPatternType,
@@ -233,7 +236,7 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
 
 // Local fallback for fill generation (when not running in Electron)
 async function generateFillsLocally(
-  pathInputs: Array<{ id: string; color: string; polygons: PolygonWithHoles[] }>,
+  pathInputs: Array<{ id: string; color: string; polygons: PolygonWithHoles[]; rawSubpaths?: Point[][] }>,
   pathsToProcess: FillPathInfo[],
   boundingBox: Rect,
   fillPattern: FillPatternType,
@@ -253,6 +256,7 @@ async function generateFillsLocally(
   customTileRotateOffset: number,
   enableCrop: boolean,
   cropInset: number,
+  useEvenOdd: boolean,
   abortController: { aborted: boolean },
   setProgress: (progress: number) => void
 ): Promise<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]> {
@@ -310,71 +314,117 @@ async function generateFillsLocally(
     let allLines: HatchLine[] = []
     let firstValidPolygon: Point[] | null = null
 
-    for (const polygonData of allPolygons) {
-      if (polygonData.outer.length < 3) continue
-      if (!firstValidPolygon) firstValidPolygon = polygonData.outer
+    // Handle evenodd fill mode for compound paths
+    // This uses clipLinesToPolygonsEvenOdd to clip against ALL subpaths at once
+    // (areas inside an odd number of boundaries are filled)
+    if (useEvenOdd && pathInput.rawSubpaths && pathInput.rawSubpaths.length > 1) {
+      const subpaths = pathInput.rawSubpaths
+      firstValidPolygon = subpaths[0] // Use first subpath as representative polygon
+      console.log('[generateFillsLocally] EVENODD branch for', pathInput.id, 'with', subpaths.length, 'subpaths, pattern:', fillPattern)
 
-      let lines: HatchLine[] = []
+      // Patterns that support evenodd: lines, crosshatch, spiral (global patterns)
+      if (fillPattern === 'lines') {
+        console.log('[generateFillsLocally] Calling clipLinesToPolygonsEvenOdd with', globalLines.length, 'global lines')
+        allLines = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
+        if (crossHatch) {
+          allLines = [...allLines, ...clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)]
+        }
+      } else if (fillPattern === 'crosshatch') {
+        // Crosshatch generates two line sets at 90 degrees
+        const lines1 = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
+        const lines2 = clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)
+        allLines = [...lines1, ...lines2]
+      } else if (fillPattern === 'spiral') {
+        // Spiral with evenodd - clip the global spiral using evenodd rule
+        console.log('[generateFillsLocally] Spiral evenodd with', globalSpiralLines.length, 'spiral lines')
+        allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
+      } else {
+        // For other patterns (concentric, etc.), fall through to normal processing
+        // but use independent mode (each subpath separately)
+        for (const subpath of subpaths) {
+          if (subpath.length < 3) continue
+          const polygonData: PolygonWithHoles = { outer: subpath, holes: [] }
+          let lines: HatchLine[] = []
 
-      switch (fillPattern) {
-        case 'concentric':
-          lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
-          break
-        case 'wiggle':
-          lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-          break
-        case 'spiral':
-          lines = singleSpiral
-            ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-            : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-          break
-        case 'honeycomb':
-          lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-          break
-        case 'gyroid':
-          lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-          break
-        case 'crosshatch':
-          lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-          break
-        case 'zigzag':
-          lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
-          break
-        case 'radial':
-          lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
-          break
-        case 'crossspiral':
-          lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-          break
-        case 'hilbert':
-          lines = singleHilbert
-            ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
-            : generateHilbertLines(polygonData, lineSpacing, inset)
-          break
-        case 'fermat':
-          lines = singleFermat
-            ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
-            : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-          break
-        case 'wave':
-          lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-          break
-        case 'scribble':
-          lines = generateScribbleLines(polygonData, lineSpacing, inset)
-          break
-        case 'custom':
-          lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
-          break
-        case 'lines':
-        default:
-          lines = clipLinesToPolygon(globalLines, polygonData, inset)
-          if (crossHatch) {
-            lines = [...lines, ...clipLinesToPolygon(globalCrossLines, polygonData, inset)]
+          switch (fillPattern) {
+            case 'concentric':
+              lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+              break
+            default:
+              // Skip other patterns for now in evenodd compound path mode
+              break
           }
-          break
+          allLines = allLines.concat(lines)
+        }
       }
+    } else {
+      // Standard per-polygon processing
+      for (const polygonData of allPolygons) {
+        if (polygonData.outer.length < 3) continue
+        if (!firstValidPolygon) firstValidPolygon = polygonData.outer
 
-      allLines = allLines.concat(lines)
+        let lines: HatchLine[] = []
+
+        switch (fillPattern) {
+          case 'concentric':
+            lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+            break
+          case 'wiggle':
+            lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+            break
+          case 'spiral':
+            lines = singleSpiral
+              ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+              : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+            break
+          case 'honeycomb':
+            lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+            break
+          case 'gyroid':
+            lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+            break
+          case 'crosshatch':
+            lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
+            break
+          case 'zigzag':
+            lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+            break
+          case 'radial':
+            lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
+            break
+          case 'crossspiral':
+            lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+            break
+          case 'hilbert':
+            lines = singleHilbert
+              ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+              : generateHilbertLines(polygonData, lineSpacing, inset)
+            break
+          case 'fermat':
+            lines = singleFermat
+              ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
+              : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+            break
+          case 'wave':
+            lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+            break
+          case 'scribble':
+            lines = generateScribbleLines(polygonData, lineSpacing, inset)
+            break
+          case 'custom':
+            lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
+            break
+          case 'lines':
+          default:
+            lines = clipLinesToPolygon(globalLines, polygonData, inset)
+            if (crossHatch) {
+              lines = [...lines, ...clipLinesToPolygon(globalCrossLines, polygonData, inset)]
+            }
+            break
+        }
+
+        allLines = allLines.concat(lines)
+      }
     }
 
     if (cropRect && allLines.length > 0) {
@@ -430,6 +480,10 @@ export default function FillTab() {
   const [customTileGap, setCustomTileGap] = useState(0) // Gap between tiles (px)
   const [customTileScale, setCustomTileScale] = useState(1.0) // Scale factor for tile size
   const [customTileRotateOffset, setCustomTileRotateOffset] = useState(0) // Rotation offset per tile (degrees)
+  const [subpathMode, _setSubpathMode] = useState<SubpathMode>('default') // How to handle nested shapes
+  // Evenodd fill rule is always enabled - correctly handles compound paths by filling
+  // areas inside an odd number of polygon boundaries. No UI toggle needed.
+  const useEvenOdd = true
 
   // Crop support for fill patterns
   const [enableCrop, setEnableCrop] = useState(false)
@@ -763,6 +817,7 @@ export default function FillTab() {
           id: string
           color: string
           polygons: PolygonWithHoles[]
+          rawSubpaths?: Point[][]
         }> = []
 
         // Build lookup map for preserved data (O(1) lookup instead of O(n) find)
@@ -782,20 +837,31 @@ export default function FillTab() {
 
           const path = pathsToProcess[i]
           let polygons: PolygonWithHoles[]
+          let rawSubpaths: Point[][] | undefined
 
           // Use O(1) Map lookup instead of O(n) find
           const preserved = preservedDataMap.get(path.id)
-          if (preserved) {
+          if (preserved && subpathMode === 'default') {
+            // Only use preserved data in default mode (since preserved may have hole detection)
             polygons = [preserved]
           } else {
-            polygons = getAllPolygonsFromElement(path.element)
+            polygons = getAllPolygonsFromElement(path.element, subpathMode)
+          }
+
+          // For evenodd mode, also extract raw subpaths from path elements
+          if (useEvenOdd && path.type === 'path') {
+            const d = path.element.getAttribute('d') || ''
+            rawSubpaths = parsePathIntoSubpaths(d)
+            console.log('[FillTab] Evenodd subpaths for', path.id, ':', rawSubpaths?.length, 'subpaths with point counts:', rawSubpaths?.map(sp => sp.length))
           }
 
           pathInputs.push({
             id: path.id,
             color: path.color,
-            polygons
+            polygons,
+            rawSubpaths
           })
+          console.log('[FillTab] pathInput:', path.id, 'polygons:', polygons.length, 'rawSubpaths:', rawSubpaths?.length)
 
           // Yield to browser periodically to keep UI responsive
           if (i > 0 && i % BATCH_SIZE === 0) {
@@ -825,7 +891,8 @@ export default function FillTab() {
             customTileScale,
             customTileRotateOffset,
             enableCrop,
-            cropInset
+            cropInset,
+            useEvenOdd
           })
 
           if (abortController.aborted) return
@@ -888,6 +955,7 @@ export default function FillTab() {
             customTileRotateOffset,
             enableCrop,
             cropInset,
+            useEvenOdd,
             abortController,
             setFillProgress
           )
@@ -914,7 +982,7 @@ export default function FillTab() {
       abortController.aborted = true
       setIsProcessing(false)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, customTileGap, customTileScale, customTileRotateOffset, enableCrop, cropInset, setIsProcessing])
+  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, customTileGap, customTileScale, customTileRotateOffset, subpathMode, enableCrop, cropInset, useEvenOdd, setIsProcessing])
 
   // Apply simplification to hatched paths when tolerance > 0
   const simplifiedHatchedPaths = useMemo(() => {
@@ -1213,8 +1281,11 @@ export default function FillTab() {
         if (targetIdSet.has(node.id)) {
           const newChildren = fillNodesByTargetId.get(node.id) || []
           // Replace this node with a group containing all fill layers
+          // Mark as group so children display properly in layer tree
           return {
             ...node,
+            isGroup: newChildren.length > 0, // Mark as group if has children
+            type: newChildren.length > 0 ? 'g' : node.type,
             children: newChildren,
             customMarkup: undefined, // Remove any custom markup on parent, children have it
           }
@@ -1459,9 +1530,6 @@ export default function FillTab() {
       </main>
 
       <aside className="fill-sidebar right">
-        <div className="sidebar-header">
-          <h2>Settings</h2>
-        </div>
         <div className="sidebar-content">
           <div className="fill-section">
             <h3>Pattern Type</h3>
@@ -1883,6 +1951,11 @@ export default function FillTab() {
                 Retain strokes (edge outlines)
               </label>
             </div>
+
+{/* Evenodd fill rule is always enabled - it correctly handles compound paths
+                (like the Three Needs bar logo) by filling areas inside an odd number of
+                polygon boundaries. The checkbox was removed since there's no reason to
+                disable it - standard fill mode produces incorrect results for compound paths. */}
           </div>
 
           <div className="fill-actions">

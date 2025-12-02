@@ -6,6 +6,7 @@ interface FillGenerationParams {
     id: string
     color: string
     polygons: Array<{ outer: Array<{ x: number; y: number }>; holes: Array<Array<{ x: number; y: number }>> }>
+    rawSubpaths?: Array<Array<{ x: number; y: number }>> // For evenodd mode
   }>
   boundingBox: { x: number; y: number; width: number; height: number }
   fillPattern: string
@@ -25,6 +26,7 @@ interface FillGenerationParams {
   customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
+  useEvenOdd: boolean // Use evenodd fill rule for compound paths
 }
 
 interface FillGenerationResult {

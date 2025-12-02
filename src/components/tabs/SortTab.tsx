@@ -8,7 +8,7 @@ import { SVGNode } from '../../types/svg'
 import { parseSVGProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
 import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
-import { linesToCompoundPath, HatchLine, clipPolygonToRect, Rect, Point } from '../../utils/geometry'
+import { linesToCompoundPath, HatchLine, clipPolygonToRect, Rect, Point, getSubpathsAsPathStrings } from '../../utils/geometry'
 import {
   findNodeById,
   updateNodeChildren,
@@ -35,6 +35,7 @@ export default function SortTab() {
     setFileName,
     svgDimensions,
     setSvgDimensions,
+    syncSvgContent,
     layerNodes,
     setLayerNodes,
     selectedNodeIds,
@@ -1392,73 +1393,72 @@ export default function SortTab() {
 
     if (selectedNodeIds.size > 1) {
       const selectedIds = Array.from(selectedNodeIds)
+      const selectedIdSet = new Set(selectedIds)
 
-      const collectSelectedNodes = (nodes: SVGNode[]): SVGNode[] => {
-        const selected: SVGNode[] = []
+      // Find if all selected nodes are siblings (same level in tree)
+      // This works with the layer tree structure, not DOM elements
+      const findParentLevel = (nodes: SVGNode[], parentPath: string = ''): { level: SVGNode[], path: string } | null => {
+        // Check if any selected nodes are at this level
+        const selectedAtThisLevel = nodes.filter(n => selectedIdSet.has(n.id))
+        if (selectedAtThisLevel.length > 0) {
+          // Found selected nodes at this level
+          return { level: nodes, path: parentPath }
+        }
+
+        // Recurse into children
         for (const node of nodes) {
-          if (selectedIds.includes(node.id)) {
-            selected.push(node)
-          }
           if (node.children.length > 0) {
-            selected.push(...collectSelectedNodes(node.children))
+            const result = findParentLevel(node.children, `${parentPath}/${node.id}`)
+            if (result) return result
           }
         }
-        return selected
+        return null
       }
 
-      const selectedNodes = collectSelectedNodes(layerNodes)
+      const levelInfo = findParentLevel(layerNodes)
+      if (!levelInfo) return
+
+      // Collect selected nodes from this level
+      const selectedNodes = levelInfo.level.filter(n => selectedIdSet.has(n.id))
       if (selectedNodes.length < 2) return
 
-      const firstElement = selectedNodes[0].element
-      let commonParent = firstElement.parentElement
-
-      const allSameParent = selectedNodes.every(n => n.element.parentElement === commonParent)
-
-      if (!allSameParent || !commonParent) {
+      // Check that ALL selected nodes are at this same level
+      // (not some at root and some nested)
+      const allAtSameLevel = selectedIds.every(id => {
+        return levelInfo.level.some(n => n.id === id)
+      })
+      if (!allAtSameLevel) {
+        console.log('[handleGroupUngroup] Selected nodes are at different levels, cannot group')
         return
       }
 
-      const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      // Create new group node - no DOM manipulation needed
+      // rebuildSvgFromLayers will create the DOM structure
       const groupId = `group-${Date.now()}`
-      newGroup.setAttribute('id', groupId)
-
-      let referenceNode: Node | null = firstElement.nextSibling
-      const selectedElements = new Set(selectedNodes.map(n => n.element))
-
-      while (referenceNode && selectedElements.has(referenceNode as Element)) {
-        referenceNode = referenceNode.nextSibling
-      }
-
-      selectedNodes.forEach(node => {
-        newGroup.appendChild(node.element)
-      })
-
-      if (referenceNode) {
-        commonParent.insertBefore(newGroup, referenceNode)
-      } else {
-        commonParent.appendChild(newGroup)
-      }
-
       const newGroupNode: SVGNode = {
         id: groupId,
         type: 'g',
         name: groupId,
-        element: newGroup,
+        element: document.createElementNS('http://www.w3.org/2000/svg', 'g'), // Placeholder, will be refreshed
         isGroup: true,
         children: selectedNodes
       }
 
+      // Build new tree with selected nodes grouped
       const removeAndGroup = (nodes: SVGNode[]): SVGNode[] => {
         const result: SVGNode[] = []
         let insertedGroup = false
 
         for (const node of nodes) {
-          if (selectedIds.includes(node.id)) {
+          if (selectedIdSet.has(node.id)) {
+            // This is a selected node - insert group at first occurrence
             if (!insertedGroup) {
               result.push(newGroupNode)
               insertedGroup = true
             }
+            // Skip adding the node itself (it's now inside the group)
           } else {
+            // Not selected - keep it, but recurse into children
             if (node.children.length > 0) {
               const newChildren = removeAndGroup(node.children)
               result.push({ ...node, children: newChildren })
@@ -1772,13 +1772,107 @@ export default function SortTab() {
     }
   }, [selectedNodeIds, layerNodes, rebuildSvgFromLayers, skipNextParse, setStatusMessage])
 
+  // Separate compound paths into individual path elements
+  const handleSeparateCompoundPaths = useCallback(() => {
+    if (selectedNodeIds.size === 0) {
+      setStatusMessage('Select a path or group to separate')
+      return
+    }
+
+    let totalSeparated = 0
+
+    // Helper to process a single path element
+    const processPath = (el: Element, nodeId: string): number => {
+      // Check if element is still in the DOM (may have been processed already)
+      if (!el.parentElement) {
+        console.log(`[SeparateCompoundPaths] Element ${nodeId} not in DOM, skipping`)
+        return 0
+      }
+
+      const d = el.getAttribute('d') || ''
+      const subpathStrings = getSubpathsAsPathStrings(el)
+      console.log(`[SeparateCompoundPaths] Path ${nodeId}: ${d.length} chars, ${subpathStrings.length} subpaths`)
+
+      if (subpathStrings.length <= 1) {
+        return 0 // Not a compound path
+      }
+
+      // Create a group to hold the separated paths
+      const group = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+      group.setAttribute('id', `${nodeId}-separated`)
+
+      // Copy relevant attributes from original path
+      const fill = el.getAttribute('fill')
+      const stroke = el.getAttribute('stroke')
+      const strokeWidth = el.getAttribute('stroke-width')
+      const transform = el.getAttribute('transform')
+      const opacity = el.getAttribute('opacity')
+
+      // Create individual path elements for each subpath
+      for (let i = 0; i < subpathStrings.length; i++) {
+        const newPath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+        newPath.setAttribute('d', subpathStrings[i])
+        newPath.setAttribute('id', `${nodeId}-part${i + 1}`)
+
+        // Copy style attributes
+        if (fill) newPath.setAttribute('fill', fill)
+        if (stroke) newPath.setAttribute('stroke', stroke)
+        if (strokeWidth) newPath.setAttribute('stroke-width', strokeWidth)
+        if (opacity) newPath.setAttribute('opacity', opacity)
+
+        group.appendChild(newPath)
+      }
+
+      // Apply transform to group if present
+      if (transform) group.setAttribute('transform', transform)
+
+      // Replace original element with group in the DOM
+      const parent = el.parentElement!
+      parent.replaceChild(group, el)
+      console.log(`[SeparateCompoundPaths] Separated into ${subpathStrings.length} paths`)
+      return subpathStrings.length
+    }
+
+    // Helper to recursively find and process paths in a node
+    const processNode = (node: SVGNode): number => {
+      let count = 0
+      const el = node.element
+      const tagName = el.tagName.toLowerCase()
+
+      if (tagName === 'path') {
+        count += processPath(el, node.id)
+      } else if (tagName === 'g' || node.children.length > 0) {
+        // Recursively process children
+        for (const child of node.children) {
+          count += processNode(child)
+        }
+      }
+      return count
+    }
+
+    for (const nodeId of selectedNodeIds) {
+      const node = findNodeById(layerNodes, nodeId)
+      if (!node) continue
+      totalSeparated += processNode(node)
+    }
+
+    if (totalSeparated > 0) {
+      skipNextParse.current = false // Re-parse to update layer tree
+      syncSvgContent() // Use syncSvgContent since we modified the DOM directly
+      setStatusMessage(`Separated into ${totalSeparated} individual path${totalSeparated > 1 ? 's' : ''}`)
+    } else {
+      setStatusMessage('No compound paths found in selection (paths must have multiple subpaths)')
+    }
+  }, [selectedNodeIds, layerNodes, syncSvgContent, skipNextParse, setStatusMessage])
+
   // Register tool handlers in context
   useEffect(() => {
     toolHandlers.current = {
       convertToFills: handleConvertToFills,
-      normalizeColors: handleNormalizeColors
+      normalizeColors: handleNormalizeColors,
+      separateCompoundPaths: handleSeparateCompoundPaths
     }
-  }, [handleConvertToFills, handleNormalizeColors, toolHandlers])
+  }, [handleConvertToFills, handleNormalizeColors, handleSeparateCompoundPaths, toolHandlers])
 
   // Check if simplification is possible
   const canSimplify = (): boolean => {

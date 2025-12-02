@@ -420,6 +420,11 @@ function createMenu() {
         {
           label: 'Normalize Colors',
           click: () => sendMenuCommand('normalize-colors')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Separate Compound Paths',
+          click: () => sendMenuCommand('separate-compound-paths')
         }
       ]
     },
