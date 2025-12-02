@@ -5,7 +5,7 @@ import SVGCanvas from '../SVGCanvas'
 import LayerTree from '../LayerTree'
 import LoadingOverlay from '../LoadingOverlay'
 import { SVGNode } from '../../types/svg'
-import { parseSVGProgressively } from '../../utils/svgParser'
+import { parseSVGFlatProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
 import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
 import { linesToCompoundPath, HatchLine, Rect } from '../../utils/geometry'
@@ -162,7 +162,7 @@ export default function SortTab() {
     handleProgress(0, 'Starting to parse SVG...')
 
     try {
-      const nodes = await parseSVGProgressively(svg, handleProgress)
+      const nodes = await parseSVGFlatProgressively(svg, handleProgress)
       setLayerNodes(nodes)
 
       // Capture original SVG attributes if not already set (preserves document dimensions)

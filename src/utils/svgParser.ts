@@ -161,3 +161,171 @@ export function flattenTree(nodes: SVGNode[]): SVGNode[] {
   nodes.forEach(traverse)
   return result
 }
+
+// Leaf element tags (non-group drawable elements)
+const LEAF_TAGS = ['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use']
+
+/**
+ * Parse SVG extracting ONLY leaf elements (no groups).
+ * Applies inherited transforms and styles from parent groups to each leaf.
+ * This is the preferred parsing mode for pen plotter workflows.
+ */
+export function parseSVGFlat(svgElement: SVGSVGElement): SVGNode[] {
+  nodeIdCounter = 0
+  const result: SVGNode[] = []
+
+  function extractLeaves(
+    element: Element,
+    inheritedTransform?: string,
+    inheritedFill?: string,
+    inheritedStroke?: string
+  ) {
+    const tag = element.tagName.toLowerCase()
+
+    // Get this element's styles
+    const transform = element.getAttribute('transform')
+    const fill = element.getAttribute('fill')
+    const stroke = element.getAttribute('stroke')
+
+    // Compose transforms (parent first, then child)
+    const composedTransform = inheritedTransform && transform
+      ? `${inheritedTransform} ${transform}`
+      : inheritedTransform || transform || undefined
+
+    // Inherit fill/stroke (child overrides parent)
+    const effectiveFill = fill || inheritedFill
+    const effectiveStroke = stroke || inheritedStroke
+
+    if (tag === 'g') {
+      // Recurse into group children
+      for (const child of Array.from(element.children)) {
+        extractLeaves(child, composedTransform, effectiveFill, effectiveStroke)
+      }
+    } else if (LEAF_TAGS.includes(tag)) {
+      // Apply inherited styles to leaf element
+      if (composedTransform) {
+        element.setAttribute('transform', composedTransform)
+      }
+      if (effectiveFill && !element.getAttribute('fill')) {
+        element.setAttribute('fill', effectiveFill)
+      }
+      if (effectiveStroke && !element.getAttribute('stroke')) {
+        element.setAttribute('stroke', effectiveStroke)
+      }
+
+      // Generate/get ID
+      let nodeId = element.getAttribute('id')
+      if (!nodeId) {
+        nodeId = generateNodeId()
+        element.setAttribute('id', nodeId)
+      }
+
+      result.push({
+        id: nodeId,
+        type: tag,
+        name: getElementName(element),
+        element,
+        children: [],
+        isGroup: false
+      })
+    }
+  }
+
+  // Start extraction from SVG root children
+  for (const child of Array.from(svgElement.children)) {
+    extractLeaves(child)
+  }
+
+  return result
+}
+
+/**
+ * Progressive flat parsing for large SVGs
+ */
+export async function parseSVGFlatProgressively(
+  svgElement: SVGSVGElement,
+  onProgress?: (progress: number, status: string) => void
+): Promise<SVGNode[]> {
+  nodeIdCounter = 0
+  const result: SVGNode[] = []
+
+  // Count total leaf elements
+  let totalLeaves = 0
+  function countLeaves(el: Element) {
+    const tag = el.tagName.toLowerCase()
+    if (LEAF_TAGS.includes(tag)) {
+      totalLeaves++
+    } else if (tag === 'g') {
+      Array.from(el.children).forEach(countLeaves)
+    }
+  }
+  Array.from(svgElement.children).forEach(countLeaves)
+
+  let processed = 0
+  onProgress?.(0, 'Extracting elements...')
+
+  async function extractLeaves(
+    element: Element,
+    inheritedTransform?: string,
+    inheritedFill?: string,
+    inheritedStroke?: string
+  ) {
+    const tag = element.tagName.toLowerCase()
+
+    const transform = element.getAttribute('transform')
+    const fill = element.getAttribute('fill')
+    const stroke = element.getAttribute('stroke')
+
+    const composedTransform = inheritedTransform && transform
+      ? `${inheritedTransform} ${transform}`
+      : inheritedTransform || transform || undefined
+
+    const effectiveFill = fill || inheritedFill
+    const effectiveStroke = stroke || inheritedStroke
+
+    if (tag === 'g') {
+      for (const child of Array.from(element.children)) {
+        await extractLeaves(child, composedTransform, effectiveFill, effectiveStroke)
+      }
+    } else if (LEAF_TAGS.includes(tag)) {
+      if (composedTransform) {
+        element.setAttribute('transform', composedTransform)
+      }
+      if (effectiveFill && !element.getAttribute('fill')) {
+        element.setAttribute('fill', effectiveFill)
+      }
+      if (effectiveStroke && !element.getAttribute('stroke')) {
+        element.setAttribute('stroke', effectiveStroke)
+      }
+
+      let nodeId = element.getAttribute('id')
+      if (!nodeId) {
+        nodeId = generateNodeId()
+        element.setAttribute('id', nodeId)
+      }
+
+      result.push({
+        id: nodeId,
+        type: tag,
+        name: getElementName(element),
+        element,
+        children: [],
+        isGroup: false
+      })
+
+      processed++
+      if (processed % 100 === 0) {
+        const progress = (processed / totalLeaves) * 100
+        onProgress?.(progress, `Extracting elements (${processed}/${totalLeaves})...`)
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+    }
+  }
+
+  for (const child of Array.from(svgElement.children)) {
+    await extractLeaves(child)
+  }
+
+  onProgress?.(100, 'Extraction complete')
+  return result
+}
