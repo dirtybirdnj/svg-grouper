@@ -165,69 +165,88 @@ function AppContent() {
       })
     }
 
+    // Track seen IDs to avoid duplicates
+    const seenIds = new Set<string>()
+
+    // Extract all leaf elements from DOM, creating nodes for them
+    const extractLeafElements = (element: Element, inheritedTransform?: string, inheritedFill?: string, inheritedStroke?: string): SVGNode[] => {
+      const result: SVGNode[] = []
+      const tag = element.tagName.toLowerCase()
+
+      // Get this element's styles (will be inherited by children)
+      const transform = element.getAttribute('transform')
+      const fill = element.getAttribute('fill')
+      const stroke = element.getAttribute('stroke')
+
+      // Compose transforms
+      const composedTransform = inheritedTransform && transform
+        ? `${inheritedTransform} ${transform}`
+        : inheritedTransform || transform || undefined
+
+      // Inherit fill/stroke (child overrides parent)
+      const effectiveFill = fill || inheritedFill
+      const effectiveStroke = stroke || inheritedStroke
+
+      if (tag === 'g') {
+        // It's a group - recurse into children
+        for (const child of Array.from(element.children)) {
+          result.push(...extractLeafElements(child, composedTransform, effectiveFill, effectiveStroke))
+        }
+      } else if (['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use'].includes(tag)) {
+        // It's a leaf element - apply inherited styles and create node
+        if (composedTransform) {
+          element.setAttribute('transform', composedTransform)
+        }
+        if (effectiveFill && !element.getAttribute('fill')) {
+          element.setAttribute('fill', effectiveFill)
+        }
+        if (effectiveStroke && !element.getAttribute('stroke')) {
+          element.setAttribute('stroke', effectiveStroke)
+        }
+
+        // Ensure unique ID
+        let nodeId = element.getAttribute('id')
+        if (!nodeId || seenIds.has(nodeId)) {
+          nodeId = `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+          element.setAttribute('id', nodeId)
+        }
+        seenIds.add(nodeId)
+
+        result.push({
+          id: nodeId,
+          type: tag,
+          name: element.getAttribute('id') || tag,
+          element: element,
+          children: [],
+          isGroup: false
+        })
+      }
+
+      return result
+    }
+
     const ungroupAll = (nodes: SVGNode[]): SVGNode[] => {
       let result: SVGNode[] = []
 
       for (const node of nodes) {
-        // Preserve nodes with customMarkup (like line fill patterns) - treat as leaf nodes
         if (node.customMarkup) {
           result.push(node)
-        } else if (node.isGroup && node.children.length > 0) {
-          // Get group's transform (if any) - we'll apply it to children before dissolving
-          const groupTransform = node.element.getAttribute('transform')
+        } else if (node.isGroup) {
+          // For groups, extract all leaf elements from DOM directly
+          const leafElements = extractLeafElements(node.element)
 
-          // Recursively process children first
-          const ungroupedChildren = ungroupAll(node.children)
-
-          // Get group's fill/stroke for inheritance
-          const groupFill = node.element.getAttribute('fill')
-          const groupStroke = node.element.getAttribute('stroke')
-
-          // Apply group's transform and inherited styles to each child
-          for (const child of ungroupedChildren) {
-            if (!child.customMarkup && child.element) {
-              // Apply transform inheritance
-              if (groupTransform) {
-                const childTransform = child.element.getAttribute('transform')
-                // Prepend group transform to child's existing transform
-                // Order matters: group transform applies first (outer), then child's (inner)
-                const newTransform = childTransform
-                  ? `${groupTransform} ${childTransform}`
-                  : groupTransform
-                child.element.setAttribute('transform', newTransform)
-              }
-
-              // Apply fill inheritance - only if child doesn't have its own fill
-              if (groupFill && !child.element.getAttribute('fill')) {
-                child.element.setAttribute('fill', groupFill)
-              }
-
-              // Apply stroke inheritance - only if child doesn't have its own stroke
-              if (groupStroke && !child.element.getAttribute('stroke')) {
-                child.element.setAttribute('stroke', groupStroke)
-              }
-            }
-          }
-
-          // Try to handle DOM operations if element has a parent
+          // Move leaf elements to parent in DOM
           const parent = node.element.parentElement
           if (parent) {
-            for (const child of ungroupedChildren) {
-              // Only insert into DOM if child doesn't have customMarkup
-              // (customMarkup nodes are rendered via rebuildSvgFromLayers)
-              if (!child.customMarkup) {
-                parent.insertBefore(child.element, node.element)
-              }
+            for (const leaf of leafElements) {
+              parent.insertBefore(leaf.element, node.element)
             }
             node.element.remove()
           }
 
-          // Always add children to result, even if parent was null
-          // (this handles groups created programmatically like fill groups)
-          for (const child of ungroupedChildren) {
-            result.push(child)
-          }
-        } else if (!node.isGroup) {
+          result.push(...leafElements)
+        } else {
+          // Non-group element - keep as is
           result.push(node)
         }
       }
