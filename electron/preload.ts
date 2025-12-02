@@ -50,6 +50,10 @@ contextBridge.exposeInMainWorld('electron', {
   onMainMessage: (callback: (message: string) => void) => {
     ipcRenderer.on('main-process-message', (_event, message) => callback(message))
   },
+  // Normalize SVG coordinates (transform viewBox to start at 0,0)
+  normalizeSVG: (args: { svg: string }) => {
+    return ipcRenderer.invoke('normalize-svg', args)
+  },
   cropSVG: (args: { svg: string; x: number; y: number; width: number; height: number }) => {
     return ipcRenderer.invoke('crop-svg', args)
   },

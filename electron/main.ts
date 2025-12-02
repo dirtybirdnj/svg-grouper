@@ -49,6 +49,75 @@ app.on('activate', () => {
   }
 })
 
+// IPC Handler for SVG normalization (transforms coordinates so viewBox starts at 0,0)
+ipcMain.handle('normalize-svg', async (_event, args: { svg: string }) => {
+  return new Promise<string>((resolve, reject) => {
+    try {
+      const { svg } = args
+
+      if (!svg || typeof svg !== 'string') {
+        reject(new Error('Invalid SVG input'))
+        return
+      }
+
+      console.log(`[normalize-svg] Processing SVG of size: ${(svg.length / 1024).toFixed(2)} KB`)
+
+      const scriptPath = app.isPackaged
+        ? path.join(process.resourcesPath, 'scripts', 'normalize_svg.py')
+        : path.join(__dirname, '..', 'scripts', 'normalize_svg.py')
+
+      console.log(`[normalize-svg] Script path: ${scriptPath}`)
+
+      const python = spawn('/opt/homebrew/bin/python3', [scriptPath], {
+        maxBuffer: 100 * 1024 * 1024  // 100MB buffer for large SVGs
+      })
+
+      let output = ''
+      let errorOutput = ''
+
+      python.stdout.on('data', (data) => {
+        output += data.toString()
+      })
+
+      python.stderr.on('data', (data) => {
+        errorOutput += data.toString()
+        console.log(`[normalize-svg] ${data.toString().trim()}`)
+      })
+
+      python.on('close', (code) => {
+        console.log(`[normalize-svg] Process exited with code ${code}`)
+        if (code !== 0) {
+          reject(new Error(`Normalize failed with code ${code}: ${errorOutput}`))
+        } else {
+          console.log(`[normalize-svg] Output size: ${(output.length / 1024).toFixed(2)} KB`)
+          resolve(output)
+        }
+      })
+
+      python.on('error', (err) => {
+        console.error(`[normalize-svg] Process error:`, err)
+        reject(new Error(`Failed to start Python: ${err.message}`))
+      })
+
+      try {
+        python.stdin.write(svg, (err) => {
+          if (err) {
+            console.error(`[normalize-svg] Error writing to stdin:`, err)
+            reject(new Error(`Failed to write SVG to stdin: ${err.message}`))
+          }
+        })
+        python.stdin.end()
+      } catch (writeError) {
+        console.error(`[normalize-svg] Exception writing to stdin:`, writeError)
+        reject(new Error(`Exception writing to stdin: ${writeError instanceof Error ? writeError.message : 'Unknown error'}`))
+      }
+    } catch (err) {
+      console.error(`[normalize-svg] Unexpected error:`, err)
+      reject(new Error(`Unexpected error: ${err instanceof Error ? err.message : 'Unknown error'}`))
+    }
+  })
+})
+
 // IPC Handler for SVG flattening
 ipcMain.handle('flatten-shapes', async (_event, args: { svg: string; color: string }) => {
   return new Promise<string>((resolve, reject) => {

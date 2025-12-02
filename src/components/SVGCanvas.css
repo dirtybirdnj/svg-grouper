@@ -72,7 +72,11 @@
 .canvas-content svg {
   max-width: 90%;
   max-height: 90%;
+  width: auto;
+  height: auto;
   pointer-events: none;
+  /* Ensure aspect ratio is preserved */
+  object-fit: contain;
 }
 
 .crop-overlay {

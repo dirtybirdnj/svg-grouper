@@ -1,8 +1,9 @@
 import { useCallback, useState } from 'react'
+import ImportDialog from './ImportDialog'
 import './FileUpload.css'
 
 interface FileUploadProps {
-  onFileLoad: (content: string, fileName: string) => void
+  onFileLoad: (content: string, fileName: string, dimensions?: { width: number; height: number }) => void
   onLoadStart?: () => void
   onProgress?: (progress: number, status: string) => void
 }
@@ -10,6 +11,7 @@ interface FileUploadProps {
 export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [pendingFile, setPendingFile] = useState<{ content: string; fileName: string } | null>(null)
 
   const validateAndLoadFile = useCallback((file: File) => {
     setError(null)
@@ -47,7 +49,8 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
       }
 
       onProgress?.(100, 'File loaded')
-      onFileLoad(content, file.name)
+      // Show import dialog instead of immediately loading
+      setPendingFile({ content, fileName: file.name })
     }
 
     reader.onerror = () => {
@@ -97,6 +100,17 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
     document.getElementById('file-input')?.click()
   }
 
+  const handleImportConfirm = useCallback((processedContent: string, dimensions: { width: number; height: number }) => {
+    if (pendingFile) {
+      onFileLoad(processedContent, pendingFile.fileName, dimensions)
+      setPendingFile(null)
+    }
+  }, [pendingFile, onFileLoad])
+
+  const handleImportCancel = useCallback(() => {
+    setPendingFile(null)
+  }, [])
+
   return (
     <div className="file-upload-container">
       <div
@@ -131,6 +145,15 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
         onChange={handleFileInput}
         style={{ display: 'none' }}
       />
+
+      {pendingFile && (
+        <ImportDialog
+          svgContent={pendingFile.content}
+          fileName={pendingFile.fileName}
+          onConfirm={handleImportConfirm}
+          onCancel={handleImportCancel}
+        />
+      )}
     </div>
   )
 }

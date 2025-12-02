@@ -79,6 +79,7 @@ export default function SVGCanvas({
   }, [svgContent, onSVGParsed])
 
   // Add native wheel event listener to properly handle preventDefault
+  // Zoom is centered on the viewport center (where the crop crosshairs are)
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
@@ -87,14 +88,23 @@ export default function SVGCanvas({
       e.preventDefault()
       const delta = e.deltaY > 0 ? 0.9 : 1.1
       const newScale = Math.max(0.1, Math.min(10, scale * delta))
+
+      // Adjust offset to keep the viewport center fixed
+      // The transform is: translate(offset) then scale from center
+      // When scale changes, we need to adjust offset proportionally
+      const scaleRatio = newScale / scale
+      const newOffsetX = offset.x * scaleRatio
+      const newOffsetY = offset.y * scaleRatio
+
       setScale(newScale)
+      setOffset({ x: newOffsetX, y: newOffsetY })
     }
 
     container.addEventListener('wheel', handleWheel, { passive: false })
     return () => {
       container.removeEventListener('wheel', handleWheel)
     }
-  }, [scale, setScale])
+  }, [scale, setScale, offset, setOffset])
 
   // Render crop overlay as fixed viewport overlay when crop is active
   useEffect(() => {
@@ -163,36 +173,6 @@ export default function SVGCanvas({
     setOffset({ x: newOffsetX, y: newOffsetY })
   }
 
-  // Calculate crop dimensions based on aspect ratio and size
-  // Returns dimensions in SVG coordinate space (NOT VIEWPORT PIXELS!)
-  const getCropDimensionsInPixels = () => {
-    if (!svgDimensions) return { width: 0, height: 0 }
-
-    // Parse aspect ratio
-    const [w, h] = cropAspectRatio.split(':').map(Number)
-    const aspectRatio = w / h
-
-    // Base size on smallest SVG dimension (PURE SVG COORDINATES, NO VIEWPORT SCALING)
-    const minDimension = Math.min(svgDimensions.width, svgDimensions.height)
-    const baseSize = minDimension * cropSize
-
-    // Calculate width and height maintaining aspect ratio
-    let width: number
-    let height: number
-
-    if (aspectRatio >= 1) {
-      // Landscape or square
-      width = baseSize
-      height = baseSize / aspectRatio
-    } else {
-      // Portrait
-      height = baseSize
-      width = baseSize * aspectRatio
-    }
-
-    return { width, height }
-  }
-
   return (
     <div className="svg-canvas">
       <div
@@ -212,115 +192,124 @@ export default function SVGCanvas({
           }}
         />
 
-        {/* Fixed viewport crop overlay */}
+        {/* Fixed viewport crop overlay - ALWAYS centered in viewport with fixed screen size */}
         {showCrop && svgDimensions && (() => {
-          const dims = getCropDimensionsInPixels()
-
           // Get container dimensions
           const containerRect = containerRef.current?.getBoundingClientRect()
           if (!containerRect) return null
 
-          // Get the actual SVG element to calculate proper positioning
+          // Get the actual SVG element
           const svgElement = svgContainerRef.current?.querySelector('svg')
           if (!svgElement) return null
 
-          // Calculate viewport center
-          const viewportCenterX = containerRect.width / 2
-          const viewportCenterY = containerRect.height / 2
+          // Container dimensions
+          const containerWidth = containerRect.width
+          const containerHeight = containerRect.height
 
-          // Calculate the effective scale (base CSS scale + user zoom)
-          const svgRect = svgElement.getBoundingClientRect()
-          const baseSvgWidth = svgRect.width / scale
-          const baseScale = baseSvgWidth / svgDimensions.width
-          const effectiveScale = baseScale * scale
+          // Don't render overlay if container hasn't rendered yet
+          if (containerWidth <= 0 || containerHeight <= 0) {
+            return null
+          }
 
-          // Calculate crop position in SVG coordinates
-          const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
-          const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
+          // Crop box is a FIXED percentage of viewport, not tied to SVG coordinates
+          // This means it stays the same size on screen regardless of zoom
+          const [w, h] = cropAspectRatio.split(':').map(Number)
+          const aspectRatio = w / h
 
-          let cropSvgX = svgCenterX - dims.width / 2
-          let cropSvgY = svgCenterY - dims.height / 2
+          // Base the crop box size on the smaller viewport dimension
+          const minViewportDim = Math.min(containerWidth, containerHeight)
+          const baseSize = minViewportDim * cropSize
 
-          // Clamp to SVG bounds
-          if (cropSvgX < 0) cropSvgX = 0
-          if (cropSvgY < 0) cropSvgY = 0
-          if (cropSvgX + dims.width > svgDimensions.width) cropSvgX = svgDimensions.width - dims.width
-          if (cropSvgY + dims.height > svgDimensions.height) cropSvgY = svgDimensions.height - dims.height
+          let viewportCropWidth: number
+          let viewportCropHeight: number
 
-          // Convert SVG coords to viewport coords for rendering the overlay
-          const cropLeft = viewportCenterX + offset.x + (cropSvgX - svgDimensions.width / 2) * effectiveScale
-          const cropTop = viewportCenterY + offset.y + (cropSvgY - svgDimensions.height / 2) * effectiveScale
-          const viewportWidth = dims.width * effectiveScale
-          const viewportHeight = dims.height * effectiveScale
+          if (aspectRatio >= 1) {
+            viewportCropWidth = baseSize
+            viewportCropHeight = baseSize / aspectRatio
+          } else {
+            viewportCropHeight = baseSize
+            viewportCropWidth = baseSize * aspectRatio
+          }
+
+          // ALWAYS center the crop box in the viewport
+          const cropLeft = (containerWidth - viewportCropWidth) / 2
+          const cropTop = (containerHeight - viewportCropHeight) / 2
 
           return (
             <>
-              {/* Dark overlay with cutout */}
+              {/* Dark overlay with cutout - covers entire viewport */}
               <div
                 style={{
                   position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
+                  inset: 0,
                   pointerEvents: 'none',
                   zIndex: 20,
                 }}
               >
-                <svg
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    position: 'absolute',
-                  }}
-                >
-                  <defs>
-                    <mask id="viewport-crop-mask">
-                      <rect width="100%" height="100%" fill="white" />
-                      <rect
-                        x={cropLeft}
-                        y={cropTop}
-                        width={viewportWidth}
-                        height={viewportHeight}
-                        fill="black"
-                      />
-                    </mask>
-                  </defs>
-                  <rect
-                    width="100%"
-                    height="100%"
-                    fill="rgba(0, 0, 0, 0.5)"
-                    mask="url(#viewport-crop-mask)"
-                  />
-                  {/* Crop border */}
-                  <rect
-                    x={cropLeft}
-                    y={cropTop}
-                    width={viewportWidth}
-                    height={viewportHeight}
-                    fill="none"
-                    stroke="#4a90e2"
-                    strokeWidth="2"
-                    strokeDasharray="10 5"
-                  />
+                {/* Top overlay */}
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: Math.max(0, cropTop),
+                  background: 'rgba(0, 0, 0, 0.5)',
+                }} />
+                {/* Bottom overlay */}
+                <div style={{
+                  position: 'absolute',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: Math.max(0, containerHeight - cropTop - viewportCropHeight),
+                  background: 'rgba(0, 0, 0, 0.5)',
+                }} />
+                {/* Left overlay */}
+                <div style={{
+                  position: 'absolute',
+                  top: cropTop,
+                  left: 0,
+                  width: Math.max(0, cropLeft),
+                  height: viewportCropHeight,
+                  background: 'rgba(0, 0, 0, 0.5)',
+                }} />
+                {/* Right overlay */}
+                <div style={{
+                  position: 'absolute',
+                  top: cropTop,
+                  right: 0,
+                  width: Math.max(0, containerWidth - cropLeft - viewportCropWidth),
+                  height: viewportCropHeight,
+                  background: 'rgba(0, 0, 0, 0.5)',
+                }} />
+                {/* Crop border */}
+                <div style={{
+                  position: 'absolute',
+                  left: cropLeft,
+                  top: cropTop,
+                  width: viewportCropWidth,
+                  height: viewportCropHeight,
+                  border: '2px dashed #4a90e2',
+                  boxSizing: 'border-box',
+                }}>
                   {/* Center crosshairs */}
-                  <line
-                    x1={cropLeft}
-                    y1={cropTop + viewportHeight / 2}
-                    x2={cropLeft + viewportWidth}
-                    y2={cropTop + viewportHeight / 2}
-                    stroke="#4a90e2"
-                    strokeWidth="1"
-                  />
-                  <line
-                    x1={cropLeft + viewportWidth / 2}
-                    y1={cropTop}
-                    x2={cropLeft + viewportWidth / 2}
-                    y2={cropTop + viewportHeight}
-                    stroke="#4a90e2"
-                    strokeWidth="1"
-                  />
-                </svg>
+                  <div style={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: 0,
+                    right: 0,
+                    height: '1px',
+                    background: '#4a90e2',
+                  }} />
+                  <div style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: 0,
+                    bottom: 0,
+                    width: '1px',
+                    background: '#4a90e2',
+                  }} />
+                </div>
               </div>
             </>
           )

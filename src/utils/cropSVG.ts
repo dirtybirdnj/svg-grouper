@@ -1,4 +1,5 @@
 import { clipPolygonToRect, Rect, Point } from './geometry'
+import { analyzeSVGDimensions } from './svgDimensions'
 
 /**
  * Crop SVG utility functions
@@ -451,32 +452,26 @@ export function cropSVGInBrowser(svgString: string, cropRect: Rect): string {
   const doc = parser.parseFromString(svgString, 'image/svg+xml')
   const svg = doc.documentElement
 
-  // Parse viewBox to handle coordinate transformations
-  const viewBoxAttr = svg.getAttribute('viewBox')
-  let viewBox = { minX: 0, minY: 0, width: cropRect.width, height: cropRect.height }
-  let displayWidth = parseFloat(svg.getAttribute('width') || '0') || cropRect.width
-  let displayHeight = parseFloat(svg.getAttribute('height') || '0') || cropRect.height
+  // Parse viewBox and dimensions using proper utilities that handle all units
+  const dimInfo = analyzeSVGDimensions(svg as unknown as SVGSVGElement)
 
-  // Handle pt units in width/height
-  const widthAttr = svg.getAttribute('width') || ''
-  const heightAttr = svg.getAttribute('height') || ''
-  if (widthAttr.endsWith('pt')) {
-    displayWidth = parseFloat(widthAttr) * 1.333333
-  }
-  if (heightAttr.endsWith('pt')) {
-    displayHeight = parseFloat(heightAttr) * 1.333333
-  }
+  // Use computed dimensions (properly handles pt, cm, mm, etc.)
+  const displayWidth = dimInfo.computedWidth || cropRect.width
+  const displayHeight = dimInfo.computedHeight || cropRect.height
 
-  if (viewBoxAttr) {
-    const parts = viewBoxAttr.split(/[\s,]+/).map(parseFloat)
-    if (parts.length === 4) {
-      viewBox = { minX: parts[0], minY: parts[1], width: parts[2], height: parts[3] }
-    }
+  // Get viewBox, falling back to computed dimensions
+  const viewBox = dimInfo.viewBox || {
+    minX: 0,
+    minY: 0,
+    width: displayWidth,
+    height: displayHeight
   }
 
   // Transform crop rect from display coordinates to viewBox coordinates
+  // With proper normalization, viewBox starts at (0,0) and path coords match
   const scaleX = viewBox.width / displayWidth
   const scaleY = viewBox.height / displayHeight
+
   const transformedCropRect: Rect = {
     x: viewBox.minX + cropRect.x * scaleX,
     y: viewBox.minY + cropRect.y * scaleY,
@@ -484,7 +479,37 @@ export function cropSVGInBrowser(svgString: string, cropRect: Rect): string {
     height: cropRect.height * scaleY
   }
 
+  // Debug logging
+  console.log('[cropSVGInBrowser Debug] Input cropRect:', cropRect)
+  console.log('[cropSVGInBrowser Debug] viewBox:', viewBox)
+  console.log('[cropSVGInBrowser Debug] scale:', { scaleX, scaleY })
+  console.log('[cropSVGInBrowser Debug] transformedCropRect:', transformedCropRect)
+
   const actualCropRect = transformedCropRect
+
+  // Log sample path bounds for debugging
+  const allPaths = svg.querySelectorAll('path')
+  if (allPaths.length > 0) {
+    const sampleSize = Math.min(3, allPaths.length)
+    for (let i = 0; i < sampleSize; i++) {
+      const d = allPaths[i].getAttribute('d')
+      if (d) {
+        const subpaths = pathToSubpaths(d)
+        const allPoints = subpaths.flat()
+        if (allPoints.length > 0) {
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+          for (const p of allPoints) {
+            minX = Math.min(minX, p.x)
+            minY = Math.min(minY, p.y)
+            maxX = Math.max(maxX, p.x)
+            maxY = Math.max(maxY, p.y)
+          }
+          console.log(`[cropSVGInBrowser Debug] Path ${i} bounds:`, { minX, minY, maxX, maxY })
+        }
+      }
+    }
+  }
+  console.log(`[cropSVGInBrowser Debug] Total paths in SVG: ${allPaths.length}`)
 
   // Process all elements recursively
   const processElement = (elem: Element): void => {

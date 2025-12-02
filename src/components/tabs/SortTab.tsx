@@ -10,6 +10,7 @@ import { normalizeColor } from '../../utils/colorExtractor'
 import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
 import { linesToCompoundPath, HatchLine, Rect } from '../../utils/geometry'
 import { cropSVGInBrowser, getCropDimensions } from '../../utils/cropSVG'
+import { analyzeSVGDimensions } from '../../utils/svgDimensions'
 import {
   findNodeById,
   updateNodeChildren,
@@ -130,7 +131,7 @@ export default function SortTab() {
     [svgDimensions, cropAspectRatio, cropSize]
   )
 
-  const handleFileLoad = useCallback((content: string, name: string) => {
+  const handleFileLoad = useCallback((content: string, name: string, dimensions?: { width: number; height: number }) => {
     // Reset original SVG attributes when loading a new file
     // This ensures the new file's dimensions are captured fresh
     originalSvgAttrs.current = null
@@ -139,7 +140,12 @@ export default function SortTab() {
     setSelectedNodeIds(new Set())
     setLastSelectedNodeId(null)
     parsingRef.current = false
-  }, [setSvgContent, setFileName, setSelectedNodeIds, setLastSelectedNodeId, parsingRef, originalSvgAttrs])
+
+    // If dimensions were provided by the import dialog, use them directly
+    if (dimensions) {
+      setSvgDimensions(dimensions)
+    }
+  }, [setSvgContent, setFileName, setSelectedNodeIds, setLastSelectedNodeId, parsingRef, originalSvgAttrs, setSvgDimensions])
 
   const handleSVGParsed = useCallback(async (svg: SVGSVGElement) => {
     // Skip parsing if this was a programmatic update from rebuildSvgFromLayers
@@ -179,18 +185,39 @@ export default function SortTab() {
         setLastSelectedNodeId(null)
       }
 
-      const viewBox = svg.getAttribute('viewBox')
-      let width = parseFloat(svg.getAttribute('width') || '0')
-      let height = parseFloat(svg.getAttribute('height') || '0')
+      // Use the proper dimension parsing utility that handles units, viewBox, etc.
+      // Only set dimensions if they weren't already set by the import dialog
+      if (!svgDimensions) {
+        try {
+          const dimInfo = analyzeSVGDimensions(svg)
+          setSvgDimensions({
+            width: dimInfo.computedWidth,
+            height: dimInfo.computedHeight
+          })
 
-      if (viewBox && (!width || !height)) {
-        const [, , vbWidth, vbHeight] = viewBox.split(' ').map(parseFloat)
-        width = vbWidth
-        height = vbHeight
-      }
+          // Log any issues for debugging
+          if (dimInfo.issues.length > 0) {
+            console.log('[SVG Dimensions] Issues detected:', dimInfo.issues)
+          }
+        } catch (e) {
+          console.error('[SVG Dimensions] Failed to analyze:', e)
+          // Fallback to basic parsing
+          const viewBox = svg.getAttribute('viewBox')
+          let width = parseFloat(svg.getAttribute('width') || '0')
+          let height = parseFloat(svg.getAttribute('height') || '0')
 
-      if (width && height) {
-        setSvgDimensions({ width, height })
+          if (viewBox && (!width || !height)) {
+            const parts = viewBox.split(/[\s,]+/).map(parseFloat)
+            if (parts.length === 4) {
+              width = parts[2]
+              height = parts[3]
+            }
+          }
+
+          if (width && height) {
+            setSvgDimensions({ width, height })
+          }
+        }
       }
 
       setTimeout(() => {
@@ -208,7 +235,7 @@ export default function SortTab() {
         status: 'Error parsing SVG',
       })
     }
-  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse, setSelectedNodeIds, setLastSelectedNodeId, originalSvgAttrs])
+  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse, setSelectedNodeIds, setLastSelectedNodeId, originalSvgAttrs, svgDimensions])
 
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
@@ -2155,9 +2182,6 @@ export default function SortTab() {
       return
     }
 
-    // Get crop dimensions in SVG coordinates
-    const cropDims = getCropDimensions(svgDimensions, cropAspectRatio, cropSize)
-
     // Get the canvas container dimensions
     const container = canvasContainerRef.current
     if (!container) {
@@ -2174,52 +2198,61 @@ export default function SortTab() {
 
     // Get the SVG element's bounding rect to see its actual rendered size
     const svgRect = svgElement.getBoundingClientRect()
+    const containerRect = container.getBoundingClientRect()
 
-    // The SVG is displayed with CSS max-width: 90%; max-height: 90%
-    // This means its base (untransformed) size is constrained to fit in 90% of the container
-    // Then the transform scale is applied on top
-    //
-    // So the SVG's rendered size = (baseSize * scale) where baseSize fits in 90% of container
-    // We can calculate baseSize from: renderedSize / scale = baseSize
-    const baseSvgWidth = svgRect.width / scale
+    // Calculate viewport crop box (same as SVGCanvas overlay)
+    const [w, h] = cropAspectRatio.split(':').map(Number)
+    const aspectRatio = w / h
+    const minViewportDim = Math.min(containerRect.width, containerRect.height)
+    const baseSize = minViewportDim * cropSize
 
-    // The base scale is the ratio of base rendered size to SVG coordinate size
-    const baseScale = baseSvgWidth / svgDimensions.width
+    let viewportCropWidth: number
+    let viewportCropHeight: number
 
-    // Total effective scale from SVG coords to current viewport pixels
-    const effectiveScale = baseScale * scale
-
-
-    // The crop overlay is centered at the viewport center.
-    // The SVG (after base scale + translation + user scale) has its center at:
-    //   viewport position = (containerWidth/2 + offset.x, containerHeight/2 + offset.y)
-    //
-    // To find the SVG coordinate at viewport center:
-    // Distance from SVG center (in viewport) to viewport center = (-offset.x, -offset.y)
-    // This distance in SVG coords = (-offset.x / effectiveScale, -offset.y / effectiveScale)
-    // SVG coord at viewport center = SVG center + distance
-    //   = (svgWidth/2 - offset.x/effectiveScale, svgHeight/2 - offset.y/effectiveScale)
-
-    const svgCenterX = svgDimensions.width / 2 - offset.x / effectiveScale
-    const svgCenterY = svgDimensions.height / 2 - offset.y / effectiveScale
-
-
-    // Crop box in SVG coordinates - centered at the viewport center's SVG position
-    let cropX = svgCenterX - cropDims.width / 2
-    let cropY = svgCenterY - cropDims.height / 2
-
-    // Clamp crop box to SVG bounds
-    if (cropX < 0) {
-      cropX = 0
+    if (aspectRatio >= 1) {
+      viewportCropWidth = baseSize
+      viewportCropHeight = baseSize / aspectRatio
+    } else {
+      viewportCropHeight = baseSize
+      viewportCropWidth = baseSize * aspectRatio
     }
-    if (cropY < 0) {
-      cropY = 0
-    }
-    if (cropX + cropDims.width > svgDimensions.width) {
-      cropX = svgDimensions.width - cropDims.width
-    }
-    if (cropY + cropDims.height > svgDimensions.height) {
-      cropY = svgDimensions.height - cropDims.height
+
+    // Viewport crop box corners (always centered in viewport)
+    const viewportCropLeft = (containerRect.width - viewportCropWidth) / 2
+    const viewportCropTop = (containerRect.height - viewportCropHeight) / 2
+
+    // SVG position relative to container
+    const svgLeftInContainer = svgRect.left - containerRect.left
+    const svgTopInContainer = svgRect.top - containerRect.top
+
+    // Calculate scale from SVG coordinates to rendered pixels
+    const effectiveScale = svgRect.width / svgDimensions.width
+
+    // Convert viewport crop box to SVG coordinates
+    const cropX = (viewportCropLeft - svgLeftInContainer) / effectiveScale
+    const cropY = (viewportCropTop - svgTopInContainer) / effectiveScale
+    const cropWidth = viewportCropWidth / effectiveScale
+    const cropHeight = viewportCropHeight / effectiveScale
+
+    // Debug logging
+    console.log('[Crop Debug] svgDimensions:', svgDimensions)
+    console.log('[Crop Debug] containerRect:', { width: containerRect.width, height: containerRect.height })
+    console.log('[Crop Debug] viewportCropBox:', { left: viewportCropLeft, top: viewportCropTop, width: viewportCropWidth, height: viewportCropHeight })
+    console.log('[Crop Debug] svgRect:', { width: svgRect.width, height: svgRect.height, left: svgRect.left, top: svgRect.top })
+    console.log('[Crop Debug] svgInContainer:', { left: svgLeftInContainer, top: svgTopInContainer })
+    console.log('[Crop Debug] effectiveScale:', effectiveScale)
+    console.log('[Crop Debug] cropRect (SVG coords):', { x: cropX, y: cropY, width: cropWidth, height: cropHeight })
+    // Check actual SVG element attributes in DOM
+    const svgElem = container.querySelector('svg')
+    if (svgElem) {
+      console.log('[Crop Debug] SVG DOM attrs:', {
+        width: svgElem.getAttribute('width'),
+        height: svgElem.getAttribute('height'),
+        viewBox: svgElem.getAttribute('viewBox'),
+        style: svgElem.style.cssText,
+        computedWidth: getComputedStyle(svgElem).width,
+        computedHeight: getComputedStyle(svgElem).height
+      })
     }
 
 
@@ -2232,8 +2265,8 @@ export default function SortTab() {
       const cropRect: Rect = {
         x: cropX,
         y: cropY,
-        width: cropDims.width,
-        height: cropDims.height
+        width: cropWidth,
+        height: cropHeight
       }
 
       const croppedSvg = cropSVGInBrowser(svgContent, cropRect)
@@ -2269,7 +2302,7 @@ export default function SortTab() {
       // Update SVG content with cropped result - this will trigger re-parsing
       setSvgContent(croppedSvg)
 
-      setStatusMessage(`Cropped to ${cropDims.width.toFixed(0)} × ${cropDims.height.toFixed(0)} px`)
+      setStatusMessage(`Cropped to ${cropWidth.toFixed(0)} × ${cropHeight.toFixed(0)} px`)
     } catch (err) {
       console.error('[Crop] Crop failed:', err)
       setStatusMessage(`error:Crop failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -2505,11 +2538,12 @@ export default function SortTab() {
             </label>
             <input
               type="range"
-              min="25"
-              max="200"
+              min="10"
+              max="100"
+              step="1"
               value={cropSize * 100}
               onChange={(e) => setCropSize(Number(e.target.value) / 100)}
-              style={{ width: '120px' }}
+              style={{ width: '150px' }}
               className="crop-size-slider"
             />
             <span style={{ fontSize: '0.85rem', color: '#666', marginLeft: '0.5rem', marginRight: '0.5rem' }}>
