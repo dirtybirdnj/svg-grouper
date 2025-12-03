@@ -132,6 +132,31 @@ function AppContent() {
     setOffset({ x: 0, y: 0 })
   }
 
+  // Select all layers - if a parent is selected, select its children; otherwise select all top-level
+  const handleSelectAllLayers = () => {
+    const newSelection = new Set<string>()
+
+    // If exactly one node is selected and it has children, select all its children
+    if (selectedNodeIds.size === 1) {
+      const selectedId = Array.from(selectedNodeIds)[0]
+      const selectedNode = getNodeById(selectedId)
+      if (selectedNode && selectedNode.children.length > 0) {
+        // Select all children of this parent
+        for (const child of selectedNode.children) {
+          newSelection.add(child.id)
+        }
+        setSelectedNodeIds(newSelection)
+        return
+      }
+    }
+
+    // Otherwise select all top-level nodes
+    for (const node of layerNodes) {
+      newSelection.add(node.id)
+    }
+    setSelectedNodeIds(newSelection)
+  }
+
   const disarmActions = () => {
     setFlattenArmed(false)
     setStatusMessage('')
@@ -773,6 +798,9 @@ function AppContent() {
           break
         case 'arrange-ungroup':
           arrangeHandlers.current?.ungroup()
+          break
+        case 'select-all-layers':
+          handleSelectAllLayers()
           break
         case 'convert-to-fills':
           toolHandlers.current?.convertToFills()

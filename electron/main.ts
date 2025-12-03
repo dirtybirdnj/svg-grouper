@@ -370,7 +370,13 @@ function createMenu() {
         { role: 'cut' as const },
         { role: 'copy' as const },
         { role: 'paste' as const },
-        { role: 'selectAll' as const }
+        { role: 'selectAll' as const },
+        { type: 'separator' as const },
+        {
+          label: 'Select All Layers',
+          accelerator: 'CmdOrCtrl+Shift+A',
+          click: () => sendMenuCommand('select-all-layers')
+        }
       ]
     },
 

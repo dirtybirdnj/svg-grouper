@@ -81,11 +81,15 @@ export default function PatternTest({ onBack }: PatternTestProps) {
   const [stressTestPattern, setStressTestPattern] = useState<FillPatternType>('lines')
   const [stressTestResult, setStressTestResult] = useState<{ lines: HatchLine[]; timeMs: number; error?: string } | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [showPatterns, setShowPatterns] = useState(true)
+  const [showFill, setShowFill] = useState(true)
+  const [fillOpacity, setFillOpacity] = useState(100)
 
   // Stress test state
   const [stressPaths, setStressPaths] = useState<StressTestPath[]>([])
   const [stressViewBox, setStressViewBox] = useState<string>('0 0 210 297')
   const [stressSvgOutlines, setStressSvgOutlines] = useState<string[]>([])
+  const [stressSvgTransform, setStressSvgTransform] = useState<string>('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [generateProgress, setGenerateProgress] = useState(0)
 
@@ -251,6 +255,14 @@ export default function PatternTest({ onBack }: PatternTestProps) {
             }
           }
 
+          // Get transform from parent group (paths are nested in transformed groups)
+          const transformGroup = doc.querySelector('g[transform]')
+          if (transformGroup) {
+            const transform = transformGroup.getAttribute('transform') || ''
+            console.log('[PatternTest] Found transform:', transform)
+            setStressSvgTransform(transform)
+          }
+
           // Parse all paths
           const pathElements = doc.querySelectorAll('path')
           const paths: StressTestPath[] = []
@@ -396,200 +408,220 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     setStressOffset({ x: 0, y: 0 })
   }, [])
 
+  // Handle pattern selection from grid
+  const handlePatternSelect = (pattern: FillPatternType) => {
+    setStressTestPattern(pattern)
+    setShowPatterns(false)
+  }
+
   return (
     <div className="pattern-test">
       <div className="pattern-test-header">
         <button onClick={onBack} className="back-button">← Back</button>
-        <h2>Pattern Test Harness</h2>
+        <h2>Pattern Tests</h2>
       </div>
 
       {isLoading ? (
         <div className="loading">Running pattern tests...</div>
       ) : (
         <>
-          {/* Grid of all patterns */}
-          <div className="pattern-grid-section">
-            <h3>All Patterns (Simple Square)</h3>
-            <div className="pattern-grid">
-              {results.map((result) => (
-                <div
-                  key={result.pattern}
-                  className={`pattern-cell ${result.error ? 'error' : ''} ${result.lines.length === 0 && !result.error ? 'empty' : ''}`}
-                >
-                  <div className="pattern-name">{result.pattern}</div>
-                  <svg
-                    viewBox={`0 0 ${SQUARE_SIZE + 20} ${SQUARE_SIZE + 20}`}
-                    className="pattern-preview"
+          {/* Grid of all patterns - collapsible */}
+          {showPatterns && (
+            <div className="pattern-grid-section">
+              <div className="pattern-grid">
+                {results.map((result) => (
+                  <div
+                    key={result.pattern}
+                    className={`pattern-cell ${result.error ? 'error' : ''} ${result.lines.length === 0 && !result.error ? 'empty' : ''} ${stressTestPattern === result.pattern ? 'selected' : ''}`}
+                    onClick={() => handlePatternSelect(result.pattern)}
                   >
-                    {/* Draw the square outline */}
-                    <rect
-                      x={10}
-                      y={10}
-                      width={SQUARE_SIZE}
-                      height={SQUARE_SIZE}
-                      fill="none"
-                      stroke="#ccc"
-                      strokeWidth={1}
-                    />
-                    {/* Draw the fill lines */}
-                    <path
-                      d={linesToPath(result.lines)}
-                      fill="none"
-                      stroke={result.error ? '#e74c3c' : (result.lines.length === 0 ? '#f39c12' : '#3498db')}
-                      strokeWidth={0.5}
-                    />
-                  </svg>
-                  <div className="pattern-stats">
-                    {result.error ? (
-                      <span className="error-text" title={result.error}>ERROR</span>
-                    ) : (
-                      <>
-                        <span className={result.lines.length === 0 ? 'warning-text' : ''}>
-                          {result.lines.length} lines
-                        </span>
-                        <span>{result.timeMs.toFixed(1)}ms</span>
-                      </>
-                    )}
+                    <div className="pattern-name">{result.pattern}</div>
+                    <svg
+                      viewBox={`0 0 ${SQUARE_SIZE + 20} ${SQUARE_SIZE + 20}`}
+                      className="pattern-preview"
+                    >
+                      <rect
+                        x={10}
+                        y={10}
+                        width={SQUARE_SIZE}
+                        height={SQUARE_SIZE}
+                        fill="none"
+                        stroke="#ccc"
+                        strokeWidth={1}
+                      />
+                      <path
+                        d={linesToPath(result.lines)}
+                        fill="none"
+                        stroke={result.error ? '#e74c3c' : (result.lines.length === 0 ? '#f39c12' : '#3498db')}
+                        strokeWidth={0.5}
+                      />
+                    </svg>
+                    <div className="pattern-stats">
+                      {result.error ? (
+                        <span className="error-text" title={result.error}>ERROR</span>
+                      ) : (
+                        <>
+                          <span className={result.lines.length === 0 ? 'warning-text' : ''}>
+                            {result.lines.length} lines
+                          </span>
+                          <span>{result.timeMs.toFixed(1)}ms</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Settings bar - full width, context-sensitive */}
+          <div className="pattern-settings-bar">
+            <label className="setting-item">
+              <span>Spacing</span>
+              <input
+                type="number"
+                value={lineSpacing}
+                onChange={(e) => setLineSpacing(Number(e.target.value))}
+                min={1}
+                max={50}
+              />
+              <span className="unit">px</span>
+            </label>
+
+            {['lines', 'wiggle', 'wave', 'zigzag', 'crosshatch', 'honeycomb', 'gyroid', 'spiral', 'crossspiral', 'fermat', 'radial'].includes(stressTestPattern) && (
+              <label className="setting-item">
+                <span>Angle</span>
+                <input
+                  type="number"
+                  value={angle}
+                  onChange={(e) => setAngle(Number(e.target.value))}
+                  min={0}
+                  max={360}
+                />
+                <span className="unit">°</span>
+              </label>
+            )}
+
+            <label className="setting-item">
+              <span>Inset</span>
+              <input
+                type="number"
+                value={inset}
+                onChange={(e) => setInset(Number(e.target.value))}
+                min={0}
+                max={20}
+                step={0.5}
+              />
+              <span className="unit">px</span>
+            </label>
+
+            {stressTestPattern === 'lines' && (
+              <label className="setting-item checkbox">
+                <input
+                  type="checkbox"
+                  checked={crossHatch}
+                  onChange={(e) => setCrossHatch(e.target.checked)}
+                />
+                <span>Cross-hatch</span>
+              </label>
+            )}
+
+            {['wiggle', 'wave', 'zigzag'].includes(stressTestPattern) && (
+              <>
+                <label className="setting-item">
+                  <span>Amplitude</span>
+                  <input
+                    type="number"
+                    value={wiggleAmplitude}
+                    onChange={(e) => setWiggleAmplitude(Number(e.target.value))}
+                    min={0.5}
+                    max={20}
+                    step={0.5}
+                  />
+                  <span className="unit">px</span>
+                </label>
+                {['wiggle', 'wave'].includes(stressTestPattern) && (
+                  <label className="setting-item">
+                    <span>Frequency</span>
+                    <input
+                      type="number"
+                      value={wiggleFrequency}
+                      onChange={(e) => setWiggleFrequency(Number(e.target.value))}
+                      min={0.1}
+                      max={2}
+                      step={0.1}
+                    />
+                  </label>
+                )}
+              </>
+            )}
+
+            {['spiral', 'crossspiral', 'fermat'].includes(stressTestPattern) && (
+              <label className="setting-item">
+                <span>Over-draw</span>
+                <input
+                  type="number"
+                  value={spiralOverDiameter}
+                  onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
+                  min={1}
+                  max={3}
+                  step={0.1}
+                />
+                <span className="unit">×</span>
+              </label>
+            )}
+
+            <span className="settings-label">{stressTestPattern}</span>
+          </div>
+
+          {/* Pattern buttons - full width */}
+          <div className="pattern-buttons-bar">
+            {ALL_PATTERNS.map((p) => (
+              <button
+                key={p}
+                className={`pattern-btn ${stressTestPattern === p ? 'active' : ''}`}
+                onClick={() => setStressTestPattern(p)}
+                disabled={isGenerating}
+              >
+                {p}
+              </button>
+            ))}
+            <div className="toolbar-right">
+              <div className="fill-controls">
+                <button
+                  className={`toggle-btn ${showFill ? 'active' : ''}`}
+                  onClick={() => setShowFill(!showFill)}
+                >
+                  {showFill ? 'Hide Fill' : 'Show Fill'}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={fillOpacity}
+                  onChange={(e) => setFillOpacity(Number(e.target.value))}
+                  className="opacity-slider"
+                  title={`Fill opacity: ${fillOpacity}%`}
+                />
+                <span className="opacity-value">{fillOpacity}%</span>
+              </div>
+              <button
+                className={`toggle-btn ${showPatterns ? 'active' : ''}`}
+                onClick={() => setShowPatterns(!showPatterns)}
+              >
+                {showPatterns ? 'Hide Patterns' : 'Show Patterns'}
+              </button>
+              <div className="zoom-controls">
+                <button onClick={() => setStressScale(s => Math.min(20, s * 1.5))} title="Zoom In">+</button>
+                <button onClick={() => setStressScale(s => Math.max(0.1, s / 1.5))} title="Zoom Out">−</button>
+                <button onClick={() => { setStressScale(1); setStressOffset({ x: 0, y: 0 }) }} title="Reset View">Fit</button>
+                <span className="zoom-level">{Math.round(stressScale * 100)}%</span>
+              </div>
             </div>
           </div>
 
           {/* Stress test section */}
           <div className="stress-test-section">
-            <div className="stress-test-title-row">
-              <h3>Stress Test (Essex VT - {stressPaths.length} polygons)</h3>
-              <div className="stress-zoom-controls">
-                <button onClick={() => setStressScale(s => Math.min(20, s * 1.2))} title="Zoom In">+</button>
-                <button onClick={() => setStressScale(s => Math.max(0.1, s / 1.2))} title="Zoom Out">−</button>
-                <button onClick={handleStressReset} title="Reset View">Fit</button>
-                <span className="zoom-level">{Math.round(stressScale * 100)}%</span>
-              </div>
-            </div>
-
-            {/* Pattern buttons and settings row */}
-            <div className="pattern-controls-row">
-              <div className="pattern-buttons">
-                {ALL_PATTERNS.map((p) => (
-                  <button
-                    key={p}
-                    className={`pattern-btn ${stressTestPattern === p ? 'active' : ''}`}
-                    onClick={() => setStressTestPattern(p)}
-                    disabled={isGenerating}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-
-              {/* Settings panel - 4x4 grid */}
-              <div className="pattern-settings-panel">
-                <h4>{stressTestPattern} Settings</h4>
-                <div className="settings-grid">
-                  {/* Line Spacing - always shown */}
-                  <label className="setting-row">
-                    <span>Spacing</span>
-                    <input
-                      type="number"
-                      value={lineSpacing}
-                      onChange={(e) => setLineSpacing(Number(e.target.value))}
-                      min={1}
-                      max={50}
-                    />
-                    <span className="unit">px</span>
-                  </label>
-
-                  {/* Angle - for most patterns */}
-                  {['lines', 'wiggle', 'wave', 'zigzag', 'crosshatch', 'honeycomb', 'gyroid', 'spiral', 'crossspiral', 'fermat', 'radial'].includes(stressTestPattern) && (
-                    <label className="setting-row">
-                      <span>Angle</span>
-                      <input
-                        type="number"
-                        value={angle}
-                        onChange={(e) => setAngle(Number(e.target.value))}
-                        min={0}
-                        max={360}
-                      />
-                      <span className="unit">°</span>
-                    </label>
-                  )}
-
-                  {/* Inset - always shown */}
-                  <label className="setting-row">
-                    <span>Inset</span>
-                    <input
-                      type="number"
-                      value={inset}
-                      onChange={(e) => setInset(Number(e.target.value))}
-                      min={0}
-                      max={20}
-                      step={0.5}
-                    />
-                    <span className="unit">px</span>
-                  </label>
-
-                  {/* Cross-hatch toggle - only for lines */}
-                  {stressTestPattern === 'lines' && (
-                    <label className="setting-row checkbox">
-                      <input
-                        type="checkbox"
-                        checked={crossHatch}
-                        onChange={(e) => setCrossHatch(e.target.checked)}
-                      />
-                      <span>Cross-hatch</span>
-                    </label>
-                  )}
-
-                  {/* Wiggle settings */}
-                  {['wiggle', 'wave', 'zigzag'].includes(stressTestPattern) && (
-                    <>
-                      <label className="setting-row">
-                        <span>Amplitude</span>
-                        <input
-                          type="number"
-                          value={wiggleAmplitude}
-                          onChange={(e) => setWiggleAmplitude(Number(e.target.value))}
-                          min={0.5}
-                          max={20}
-                          step={0.5}
-                        />
-                        <span className="unit">px</span>
-                      </label>
-                      {['wiggle', 'wave'].includes(stressTestPattern) && (
-                        <label className="setting-row">
-                          <span>Frequency</span>
-                          <input
-                            type="number"
-                            value={wiggleFrequency}
-                            onChange={(e) => setWiggleFrequency(Number(e.target.value))}
-                            min={0.1}
-                            max={2}
-                            step={0.1}
-                          />
-                        </label>
-                      )}
-                    </>
-                  )}
-
-                  {/* Spiral over-diameter */}
-                  {['spiral', 'crossspiral', 'fermat'].includes(stressTestPattern) && (
-                    <label className="setting-row">
-                      <span>Over-draw</span>
-                      <input
-                        type="number"
-                        value={spiralOverDiameter}
-                        onChange={(e) => setSpiralOverDiameter(Number(e.target.value))}
-                        min={1}
-                        max={3}
-                        step={0.1}
-                      />
-                      <span className="unit">×</span>
-                    </label>
-                  )}
-                </div>
-              </div>
-            </div>
 
             {/* Progress bar */}
             <div className="stress-progress-container">
@@ -628,39 +660,47 @@ export default function PatternTest({ onBack }: PatternTestProps) {
                   onMouseMove={handleStressMouseMove}
                   onMouseUp={handleStressMouseUp}
                   onMouseLeave={handleStressMouseUp}
-                  onDoubleClick={handleStressDoubleClick}
                   style={{ cursor: isDragging ? 'grabbing' : 'grab' }}
                 >
                   <div
                     className="stress-svg-container"
                     style={{
                       transform: `translate(${stressOffset.x}px, ${stressOffset.y}px) scale(${stressScale})`,
+                      transformOrigin: '0 0',
                     }}
                   >
                     <svg
                       viewBox={stressViewBox}
                       className="stress-test-preview"
                       preserveAspectRatio="xMidYMid meet"
+                      style={{
+                        width: `${parseFloat(stressViewBox.split(' ')[2] || '210') * 4}px`,
+                        height: `${parseFloat(stressViewBox.split(' ')[3] || '297') * 4}px`,
+                      }}
                     >
-                      {/* Draw all original path outlines */}
-                      {stressSvgOutlines.map((d, i) => (
-                        <path
-                          key={`outline-${i}`}
-                          d={d}
-                          fill="none"
-                          stroke="#ccc"
-                          strokeWidth={0.3}
-                        />
-                      ))}
-                      {/* Draw the fill lines */}
-                      {stressTestResult && (
-                        <path
-                          d={linesToPath(stressTestResult.lines)}
-                          fill="none"
-                          stroke={stressTestResult.error ? '#e74c3c' : (stressTestResult.lines.length === 0 ? '#f39c12' : '#3498db')}
-                          strokeWidth={0.15}
-                        />
-                      )}
+                      {/* Apply the transform from the original SVG */}
+                      <g transform={stressSvgTransform}>
+                        {/* Draw all original path outlines */}
+                        {stressSvgOutlines.map((d, i) => (
+                          <path
+                            key={`outline-${i}`}
+                            d={d}
+                            fill="#a8d483"
+                            stroke="#666"
+                            strokeWidth={0.5}
+                          />
+                        ))}
+                        {/* Draw the fill lines */}
+                        {showFill && stressTestResult && (
+                          <path
+                            d={linesToPath(stressTestResult.lines)}
+                            fill="none"
+                            stroke={stressTestResult.error ? '#e74c3c' : (stressTestResult.lines.length === 0 ? '#f39c12' : '#3498db')}
+                            strokeWidth={0.2}
+                            opacity={fillOpacity / 100}
+                          />
+                        )}
+                      </g>
                     </svg>
                   </div>
                 </div>
