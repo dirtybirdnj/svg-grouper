@@ -215,6 +215,23 @@
   background: #ffe0b2;
 }
 
+/* Highlight mergeable shapes (have touching edges) with red background */
+.shape-item.mergeable {
+  background: #ffebee;
+  border-color: #ffcdd2;
+}
+
+.shape-item.mergeable:hover {
+  background: #ffcdd2;
+  border-color: #ef9a9a;
+}
+
+/* Selected + mergeable */
+.shape-item.mergeable.selected {
+  background: #e8f5e9;
+  border-color: #4caf50;
+}
+
 /* Selection buttons */
 .selection-buttons {
   display: flex;
@@ -234,6 +251,19 @@
 .mini-btn:hover {
   background: #eee;
   border-color: #ccc;
+}
+
+.mini-btn.next-btn {
+  background: #e74c3c;
+  border-color: #c0392b;
+  color: white;
+  font-weight: 500;
+  padding: 4px 12px;
+}
+
+.mini-btn.next-btn:hover {
+  background: #c0392b;
+  border-color: #a93226;
 }
 
 /* Operation buttons */
@@ -405,6 +435,11 @@
   padding: 20px;
   position: relative;
   user-select: none;
+  cursor: grab;
+}
+
+.merge-main.panning {
+  cursor: grabbing;
 }
 
 /* Zoom controls */
@@ -460,6 +495,14 @@
   border-radius: 8px;
   border: 1px solid #ddd;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.merge-preview-transform {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .merge-preview-svg {
