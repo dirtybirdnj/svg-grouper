@@ -1,12 +1,15 @@
 export {}
 
-// Fill generation types (shared between frontend and backend)
+// Import shared types from electron
+// Note: These are duplicated here for the renderer side since we can't directly import from electron/
+// The canonical source is electron/types.ts
+
 interface FillGenerationParams {
   paths: Array<{
     id: string
     color: string
     polygons: Array<{ outer: Array<{ x: number; y: number }>; holes: Array<Array<{ x: number; y: number }>> }>
-    rawSubpaths?: Array<Array<{ x: number; y: number }>> // For evenodd mode
+    rawSubpaths?: Array<Array<{ x: number; y: number }>>
   }>
   boundingBox: { x: number; y: number; width: number; height: number }
   fillPattern: string
@@ -26,7 +29,7 @@ interface FillGenerationParams {
   customTileRotateOffset: number
   enableCrop: boolean
   cropInset: number
-  useEvenOdd: boolean // Use evenodd fill rule for compound paths
+  useEvenOdd: boolean
 }
 
 interface FillGenerationResult {
@@ -56,7 +59,6 @@ declare global {
       onMenuCommand: (callback: (command: string) => void) => void
       onFileOpened: (callback: (data: { content: string; fileName: string; filePath: string }) => void) => void
       exportMultipleFiles: (args: { files: { name: string; content: string }[]; baseName: string }) => Promise<{ success: boolean; exportDir?: string; savedFiles?: string[]; error?: string }>
-      // Fill generation (runs in worker thread for responsiveness)
       generateFills: (params: FillGenerationParams) => Promise<FillGenerationResult>
       optimizeFillLines: (lines: HatchLineIPC[]) => Promise<HatchLineIPC[]>
       onFillProgress: (callback: (data: { progress: number; status: string }) => void) => void

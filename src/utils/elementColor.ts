@@ -131,6 +131,28 @@ export function getElementStrokeColor(element: Element): string | null {
 }
 
 /**
+ * Get color for pen plotter context - prioritizes stroke over fill
+ * Optionally accepts an override fillColor (for line fill/custom markup nodes)
+ * Normalizes to lowercase for consistency
+ */
+export function getPlotterColor(element: Element, fillColorOverride?: string): string | null {
+  // Check for override fillColor from line fill (customMarkup nodes)
+  if (fillColorOverride) return fillColorOverride.toLowerCase()
+
+  const { fill, stroke, parsedStyle } = getElementAttrs(element)
+
+  // Prefer stroke for pen plotter context
+  if (isValidColor(parsedStyle.stroke)) return parsedStyle.stroke.toLowerCase()
+  if (isValidColor(stroke)) return stroke.toLowerCase()
+
+  // Fall back to fill
+  if (isValidColor(parsedStyle.fill)) return parsedStyle.fill.toLowerCase()
+  if (isValidColor(fill)) return fill.toLowerCase()
+
+  return null
+}
+
+/**
  * Get stroke width from an element
  */
 export function getElementStrokeWidth(element: Element): string | null {

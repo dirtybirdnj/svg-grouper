@@ -2,7 +2,11 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import { Point, getAllPolygonsFromElement, PolygonWithHoles } from '../../utils/geometry'
+import { OPTIMIZATION, UI } from '../../constants'
 import './MergeTab.css'
+
+// Debug logging - set to false for production
+const DEBUG_MERGE = false
 
 type MergeOperation = 'union' | 'intersect' | 'subtract'
 
@@ -17,7 +21,7 @@ interface PolygonData {
 }
 
 // Edge key for finding duplicates
-function edgeKey(p1: Point, p2: Point, tolerance: number = 0.01): string {
+function edgeKey(p1: Point, p2: Point, tolerance: number = OPTIMIZATION.DEFAULT_TOLERANCE): string {
   // Round to tolerance and sort points to make edge direction-independent
   const x1 = Math.round(p1.x / tolerance) * tolerance
   const y1 = Math.round(p1.y / tolerance) * tolerance
@@ -91,7 +95,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
     }
   }
 
-  console.log('[Union] Starting with tolerance:', tolerance)
+  DEBUG_MERGE && console.log('[Union] Starting with tolerance:', tolerance)
 
   // Collect all edges with their polygons
   interface Edge {
@@ -106,7 +110,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
 
   for (let polyIdx = 0; polyIdx < polygons.length; polyIdx++) {
     const vertices = polygons[polyIdx].vertices
-    console.log(`[Union] Polygon ${polyIdx} has ${vertices.length} edges`)
+    DEBUG_MERGE && console.log(`[Union] Polygon ${polyIdx} has ${vertices.length} edges`)
     for (let i = 0; i < vertices.length; i++) {
       const p1 = vertices[i]
       const p2 = vertices[(i + 1) % vertices.length]
@@ -118,14 +122,14 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
     }
   }
 
-  console.log(`[Union] Total edges: ${edges.length}, unique edge keys: ${edgeCounts.size}`)
+  DEBUG_MERGE && console.log(`[Union] Total edges: ${edges.length}, unique edge keys: ${edgeCounts.size}`)
 
   // Collect shared edges for visualization and count
   const sharedEdgeKeys = new Set<string>()
   edgeCounts.forEach((count, key) => {
     if (count > 1) sharedEdgeKeys.add(key)
   })
-  console.log(`[Union] Shared edges found: ${sharedEdgeKeys.size}`)
+  DEBUG_MERGE && console.log(`[Union] Shared edges found: ${sharedEdgeKeys.size}`)
 
   // Build shared edges list for visualization
   for (const edge of edges) {
@@ -147,7 +151,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
     }
   }
 
-  console.log(`[Union] Boundary edges: ${boundaryEdges.length}`)
+  DEBUG_MERGE && console.log(`[Union] Boundary edges: ${boundaryEdges.length}`)
 
   if (boundaryEdges.length === 0) return null
 
@@ -220,7 +224,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
     }
   }
 
-  console.log(`[Union] Found ${allLoops.length} boundary loops`)
+  DEBUG_MERGE && console.log(`[Union] Found ${allLoops.length} boundary loops`)
 
   if (allLoops.length === 0) return null
 
@@ -246,7 +250,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
   }
 
   const outerLoop = allLoops[maxAreaIdx]
-  console.log(`[Union] Outer loop has ${outerLoop.length} vertices, area: ${maxArea.toFixed(2)}`)
+  DEBUG_MERGE && console.log(`[Union] Outer loop has ${outerLoop.length} vertices, area: ${maxArea.toFixed(2)}`)
 
   // Collect holes: smaller loops from union + existing holes from input shapes
   const allHoles: Point[][] = []
@@ -266,7 +270,7 @@ function unionPolygons(polygons: PolygonData[], tolerance: number = 0.1): UnionR
       }
     }
   }
-  console.log(`[Union] Total holes: ${allHoles.length} (${allLoops.length - 1} from union, rest from inputs)`)
+  DEBUG_MERGE && console.log(`[Union] Total holes: ${allHoles.length} (${allLoops.length - 1} from union, rest from inputs)`)
 
   // Find touching pairs
   const touchingPairs = findTouchingShapes(polygons, tolerance)
@@ -390,7 +394,7 @@ export default function MergeTab() {
       // while still preserving holes within each region
       const polygons = getAllPolygonsFromElement(element)
 
-      console.log(`[Merge] Element "${name}" has ${polygons.length} polygon(s)`)
+      DEBUG_MERGE && console.log(`[Merge] Element "${name}" has ${polygons.length} polygon(s)`)
       if (polygons.length === 0) return
 
       const fill = element.getAttribute('fill') || '#666'
@@ -404,7 +408,7 @@ export default function MergeTab() {
         const subId = polygons.length > 1 ? `${nodeId}__part${polyIdx}` : nodeId
         const subName = polygons.length > 1 ? `${name} (part ${polyIdx + 1})` : name
 
-        console.log(`[Merge]   Part ${polyIdx}: ${polygonWithHoles.outer.length} vertices`)
+        DEBUG_MERGE && console.log(`[Merge]   Part ${polyIdx}: ${polygonWithHoles.outer.length} vertices`)
 
         shapes.push({
           nodeId: subId,
@@ -418,7 +422,7 @@ export default function MergeTab() {
       })
 
       if (polygons.length > 1) {
-        console.log(`[Merge] Split compound path "${name}" into ${polygons.length} separate shapes`)
+        DEBUG_MERGE && console.log(`[Merge] Split compound path "${name}" into ${polygons.length} separate shapes`)
       }
     }
 
@@ -439,14 +443,14 @@ export default function MergeTab() {
     }
 
     if (shapes.length > 0) {
-      console.log('[Merge] Loaded', shapes.length, 'shapes:')
+      DEBUG_MERGE && console.log('[Merge] Loaded', shapes.length, 'shapes:')
       shapes.forEach((s, i) => {
-        console.log(`[Merge]   ${i}: ${s.name}, ${s.vertices.length} vertices, color: ${s.color}`)
+        DEBUG_MERGE && console.log(`[Merge]   ${i}: ${s.name}, ${s.vertices.length} vertices, color: ${s.color}`)
       })
       setAvailableShapes(shapes)
       setStatusMessage(`Loaded ${shapes.length} fill shapes for merging`)
     } else {
-      console.log('[Merge] No fill shapes found')
+      DEBUG_MERGE && console.log('[Merge] No fill shapes found')
       setStatusMessage('warning:No fill shapes found - merge only works with filled polygons')
     }
   }, [selectedNodeIds, layerNodes, findNode, collectLeafNodes, hasFill, setStatusMessage])
@@ -461,7 +465,7 @@ export default function MergeTab() {
     if (availableShapes.length >= 2) {
       const pairs = findTouchingShapes(availableShapes, tolerance)
       setTouchingPairs(pairs)
-      console.log('[Merge] Found', pairs.size, 'touching pairs')
+      DEBUG_MERGE && console.log('[Merge] Found', pairs.size, 'touching pairs')
     } else {
       setTouchingPairs(new Set())
     }
@@ -516,8 +520,8 @@ export default function MergeTab() {
   const selectionIsConnected = useMemo(() => {
     if (selectedForMerge.size < 2) return true
 
-    console.log('[Merge] Checking connectivity for selected shapes:', Array.from(selectedForMerge))
-    console.log('[Merge] All touching pairs:', Array.from(touchingPairs))
+    DEBUG_MERGE && console.log('[Merge] Checking connectivity for selected shapes:', Array.from(selectedForMerge))
+    DEBUG_MERGE && console.log('[Merge] All touching pairs:', Array.from(touchingPairs))
 
     // Build adjacency list for selected shapes only
     const adjacency = new Map<string, Set<string>>()
@@ -530,10 +534,10 @@ export default function MergeTab() {
         adjacency.get(id1)!.add(id2)
         adjacency.get(id2)!.add(id1)
         foundConnections++
-        console.log(`[Merge] Found connection: ${id1} <-> ${id2}`)
+        DEBUG_MERGE && console.log(`[Merge] Found connection: ${id1} <-> ${id2}`)
       }
     })
-    console.log(`[Merge] Found ${foundConnections} connections between selected shapes`)
+    DEBUG_MERGE && console.log(`[Merge] Found ${foundConnections} connections between selected shapes`)
 
     // BFS to check connectivity
     const visited = new Set<string>()
@@ -551,7 +555,7 @@ export default function MergeTab() {
     }
 
     const isConnected = visited.size === selectedForMerge.size
-    console.log(`[Merge] Connectivity check: visited ${visited.size}/${selectedForMerge.size}, connected=${isConnected}`)
+    DEBUG_MERGE && console.log(`[Merge] Connectivity check: visited ${visited.size}/${selectedForMerge.size}, connected=${isConnected}`)
 
     return isConnected
   }, [selectedForMerge, touchingPairs])
@@ -572,17 +576,17 @@ export default function MergeTab() {
   // Compute preview when selection changes
   useEffect(() => {
     if (selectedPolygons.length >= 2 && operation === 'union') {
-      console.log('[Merge] Computing union for', selectedPolygons.length, 'polygons')
-      console.log('[Merge] Tolerance:', tolerance)
+      DEBUG_MERGE && console.log('[Merge] Computing union for', selectedPolygons.length, 'polygons')
+      DEBUG_MERGE && console.log('[Merge] Tolerance:', tolerance)
       selectedPolygons.forEach((p, i) => {
-        console.log(`[Merge] Polygon ${i}: ${p.name}, ${p.vertices.length} vertices, ${p.polygonWithHoles.holes.length} holes`)
+        DEBUG_MERGE && console.log(`[Merge] Polygon ${i}: ${p.name}, ${p.vertices.length} vertices, ${p.polygonWithHoles.holes.length} holes`)
         if (p.vertices.length > 0) {
-          console.log(`[Merge]   First vertex: (${p.vertices[0].x.toFixed(2)}, ${p.vertices[0].y.toFixed(2)})`)
-          console.log(`[Merge]   Last vertex: (${p.vertices[p.vertices.length-1].x.toFixed(2)}, ${p.vertices[p.vertices.length-1].y.toFixed(2)})`)
+          DEBUG_MERGE && console.log(`[Merge]   First vertex: (${p.vertices[0].x.toFixed(2)}, ${p.vertices[0].y.toFixed(2)})`)
+          DEBUG_MERGE && console.log(`[Merge]   Last vertex: (${p.vertices[p.vertices.length-1].x.toFixed(2)}, ${p.vertices[p.vertices.length-1].y.toFixed(2)})`)
         }
       })
       const merged = unionPolygons(selectedPolygons, tolerance)
-      console.log('[Merge] Result:', merged ? `${merged.outer.length} vertices, ${merged.holes.length} holes` : 'null (no shared edges found)')
+      DEBUG_MERGE && console.log('[Merge] Result:', merged ? `${merged.outer.length} vertices, ${merged.holes.length} holes` : 'null (no shared edges found)')
       setPreviewResult(merged)
     } else {
       setPreviewResult(null)
@@ -617,7 +621,7 @@ export default function MergeTab() {
       }
     }
 
-    const padding = 20
+    const padding = UI.PREVIEW_PADDING
     return {
       x: minX - padding,
       y: minY - padding,
@@ -628,9 +632,9 @@ export default function MergeTab() {
 
   // Apply the merge
   const handleApplyMerge = useCallback(() => {
-    console.log('[Merge] handleApplyMerge called')
-    console.log('[Merge] previewResult:', previewResult)
-    console.log('[Merge] selectedPolygons:', selectedPolygons.length)
+    DEBUG_MERGE && console.log('[Merge] handleApplyMerge called')
+    DEBUG_MERGE && console.log('[Merge] previewResult:', previewResult)
+    DEBUG_MERGE && console.log('[Merge] selectedPolygons:', selectedPolygons.length)
 
     if (!previewResult || selectedPolygons.length < 2) {
       setStatusMessage('error:Select at least 2 shapes to merge')
@@ -639,14 +643,14 @@ export default function MergeTab() {
 
     // Create compound path with outer boundary and holes
     const pathD = polygonWithHolesToPathD(previewResult.outer, previewResult.holes)
-    console.log('[Merge] Generated path d:', pathD.substring(0, 100) + '...')
+    DEBUG_MERGE && console.log('[Merge] Generated path d:', pathD.substring(0, 100) + '...')
     const firstPoly = selectedPolygons[0]
 
     // Get attributes from first polygon
     const fill = firstPoly.element.getAttribute('fill') || 'none'
     const stroke = firstPoly.element.getAttribute('stroke') || 'none'
     const strokeWidth = firstPoly.element.getAttribute('stroke-width') || '1'
-    console.log('[Merge] Attributes - fill:', fill, 'stroke:', stroke, 'strokeWidth:', strokeWidth)
+    DEBUG_MERGE && console.log('[Merge] Attributes - fill:', fill, 'stroke:', stroke, 'strokeWidth:', strokeWidth)
 
     // Create new path element in memory (will be added to DOM by rebuildSvgFromLayers)
     const newPath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
@@ -657,7 +661,7 @@ export default function MergeTab() {
     newPath.setAttribute('fill-rule', 'evenodd')  // Use evenodd to punch out holes
     newPath.setAttribute('stroke', stroke)
     newPath.setAttribute('stroke-width', strokeWidth)
-    console.log('[Merge] Created new path element with id:', newId)
+    DEBUG_MERGE && console.log('[Merge] Created new path element with id:', newId)
 
     // Create new node
     const holesMsg = previewResult.holes.length > 0 ? ` with ${previewResult.holes.length} holes` : ''
@@ -673,15 +677,15 @@ export default function MergeTab() {
     // Remove old nodes and add new one
     // Use originalNodeId to find the actual elements in layerNodes (not split part IDs)
     const idsToRemove = new Set(selectedPolygons.map(p => p.originalNodeId))
-    console.log('[Merge] Original IDs to remove:', Array.from(idsToRemove))
-    console.log('[Merge] Layer nodes before:', layerNodes.length)
+    DEBUG_MERGE && console.log('[Merge] Original IDs to remove:', Array.from(idsToRemove))
+    DEBUG_MERGE && console.log('[Merge] Layer nodes before:', layerNodes.length)
 
     // Filter out merged nodes (rebuildSvgFromLayers will handle DOM)
     const removeNodesByIds = (nodes: SVGNode[], idsToRemove: Set<string>): SVGNode[] => {
       const result: SVGNode[] = []
       for (const node of nodes) {
         if (idsToRemove.has(node.id)) {
-          console.log('[Merge] Removing node from tree:', node.id)
+          DEBUG_MERGE && console.log('[Merge] Removing node from tree:', node.id)
           continue
         }
         // Keep the node, but filter its children
@@ -696,7 +700,7 @@ export default function MergeTab() {
 
     let updatedNodes = removeNodesByIds(layerNodes, idsToRemove)
     updatedNodes.push(newNode)
-    console.log('[Merge] Layer nodes after:', updatedNodes.length)
+    DEBUG_MERGE && console.log('[Merge] Layer nodes after:', updatedNodes.length)
 
     setLayerNodes(updatedNodes)
     rebuildSvgFromLayers(updatedNodes)
@@ -723,7 +727,7 @@ export default function MergeTab() {
     setPreviewResult(null)
 
     setStatusMessage(`Merged ${selectedPolygons.length} shapes into 1${holesMsg}`)
-    console.log('[Merge] Complete, staying on merge tab for additional operations')
+    DEBUG_MERGE && console.log('[Merge] Complete, staying on merge tab for additional operations')
   }, [previewResult, selectedPolygons, layerNodes, setLayerNodes, rebuildSvgFromLayers, setStatusMessage])
 
   // Cancel and go back
@@ -953,7 +957,7 @@ export default function MergeTab() {
             <button
               className="apply-btn"
               onClick={() => {
-                console.log('[Merge] Button clicked! previewResult:', !!previewResult, 'selectedPolygons:', selectedPolygons.length, 'connected:', selectionIsConnected)
+                DEBUG_MERGE && console.log('[Merge] Button clicked! previewResult:', !!previewResult, 'selectedPolygons:', selectedPolygons.length, 'connected:', selectionIsConnected)
                 handleApplyMerge()
               }}
               disabled={!previewResult || selectedPolygons.length < 2 || !selectionIsConnected}

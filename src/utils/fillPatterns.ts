@@ -322,7 +322,7 @@ export function generateHoneycombLines(
               const closest = intersections.reduce((a, b) => {
                 const distA = Math.sqrt(Math.pow(a.x - inside.x, 2) + Math.pow(a.y - inside.y, 2))
                 const distB = Math.sqrt(Math.pow(b.x - inside.x, 2) + Math.pow(b.y - inside.y, 2))
-                return distA > distB ? a : b
+                return distA < distB ? a : b
               })
               candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
             }
@@ -428,12 +428,21 @@ export function generateWiggleLines(
   frequency: number,
   inset: number = 0
 ): HatchLine[] {
-  const straightLines = generateGlobalHatchLines(globalBbox, spacing, angleDegrees)
-  const clippedLines = clipLinesToPolygon(straightLines, polygonData, inset)
+  // Expand the bbox to account for amplitude displacement
+  // This ensures we have wiggle lines that can cover the edges of the polygon
+  const expandedBbox = {
+    x: globalBbox.x - amplitude * 2,
+    y: globalBbox.y - amplitude * 2,
+    width: globalBbox.width + amplitude * 4,
+    height: globalBbox.height + amplitude * 4
+  }
 
+  // Generate straight lines over the expanded region
+  const straightLines = generateGlobalHatchLines(expandedBbox, spacing, angleDegrees)
+
+  // Apply wiggle distortion to ALL straight lines FIRST (before clipping)
   const rawWiggleLines: HatchLine[] = []
-
-  for (const line of clippedLines) {
+  for (const line of straightLines) {
     const wigglePoints = generateWiggleLine(
       line.x1, line.y1,
       line.x2, line.y2,
@@ -451,8 +460,7 @@ export function generateWiggleLines(
     }
   }
 
-  // Re-clip wiggle lines to polygon - the amplitude displacement can push
-  // segments outside the original polygon boundary
+  // Clip the wiggle lines to the polygon AFTER distortion is applied
   return clipLinesToPolygon(rawWiggleLines, polygonData, inset)
 }
 
@@ -710,7 +718,11 @@ export function generateGyroidLines(
             )
             if (intersections.length > 0) {
               const inside = p1In ? p1 : p2
-              const closest = intersections[0]
+              const closest = intersections.reduce((a, b) => {
+                const distA = Math.pow(a.x - inside.x, 2) + Math.pow(a.y - inside.y, 2)
+                const distB = Math.pow(b.x - inside.x, 2) + Math.pow(b.y - inside.y, 2)
+                return distA < distB ? a : b
+              })
               candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
             }
           }

@@ -166,6 +166,23 @@
   animation: spin 1s linear infinite;
 }
 
+.pattern-test-link {
+  margin-left: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  background: transparent;
+  border: 1px solid #666;
+  border-radius: 3px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.pattern-test-link:hover {
+  background: #666;
+  color: white;
+}
+
 .app-content {
   flex: 1;
   display: flex;

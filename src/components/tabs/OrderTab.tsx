@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppContext, OrderLine } from '../../context/AppContext'
 import { Point, distance } from '../../utils/geometry'
+import { ANIMATION, OPTIMIZATION, UI } from '../../constants'
 import './OrderTab.css'
 
 // Sanitize color to prevent XSS in SVG innerHTML
@@ -13,14 +14,6 @@ interface OrderedLine extends OrderLine {
   originalIndex: number
   reversed: boolean
 }
-
-// Animation speed range (in milliseconds for full animation)
-const MIN_DURATION = 500   // Fastest (0.5 seconds)
-const MAX_DURATION = 30000 // Slowest (30 seconds)
-const DEFAULT_DURATION = 5000 // Default (5 seconds)
-
-// Maximum lines for O(n²) optimization - beyond this, use chunked approach
-const MAX_LINES_FOR_FULL_OPTIMIZATION = 5000
 
 // Optimize lines by color - groups lines by color, optimizes within each group
 // This simulates real pen plotter behavior: draw all of one color before changing pens
@@ -55,7 +48,7 @@ function optimizeLinesByColor(lines: OrderLine[], colorOrder: string[]): Ordered
   for (const color of colorOrder) {
     const groupLines = colorGroups.get(color)
     if (groupLines && groupLines.length > 0) {
-      const optimizedGroup = groupLines.length > MAX_LINES_FOR_FULL_OPTIMIZATION
+      const optimizedGroup = groupLines.length > OPTIMIZATION.MAX_LINES_FOR_FULL
         ? optimizeLinesChunked(groupLines)
         : optimizeLinesNearestNeighbor(groupLines)
       result.push(...optimizedGroup)
@@ -66,7 +59,7 @@ function optimizeLinesByColor(lines: OrderLine[], colorOrder: string[]): Ordered
   // Then process any colors not in the specified order
   for (const [color, groupLines] of colorGroups) {
     if (!processedColors.has(color) && groupLines.length > 0) {
-      const optimizedGroup = groupLines.length > MAX_LINES_FOR_FULL_OPTIMIZATION
+      const optimizedGroup = groupLines.length > OPTIMIZATION.MAX_LINES_FOR_FULL
         ? optimizeLinesChunked(groupLines)
         : optimizeLinesNearestNeighbor(groupLines)
       result.push(...optimizedGroup)
@@ -134,8 +127,6 @@ function optimizeLinesNearestNeighbor(lines: OrderLine[]): OrderedLine[] {
 // Chunked optimization for large datasets - O(n * chunkSize) instead of O(n²)
 // Divides lines into spatial chunks and optimizes within/between chunks
 function optimizeLinesChunked(lines: OrderLine[]): OrderedLine[] {
-  const CHUNK_SIZE = 1000
-
   // Sort lines by their starting x coordinate to get some spatial locality
   const indexedLines = lines.map((line, idx) => ({ ...line, originalIndex: idx }))
   indexedLines.sort((a, b) => a.x1 - b.x1)
@@ -144,8 +135,8 @@ function optimizeLinesChunked(lines: OrderLine[]): OrderedLine[] {
   let currentPoint: Point = { x: 0, y: 0 }
 
   // Process in chunks
-  for (let chunkStart = 0; chunkStart < indexedLines.length; chunkStart += CHUNK_SIZE) {
-    const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, indexedLines.length)
+  for (let chunkStart = 0; chunkStart < indexedLines.length; chunkStart += OPTIMIZATION.CHUNK_SIZE) {
+    const chunkEnd = Math.min(chunkStart + OPTIMIZATION.CHUNK_SIZE, indexedLines.length)
     const chunk = indexedLines.slice(chunkStart, chunkEnd)
 
     // Optimize within this chunk using nearest-neighbor
@@ -232,7 +223,7 @@ export default function OrderTab() {
 
   const [isAnimating, setIsAnimating] = useState(false)
   const [animationProgress, setAnimationProgress] = useState(0)
-  const [animationDuration, setAnimationDuration] = useState(DEFAULT_DURATION) // Duration in ms for full animation
+  const [animationDuration, setAnimationDuration] = useState<number>(ANIMATION.DEFAULT_DURATION) // Duration in ms for full animation
   const [showTravelLines, setShowTravelLines] = useState(true)
   const [showGradient, setShowGradient] = useState(false) // Show red→blue gradient (for debugging order)
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set())
@@ -375,7 +366,7 @@ export default function OrderTab() {
     if (!orderData || optimizedLines.length === 0) return null
 
     const { boundingBox } = orderData
-    const padding = 20
+    const padding = UI.PREVIEW_PADDING
     const viewBox = `${boundingBox.x - padding} ${boundingBox.y - padding} ${boundingBox.width + padding * 2} ${boundingBox.height + padding * 2}`
 
     const totalLines = optimizedLines.length
@@ -768,11 +759,11 @@ export default function OrderTab() {
                   <span className="speed-slow">Slow</span>
                   <input
                     type="range"
-                    min={MIN_DURATION}
-                    max={MAX_DURATION}
+                    min={ANIMATION.MIN_DURATION}
+                    max={ANIMATION.MAX_DURATION}
                     step={100}
-                    value={MAX_DURATION + MIN_DURATION - animationDuration}
-                    onChange={(e) => setAnimationDuration(MAX_DURATION + MIN_DURATION - parseInt(e.target.value))}
+                    value={ANIMATION.MAX_DURATION + ANIMATION.MIN_DURATION - animationDuration}
+                    onChange={(e) => setAnimationDuration(ANIMATION.MAX_DURATION + ANIMATION.MIN_DURATION - parseInt(e.target.value))}
                     className="speed-slider"
                   />
                   <span className="speed-fast">Fast</span>

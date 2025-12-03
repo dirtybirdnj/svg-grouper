@@ -123,8 +123,6 @@ interface AppContextType {
   // Armed states for confirmation buttons
   flattenArmed: boolean
   setFlattenArmed: (armed: boolean) => void
-  cropArmed: boolean
-  setCropArmed: (armed: boolean) => void
   statusMessage: string
   setStatusMessage: (message: string) => void
 
@@ -421,7 +419,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // Armed states for confirmation buttons
   const [flattenArmed, setFlattenArmed] = useState(false)
-  const [cropArmed, setCropArmed] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
 
   // Fill mode state - supports multiple selected nodes
@@ -523,8 +520,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCropSize,
     flattenArmed,
     setFlattenArmed,
-    cropArmed,
-    setCropArmed,
     statusMessage,
     setStatusMessage,
     fillTargetNodeIds,

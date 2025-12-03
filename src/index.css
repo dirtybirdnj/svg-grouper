@@ -1,3 +1,48 @@
+/* CSS Custom Properties - Centralized Design Tokens */
+:root {
+  /* Primary Colors */
+  --color-primary: #4a90e2;
+  --color-primary-hover: #357abd;
+  --color-primary-dark: #2868a8;
+
+  /* Status Colors */
+  --color-success: #27ae60;
+  --color-success-hover: #219a52;
+  --color-warning: #f39c12;
+  --color-warning-hover: #e67e22;
+  --color-error: #e74c3c;
+  --color-error-hover: #c0392b;
+
+  /* Accent Colors */
+  --color-accent-purple: #9b59b6;
+  --color-accent-purple-hover: #8e44ad;
+
+  /* Neutral Colors */
+  --color-border: #ddd;
+  --color-border-dark: #ccc;
+  --color-bg-light: #f5f5f5;
+  --color-bg-lighter: #f8f8f8;
+  --color-bg-white: #ffffff;
+  --color-text: #333;
+  --color-text-muted: #666;
+  --color-text-light: #888;
+  --color-text-lighter: #999;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 4px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.15);
+
+  /* Border Radius */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+}
+
 * {
   margin: 0;
   padding: 0;

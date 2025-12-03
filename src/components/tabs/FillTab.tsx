@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import { findNodeById } from '../../utils/nodeUtils'
+import { OPTIMIZATION, UI } from '../../constants'
 import {
   Point,
   HatchLine,
@@ -60,7 +61,7 @@ interface FillPathInfo {
 function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
   if (tolerance <= 0 || lines.length === 0) return lines
 
-  const CONNECT_THRESHOLD = 0.5 // Points closer than this are considered connected
+  const CONNECT_THRESHOLD = OPTIMIZATION.CONNECT_THRESHOLD
   const GRID_SIZE = CONNECT_THRESHOLD * 2 // Grid cell size for spatial hashing
 
   // Spatial hash function - rounds point to grid cell
@@ -337,8 +338,8 @@ async function generateFillsLocally(
         // Spiral with evenodd - clip the global spiral using evenodd rule
         allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
       } else {
-        // For other patterns (concentric, etc.), fall through to normal processing
-        // but use independent mode (each subpath separately)
+        // For other patterns, process each subpath independently
+        // These patterns don't benefit from evenodd clipping
         for (const subpath of subpaths) {
           if (subpath.length < 3) continue
           const polygonData: PolygonWithHoles = { outer: subpath, holes: [] }
@@ -346,10 +347,46 @@ async function generateFillsLocally(
 
           switch (fillPattern) {
             case 'concentric':
-              lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+              lines = generateConcentricLines(polygonData.outer, lineSpacing, false)
+              break
+            case 'wiggle':
+              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              break
+            case 'honeycomb':
+              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+              break
+            case 'gyroid':
+              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+              break
+            case 'zigzag':
+              lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+              break
+            case 'radial':
+              lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
+              break
+            case 'crossspiral':
+              lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              break
+            case 'hilbert':
+              lines = singleHilbert
+                ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+                : generateHilbertLines(polygonData, lineSpacing, inset)
+              break
+            case 'fermat':
+              lines = singleFermat
+                ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
+                : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              break
+            case 'wave':
+              lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              break
+            case 'scribble':
+              lines = generateScribbleLines(polygonData, lineSpacing, inset)
+              break
+            case 'custom':
+              lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
               break
             default:
-              // Skip other patterns for now in evenodd compound path mode
               break
           }
           allLines = allLines.concat(lines)
@@ -363,27 +400,32 @@ async function generateFillsLocally(
 
         let lines: HatchLine[] = []
 
-        switch (fillPattern) {
-          case 'concentric':
-            lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
-            break
-          case 'wiggle':
-            lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-            break
-          case 'spiral':
-            lines = singleSpiral
-              ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-              : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-            break
-          case 'honeycomb':
-            lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-            break
-          case 'gyroid':
-            lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-            break
-          case 'crosshatch':
-            lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-            break
+        try {
+          switch (fillPattern) {
+            case 'concentric':
+              lines = generateConcentricLines(polygonData.outer, lineSpacing, false)
+              break
+            case 'wiggle':
+              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+              console.log(`[FillTab] wiggle: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+              break
+            case 'spiral':
+              lines = singleSpiral
+                ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+                : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+              break
+            case 'honeycomb':
+              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+              console.log(`[FillTab] honeycomb: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+              break
+            case 'gyroid':
+              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+              console.log(`[FillTab] gyroid: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+              break
+            case 'crosshatch':
+              lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
+              console.log(`[FillTab] crosshatch: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+              break
           case 'zigzag':
             lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
             break
@@ -419,6 +461,9 @@ async function generateFillsLocally(
               lines = [...lines, ...clipLinesToPolygon(globalCrossLines, polygonData, inset)]
             }
             break
+          }
+        } catch (patternError) {
+          console.error(`[FillTab] Error generating ${fillPattern} pattern:`, patternError)
         }
 
         allLines = allLines.concat(lines)
@@ -772,7 +817,8 @@ export default function FillTab() {
   interface FillLayer {
     id: string  // Unique ID for drag-and-drop
     lines: HatchLine[]
-    color: string
+    color: string  // Display/output color (can be overridden by user)
+    originalColor: string  // Original color from source paths (used for matching)
     pathId: string
     // Settings stored for re-population
     angle: number
@@ -1329,7 +1375,7 @@ export default function FillTab() {
       return null
     }
 
-    const padding = 20
+    const padding = UI.PREVIEW_PADDING
     const viewBox = `${boundingBox.x - padding} ${boundingBox.y - padding} ${boundingBox.width + padding * 2} ${boundingBox.height + padding * 2}`
 
     const pathElements: string[] = []
@@ -1574,35 +1620,65 @@ export default function FillTab() {
   const pendingLayerId = useRef<string | null>(null)
 
   // Add a new layer with rotated angle
+  // If multiple colors exist in the selected paths, creates one layer per unique color
   const handleAddLayer = useCallback(() => {
-    // Generate a unique ID for the new layer
-    const layerId = `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-
     // Calculate the new angle for this layer
     const newAngle = (angle + newLayerAngle) % 180
 
-    // Get the first path for reference and default color
-    const firstPath = simplifiedHatchedPaths[0]?.pathInfo
-    const color = firstPath?.color || '#000000'
-
-    // Create a new layer with rotated angle (lines will be empty initially)
-    // The lines will be populated when simplifiedHatchedPaths regenerates with the new angle
-    const newLayer: FillLayer = {
-      id: layerId,
-      lines: [], // Will be populated when lines regenerate
-      color,
-      pathId: firstPath?.id || '',
-      angle: newAngle,
-      lineSpacing,
-      pattern: fillPattern,
-      inset,
-      lineCount: 0,
-      penWidth,
+    // Group paths by color to create separate layers for each unique color
+    const pathsByColor = new Map<string, typeof simplifiedHatchedPaths>()
+    for (const hatchedPath of simplifiedHatchedPaths) {
+      const color = hatchedPath.pathInfo.color || '#000000'
+      if (!pathsByColor.has(color)) {
+        pathsByColor.set(color, [])
+      }
+      pathsByColor.get(color)!.push(hatchedPath)
     }
 
-    // Add the new layer
+    // If no paths, create a single default layer
+    if (pathsByColor.size === 0) {
+      pathsByColor.set('#000000', [])
+    }
+
+    const newLayers: FillLayer[] = []
+    const newLayerIds: string[] = []
+    const baseTimestamp = Date.now()
+
+    // Create one layer per unique color
+    let colorIndex = 0
+    for (const [color, colorPaths] of pathsByColor) {
+      const layerId = `layer-${baseTimestamp}-${colorIndex}-${Math.random().toString(36).substr(2, 9)}`
+      newLayerIds.push(layerId)
+
+      // Collect lines for this color
+      const colorLines: HatchLine[] = []
+      colorPaths.forEach(({ lines }) => {
+        colorLines.push(...lines)
+      })
+
+      const firstPath = colorPaths[0]?.pathInfo
+
+      const newLayer: FillLayer = {
+        id: layerId,
+        lines: colorLines,
+        color,
+        originalColor: color,  // Store original for path matching
+        pathId: firstPath?.id || '',
+        angle: newAngle,
+        lineSpacing,
+        pattern: fillPattern,
+        inset,
+        lineCount: colorLines.length,
+        penWidth,
+      }
+
+      newLayers.push(newLayer)
+      colorIndex++
+    }
+
+    // Add all new layers
     setAccumulatedLayers(prev => {
-      const combined = [...prev, newLayer]
+      const combined = [...prev, ...newLayers]
       if (combined.length > MAX_ACCUMULATED_LAYERS) {
         console.warn(`[FillTab] Accumulated layers exceeded ${MAX_ACCUMULATED_LAYERS}, trimming oldest layers`)
         return combined.slice(-MAX_ACCUMULATED_LAYERS)
@@ -1610,11 +1686,13 @@ export default function FillTab() {
       return combined
     })
 
-    // Select the new layer so it becomes editable
-    setSelectedLayerIds(new Set([layerId]))
+    // Select the first new layer so it becomes editable
+    if (newLayerIds.length > 0) {
+      setSelectedLayerIds(new Set([newLayerIds[0]]))
+    }
 
-    // Track this layer ID so we can populate it when lines regenerate
-    pendingLayerId.current = layerId
+    // Track first layer ID for pending population (in case lines need regeneration)
+    pendingLayerId.current = newLayerIds[0] || null
 
     // Set the angle to the new value (this will trigger line regeneration)
     setAngle(newAngle)
@@ -1624,6 +1702,7 @@ export default function FillTab() {
   }, [simplifiedHatchedPaths, angle, newLayerAngle, lineSpacing, fillPattern, inset, penWidth])
 
   // Populate pending layer when lines regenerate after Add Layer
+  // This handles the case where lines need to be regenerated after angle change
   useEffect(() => {
     if (!pendingLayerId.current || simplifiedHatchedPaths.length === 0) return
 
@@ -1642,19 +1721,22 @@ export default function FillTab() {
       return
     }
 
-    // Collect lines from the regenerated preview
-    const allLines: HatchLine[] = []
-    let totalLineCount = 0
-    simplifiedHatchedPaths.forEach(({ lines }) => {
-      allLines.push(...lines)
-      totalLineCount += lines.length
+    // Collect lines from the regenerated preview, filtered by this layer's color
+    // Use originalColor for path matching (not color which may have been overridden)
+    const originalColor = layer.originalColor
+    const colorLines: HatchLine[] = []
+    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
+      // Only include lines from paths matching this layer's original color
+      if (pathInfo.color === originalColor) {
+        colorLines.push(...lines)
+      }
     })
 
-    if (totalLineCount > 0) {
+    if (colorLines.length > 0) {
       // Update the pending layer with the new lines
       setAccumulatedLayers(prev => prev.map(l => {
         if (l.id === layerId) {
-          return { ...l, lines: allLines, lineCount: totalLineCount }
+          return { ...l, lines: colorLines, lineCount: colorLines.length }
         }
         return l
       }))
@@ -1677,7 +1759,8 @@ export default function FillTab() {
   }, [fillPaths.length]) // Only run when fillPaths changes, not showHatchPreview
 
   // Auto-add first layer when entering Fill tab with paths but no layers
-  // This ensures the user sees "1 layer" in the list, not just a preview
+  // This ensures the user sees layers in the list, not just a preview
+  // Creates one layer per unique color if multiple colors exist
   const hasAutoAddedFirstLayer = useRef(false)
   const firstLayerId = useRef<string | null>(null)
   useEffect(() => {
@@ -1685,97 +1768,127 @@ export default function FillTab() {
     if (simplifiedHatchedPaths.length > 0 && accumulatedLayers.length === 0 && !hasAutoAddedFirstLayer.current) {
       hasAutoAddedFirstLayer.current = true
 
-      // Generate a unique ID for this layer and store it for updates
-      const layerId = `layer-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-      firstLayerId.current = layerId
-
-      // Collect all lines from current preview into a single layer
-      const allLines: HatchLine[] = []
-      let totalLineCount = 0
-      simplifiedHatchedPaths.forEach(({ lines }) => {
-        allLines.push(...lines)
-        totalLineCount += lines.length
-      })
-
-      // Get the first path ID (for reference) and color
-      const firstPath = simplifiedHatchedPaths[0]?.pathInfo
-      const color = layerColor || firstPath?.color || '#000000'
-
-      // Create the first layer
-      const firstLayer: FillLayer = {
-        id: layerId,
-        lines: allLines,
-        color,
-        pathId: firstPath?.id || '',
-        angle,
-        lineSpacing,
-        pattern: fillPattern,
-        inset,
-        lineCount: totalLineCount,
-        penWidth,
+      // Group paths by color to create separate layers for each unique color
+      const pathsByColor = new Map<string, typeof simplifiedHatchedPaths>()
+      for (const hatchedPath of simplifiedHatchedPaths) {
+        const color = hatchedPath.pathInfo.color || '#000000'
+        if (!pathsByColor.has(color)) {
+          pathsByColor.set(color, [])
+        }
+        pathsByColor.get(color)!.push(hatchedPath)
       }
 
-      setAccumulatedLayers([firstLayer])
+      const newLayers: FillLayer[] = []
+      const baseTimestamp = Date.now()
+      let colorIndex = 0
+
+      // Create one layer per unique color
+      for (const [color, colorPaths] of pathsByColor) {
+        const layerId = `layer-${baseTimestamp}-${colorIndex}-${Math.random().toString(36).substr(2, 9)}`
+
+        // Store first layer ID for reference
+        if (colorIndex === 0) {
+          firstLayerId.current = layerId
+        }
+
+        // Collect lines for this color
+        const colorLines: HatchLine[] = []
+        colorPaths.forEach(({ lines }) => {
+          colorLines.push(...lines)
+        })
+
+        const firstPath = colorPaths[0]?.pathInfo
+
+        const newLayer: FillLayer = {
+          id: layerId,
+          lines: colorLines,
+          color,
+          originalColor: color,  // Store original for path matching
+          pathId: firstPath?.id || '',
+          angle,
+          lineSpacing,
+          pattern: fillPattern,
+          inset,
+          lineCount: colorLines.length,
+          penWidth,
+        }
+
+        newLayers.push(newLayer)
+        colorIndex++
+      }
+
+      setAccumulatedLayers(newLayers)
       // Select the first layer so it becomes editable
-      setSelectedLayerIds(new Set([layerId]))
+      if (newLayers.length > 0) {
+        setSelectedLayerIds(new Set([newLayers[0].id]))
+      }
       // Don't rotate angle - keep it the same so layer 1 reflects current settings
     }
   }, [simplifiedHatchedPaths.length, accumulatedLayers.length])
 
-  // Update the selected layer when settings change
-  // This provides live preview as user adjusts settings for any layer
+  // Update selected layers when settings change
+  // This provides live preview as user adjusts settings
+  // When multiple layers are selected, applies the same pattern/settings to all of them
   useEffect(() => {
     // Don't update if a pending layer is being populated
     if (pendingLayerId.current) return
 
-    // Only update when exactly 1 layer is selected (editing mode, not multi-select for weave)
-    if (selectedLayerIds.size !== 1 || simplifiedHatchedPaths.length === 0) return
+    // Need at least one layer selected and some paths
+    if (selectedLayerIds.size === 0 || simplifiedHatchedPaths.length === 0) return
 
-    const editingLayerId = Array.from(selectedLayerIds)[0]
+    const selectedIds = Array.from(selectedLayerIds)
 
-    // Collect lines from current hatch preview
-    const allLines: HatchLine[] = []
-    let totalLineCount = 0
-    simplifiedHatchedPaths.forEach(({ lines }) => {
-      allLines.push(...lines)
-      totalLineCount += lines.length
-    })
-
-    const firstPath = simplifiedHatchedPaths[0]?.pathInfo
-    const color = layerColor || firstPath?.color || '#000000'
-
-    // Update the selected layer with new settings/lines
+    // Update all selected layers with the current settings
     setAccumulatedLayers(prev => {
-      const layer = prev.find(l => l.id === editingLayerId)
-      if (!layer) return prev
+      let hasChanges = false
 
-      // Check if anything actually changed to avoid unnecessary updates
-      if (layer.lineCount === totalLineCount &&
-          layer.angle === angle &&
-          layer.lineSpacing === lineSpacing &&
-          layer.pattern === fillPattern &&
-          layer.inset === inset &&
-          layer.penWidth === penWidth &&
-          layer.color === color) {
-        return prev
-      }
+      const updated = prev.map(layer => {
+        // Only update layers that are selected
+        if (!selectedIds.includes(layer.id)) return layer
 
-      return prev.map(l => {
-        if (l.id === editingLayerId) {
-          return {
-            ...l,
-            lines: allLines,
-            color,
-            angle,
-            lineSpacing,
-            pattern: fillPattern,
-            inset,
-            lineCount: totalLineCount,
-            penWidth,
+        // Determine the target color for this layer
+        // If user set a layerColor override, use that; otherwise keep the layer's current color
+        // Note: layerColor override only applies when single layer is selected
+        const targetColor = (selectedLayerIds.size === 1 && layerColor) ? layerColor : layer.color
+
+        // Collect lines from paths matching this layer's ORIGINAL color
+        // This ensures each color layer only gets lines from paths of that color
+        // even if the display color has been overridden
+        const colorLines: HatchLine[] = []
+        simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
+          // Include lines if path matches the layer's original color (not the display color)
+          if (pathInfo.color === layer.originalColor) {
+            colorLines.push(...lines)
           }
+        })
+
+        // Check if anything actually changed to avoid unnecessary updates
+        if (colorLines.length === layer.lineCount &&
+            layer.angle === angle &&
+            layer.lineSpacing === lineSpacing &&
+            layer.pattern === fillPattern &&
+            layer.inset === inset &&
+            layer.penWidth === penWidth &&
+            layer.color === targetColor) {
+          return layer
         }
-        return l
+
+        hasChanges = true
+        return {
+          ...layer,
+          lines: colorLines,
+          color: targetColor,
+          // originalColor is preserved via spread
+          angle,
+          lineSpacing,
+          pattern: fillPattern,
+          inset,
+          lineCount: colorLines.length,
+          penWidth,
+        }
       })
+
+      return hasChanges ? updated : prev
     })
   }, [simplifiedHatchedPaths, layerColor, angle, lineSpacing, fillPattern, inset, penWidth, selectedLayerIds])
 

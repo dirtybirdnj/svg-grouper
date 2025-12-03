@@ -197,7 +197,8 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
           // Spiral with evenodd - clip the global spiral using evenodd rule
           allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
         } else {
-          // For other patterns (concentric, etc.), process each subpath independently
+          // For other patterns, process each subpath independently
+          // These patterns don't benefit from evenodd clipping, so we process each subpath as a separate polygon
           for (const subpath of subpaths) {
             if (subpath.length < 3) continue
             const polygonData: PolygonWithHoles = { outer: subpath, holes: [] }
@@ -206,6 +207,47 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
             switch (fillPattern) {
               case 'concentric':
                 lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                break
+              case 'wiggle':
+                lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+                break
+              case 'honeycomb':
+                lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+                break
+              case 'gyroid':
+                lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+                break
+              case 'zigzag':
+                lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
+                break
+              case 'radial':
+                lines = generateRadialLines(polygonData, lineSpacing, inset)
+                break
+              case 'crossspiral':
+                lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                break
+              case 'hilbert':
+                if (singleHilbert) {
+                  lines = clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
+                } else {
+                  lines = generateHilbertLines(polygonData, lineSpacing, inset)
+                }
+                break
+              case 'fermat':
+                if (singleFermat) {
+                  lines = clipFermatToPolygon(globalFermatLines, polygonData, inset)
+                } else {
+                  lines = generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                }
+                break
+              case 'wave':
+                lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+                break
+              case 'scribble':
+                lines = generateScribbleLines(polygonData, lineSpacing, inset)
+                break
+              case 'custom':
+                lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
                 break
               default:
                 break
@@ -223,29 +265,34 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
 
           let lines: HatchLine[] = []
 
-          switch (fillPattern) {
-            case 'concentric':
-              lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
-              break
-            case 'wiggle':
-              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-              break
-            case 'spiral':
-              if (singleSpiral) {
-                lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-              } else {
-                lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-              }
-              break
-            case 'honeycomb':
-              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-              break
-            case 'gyroid':
-              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-              break
-            case 'crosshatch':
-              lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-              break
+          try {
+            switch (fillPattern) {
+              case 'concentric':
+                lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                break
+              case 'wiggle':
+                lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
+                console.log(`[fillWorker] wiggle: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices, bbox: ${JSON.stringify(boundingBox)}`)
+                break
+              case 'spiral':
+                if (singleSpiral) {
+                  lines = clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
+                } else {
+                  lines = generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
+                }
+                break
+              case 'honeycomb':
+                lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
+                console.log(`[fillWorker] honeycomb: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+                break
+              case 'gyroid':
+                lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
+                console.log(`[fillWorker] gyroid: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+                break
+              case 'crosshatch':
+                lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
+                console.log(`[fillWorker] crosshatch: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
+                break
             case 'zigzag':
               lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
               break
@@ -292,6 +339,9 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
               }
               break
             }
+          }
+          } catch (patternError) {
+            console.error(`[fillWorker] Error generating ${fillPattern} pattern:`, patternError)
           }
 
           // Use push to avoid O(n²) array allocations from spread operator

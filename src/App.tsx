@@ -4,6 +4,7 @@ import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
 import { SortTab, FillTab, ExportTab } from './components/tabs'
 import OrderTab from './components/tabs/OrderTab'
 import MergeTab from './components/tabs/MergeTab'
+import PatternTest from './components/PatternTest'
 import { SVGNode } from './types/svg'
 import { getElementColor } from './utils/elementColor'
 import { normalizeColor } from './utils/colorExtractor'
@@ -22,7 +23,6 @@ function AppContent() {
     setShowCrop,
     flattenArmed,
     setFlattenArmed,
-    setCropArmed,
     setStatusMessage,
     layerNodes,
     setLayerNodes,
@@ -116,6 +116,9 @@ function AppContent() {
   const strokePanelRef = useRef<HTMLDivElement>(null)
   const strokeButtonRef = useRef<HTMLButtonElement>(null)
 
+  // Pattern test harness
+  const [showPatternTest, setShowPatternTest] = useState(false)
+
   const handleZoomIn = () => {
     setScale(Math.min(10, scale * 1.2))
   }
@@ -131,14 +134,12 @@ function AppContent() {
 
   const disarmActions = () => {
     setFlattenArmed(false)
-    setCropArmed(false)
     setStatusMessage('')
   }
 
   const handleFlattenAll = () => {
     if (!flattenArmed) {
       setFlattenArmed(true)
-      setCropArmed(false)
       setStatusMessage('Click Flatten again to confirm')
       return
     }
@@ -687,13 +688,12 @@ function AppContent() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && showCrop) {
         setShowCrop(false)
-        setCropArmed(false)
         setStatusMessage('')
       }
     }
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [showCrop, setShowCrop, setCropArmed, setStatusMessage])
+  }, [showCrop, setShowCrop, setStatusMessage])
 
   // Auto-flatten when pendingFlatten is set (after import with flattenOnImport enabled)
   useEffect(() => {
@@ -801,6 +801,13 @@ function AppContent() {
           <span className="app-icon">📐</span>
           <h1>SVG Grouper</h1>
           <span className={`processing-gear ${isProcessing ? 'spinning' : ''}`} title={isProcessing ? 'Processing...' : ''}>⚙</span>
+          <button
+            className="pattern-test-link"
+            onClick={() => setShowPatternTest(true)}
+            title="Open Pattern Test Harness"
+          >
+            Pattern Test
+          </button>
         </div>
         {svgStats.totalElements > 0 && (
           <div className="header-stats" title="Total Elements / Groups / Paths">
@@ -1013,11 +1020,17 @@ function AppContent() {
         )}
       </header>
       <div className="app-content">
-        {activeTab === 'sort' && <SortTab />}
-        {activeTab === 'merge' && <MergeTab />}
-        {activeTab === 'fill' && <FillTab />}
-        {activeTab === 'order' && <OrderTab />}
-        {activeTab === 'export' && <ExportTab />}
+        {showPatternTest ? (
+          <PatternTest onBack={() => setShowPatternTest(false)} />
+        ) : (
+          <>
+            {activeTab === 'sort' && <SortTab />}
+            {activeTab === 'merge' && <MergeTab />}
+            {activeTab === 'fill' && <FillTab />}
+            {activeTab === 'order' && <OrderTab />}
+            {activeTab === 'export' && <ExportTab />}
+          </>
+        )}
       </div>
     </div>
   )

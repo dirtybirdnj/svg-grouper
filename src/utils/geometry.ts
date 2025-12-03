@@ -1279,6 +1279,55 @@ export function linesToOptimizedCompoundPath(
 }
 
 // ============================================
+// Math Utilities
+// ============================================
+
+/**
+ * Calculate the centroid (center of mass) of a polygon
+ */
+export function getCentroid(points: Point[]): Point {
+  if (points.length === 0) return { x: 0, y: 0 }
+  const sumX = points.reduce((sum, p) => sum + p.x, 0)
+  const sumY = points.reduce((sum, p) => sum + p.y, 0)
+  return { x: sumX / points.length, y: sumY / points.length }
+}
+
+/**
+ * Calculate the bounding box of a set of points
+ */
+export function getBoundingBox(points: Point[]): Rect {
+  if (points.length === 0) {
+    return { x: 0, y: 0, width: 0, height: 0 }
+  }
+
+  let minX = Infinity, minY = Infinity
+  let maxX = -Infinity, maxY = -Infinity
+
+  for (const p of points) {
+    minX = Math.min(minX, p.x)
+    minY = Math.min(minY, p.y)
+    maxX = Math.max(maxX, p.x)
+    maxY = Math.max(maxY, p.y)
+  }
+
+  return {
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY
+  }
+}
+
+/**
+ * Squared distance between two points (faster than distance() when comparing)
+ */
+export function distanceSquared(p1: Point, p2: Point): number {
+  const dx = p2.x - p1.x
+  const dy = p2.y - p1.y
+  return dx * dx + dy * dy
+}
+
+// ============================================
 // Rectangular Clipping Functions (for cropping)
 // ============================================
 

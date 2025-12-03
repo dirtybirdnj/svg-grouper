@@ -4,6 +4,8 @@ import { SVGNode } from '../../types/svg'
 import defaultPaperSizes from '../../config/paperSizes.json'
 import fontColorContrast from 'font-color-contrast'
 import { optimizeForPlotter } from '../../utils/geometry'
+import { getPlotterColor } from '../../utils/elementColor'
+import { MM_TO_PX, UI } from '../../constants'
 import './ExportTab.css'
 
 // Paper size type
@@ -14,9 +16,6 @@ interface PaperSize {
   height: number
   unit: string
 }
-
-// Convert mm to pixels (assuming 96 DPI, 1 inch = 25.4mm)
-const MM_TO_PX = 96 / 25.4
 
 // Local storage key for custom paper sizes
 const PAPER_SIZES_STORAGE_KEY = 'svg-grouper-paper-sizes'
@@ -99,32 +98,6 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
     return commands.length
   }
 
-  const getElementColor = (element: Element, fillColor?: string): string | null => {
-    // Check for fillColor from line fill (customMarkup nodes)
-    if (fillColor) return fillColor
-
-    const fill = element.getAttribute('fill')
-    const stroke = element.getAttribute('stroke')
-    const style = element.getAttribute('style')
-
-    // Prefer stroke for paths (pen plotter context)
-    if (stroke && stroke !== 'none' && stroke !== 'transparent') {
-      return stroke
-    }
-    if (fill && fill !== 'none' && fill !== 'transparent') {
-      return fill
-    }
-
-    if (style) {
-      const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-      if (strokeMatch && strokeMatch[1] !== 'none') return strokeMatch[1].trim()
-      const fillMatch = style.match(/fill:\s*([^;]+)/)
-      if (fillMatch && fillMatch[1] !== 'none') return fillMatch[1].trim()
-    }
-
-    return null
-  }
-
   const addColorStats = (color: string, paths: number, points: number) => {
     const existing = colorStats.get(color)
     if (existing) {
@@ -149,7 +122,7 @@ function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
       countOperations(node.element)
 
       // Track color stats
-      const color = getElementColor(node.element, node.fillColor)
+      const color = getPlotterColor(node.element, node.fillColor)
       if (color) {
         const points = countPoints(node.element)
         addColorStats(color, 1, points)
@@ -517,7 +490,7 @@ export default function ExportTab() {
     if (!previewRef.current || !pageDimensions) return
 
     const rect = previewRef.current.getBoundingClientRect()
-    const padding = 40
+    const padding = UI.PREVIEW_PADDING_LARGE
     const availableWidth = rect.width - padding
     const availableHeight = rect.height - padding
 
@@ -806,34 +779,6 @@ export default function ExportTab() {
     )
   }
 
-  // Helper to get element's color (stroke or fill)
-  const getElementColor = (el: Element): string | null => {
-    const stroke = el.getAttribute('stroke')
-    const fill = el.getAttribute('fill')
-    const style = el.getAttribute('style') || ''
-
-    // Prefer stroke for pen plotter context
-    if (stroke && stroke !== 'none' && stroke !== 'transparent') {
-      return stroke.toLowerCase()
-    }
-
-    const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-    if (strokeMatch && strokeMatch[1] !== 'none' && strokeMatch[1] !== 'transparent') {
-      return strokeMatch[1].trim().toLowerCase()
-    }
-
-    if (fill && fill !== 'none' && fill !== 'transparent') {
-      return fill.toLowerCase()
-    }
-
-    const fillMatch = style.match(/fill:\s*([^;]+)/)
-    if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1] !== 'transparent') {
-      return fillMatch[1].trim().toLowerCase()
-    }
-
-    return null
-  }
-
   // Helper to create color name for filename
   const colorToFileName = (color: string): string => {
     // Remove # from hex colors, replace special chars
@@ -984,7 +929,7 @@ export default function ExportTab() {
       const collectByColor = (el: Element) => {
         const tagName = el.tagName.toLowerCase()
         if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName)) {
-          const color = getElementColor(el)
+          const color = getPlotterColor(el)
           if (color) {
             const existing = colorMap.get(color) || []
             existing.push(el)

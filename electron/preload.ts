@@ -1,63 +1,28 @@
 import { contextBridge, ipcRenderer } from 'electron'
-
-// Type definitions for fill generation (matches electron/fillGenerator.ts)
-interface FillGenerationParams {
-  paths: Array<{
-    id: string
-    color: string
-    polygons: Array<{ outer: Array<{ x: number; y: number }>; holes: Array<Array<{ x: number; y: number }>> }>
-    rawSubpaths?: Array<Array<{ x: number; y: number }>> // For evenodd mode
-  }>
-  boundingBox: { x: number; y: number; width: number; height: number }
-  fillPattern: string
-  lineSpacing: number
-  angle: number
-  crossHatch: boolean
-  inset: number
-  wiggleAmplitude: number
-  wiggleFrequency: number
-  spiralOverDiameter: number
-  singleSpiral: boolean
-  singleHilbert: boolean
-  singleFermat: boolean
-  customTileShape: string
-  customTileGap: number
-  customTileScale: number
-  customTileRotateOffset: number
-  enableCrop: boolean
-  cropInset: number
-  useEvenOdd: boolean // Use evenodd fill rule for compound paths
-}
-
-interface FillGenerationResult {
-  paths: Array<{
-    pathId: string
-    lines: Array<{ x1: number; y1: number; x2: number; y2: number }>
-    polygon: Array<{ x: number; y: number }>
-  }>
-  success: boolean
-  error?: string
-}
-
-interface HatchLine {
-  x1: number
-  y1: number
-  x2: number
-  y2: number
-}
+import type {
+  FillGenerationParams,
+  FillGenerationResult,
+  HatchLine,
+  FileOpenedData,
+  ExportFilesArgs,
+  CropSVGArgs,
+  FlattenShapesArgs,
+  NormalizeSVGArgs,
+  FillProgressData,
+} from './types'
 
 contextBridge.exposeInMainWorld('electron', {
   onMainMessage: (callback: (message: string) => void) => {
     ipcRenderer.on('main-process-message', (_event, message) => callback(message))
   },
   // Normalize SVG coordinates (transform viewBox to start at 0,0)
-  normalizeSVG: (args: { svg: string }) => {
+  normalizeSVG: (args: NormalizeSVGArgs) => {
     return ipcRenderer.invoke('normalize-svg', args)
   },
-  cropSVG: (args: { svg: string; x: number; y: number; width: number; height: number }) => {
+  cropSVG: (args: CropSVGArgs) => {
     return ipcRenderer.invoke('crop-svg', args)
   },
-  flattenShapes: (args: { svg: string; color: string }) => {
+  flattenShapes: (args: FlattenShapesArgs) => {
     return ipcRenderer.invoke('flatten-shapes', args)
   },
   // Menu command listener
@@ -65,11 +30,11 @@ contextBridge.exposeInMainWorld('electron', {
     ipcRenderer.on('menu-command', (_event, command) => callback(command))
   },
   // File opened from menu
-  onFileOpened: (callback: (data: { content: string; fileName: string; filePath: string }) => void) => {
+  onFileOpened: (callback: (data: FileOpenedData) => void) => {
     ipcRenderer.on('file-opened', (_event, data) => callback(data))
   },
   // Export multiple files to a directory
-  exportMultipleFiles: (args: { files: { name: string; content: string }[]; baseName: string }) => {
+  exportMultipleFiles: (args: ExportFilesArgs) => {
     return ipcRenderer.invoke('export-multiple-files', args)
   },
   // Fill generation (runs in main process for better performance)
@@ -81,7 +46,7 @@ contextBridge.exposeInMainWorld('electron', {
     return ipcRenderer.invoke('optimize-fill-lines', lines)
   },
   // Fill generation progress listener
-  onFillProgress: (callback: (data: { progress: number; status: string }) => void) => {
+  onFillProgress: (callback: (data: FillProgressData) => void) => {
     ipcRenderer.on('fill-progress', (_event, data) => callback(data))
   },
   // Remove fill progress listener
