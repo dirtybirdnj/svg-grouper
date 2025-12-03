@@ -1,4 +1,4 @@
-export type TabKey = 'sort' | 'fill' | 'order' | 'export'
+export type TabKey = 'sort' | 'merge' | 'fill' | 'order' | 'export'
 
 export interface TabDefinition {
   key: TabKey
@@ -8,6 +8,7 @@ export interface TabDefinition {
 
 export const TABS: TabDefinition[] = [
   { key: 'sort', label: 'Sort', icon: '📑' },
+  { key: 'merge', label: 'Merge', icon: '⊕' },
   { key: 'fill', label: 'Fill', icon: '▤' },
   { key: 'order', label: 'Order', icon: '🔀' },
   { key: 'export', label: 'Export', icon: '💾' },

@@ -428,6 +428,11 @@ function createMenu() {
           click: () => sendMenuCommand('fill')
         },
         {
+          label: 'Weave',
+          accelerator: 'CmdOrCtrl+Shift+W',
+          click: () => sendMenuCommand('weave')
+        },
+        {
           label: 'Optimize Order',
           accelerator: 'CmdOrCtrl+Shift+O',
           click: () => sendMenuCommand('order')

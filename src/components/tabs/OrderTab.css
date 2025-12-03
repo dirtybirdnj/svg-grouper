@@ -249,8 +249,8 @@
 /* Speed controls */
 .speed-controls {
   display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 
 .speed-label {
@@ -258,42 +258,57 @@
   color: #666;
 }
 
-.speed-buttons {
+.speed-slider-row {
   display: flex;
-  gap: 0.25rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.speed-slow,
+.speed-fast {
+  font-size: 0.7rem;
+  color: #999;
+  white-space: nowrap;
+}
+
+.speed-slider {
   flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #ddd;
+  border-radius: 2px;
+  outline: none;
 }
 
-.speed-btn {
-  flex: 1;
-  padding: 0.35rem 0.5rem;
-  border: 1px solid #ddd;
-  background: #f8f8f8;
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.speed-btn:first-child {
-  border-radius: 4px 0 0 4px;
-}
-
-.speed-btn:last-child {
-  border-radius: 0 4px 4px 0;
-}
-
-.speed-btn:not(:last-child) {
-  border-right: none;
-}
-
-.speed-btn:hover:not(.active) {
-  background: #eee;
-}
-
-.speed-btn.active {
+.speed-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
   background: #9b59b6;
-  color: white;
-  border-color: #9b59b6;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.speed-slider::-webkit-slider-thumb:hover {
+  background: #8e44ad;
+}
+
+.speed-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #9b59b6;
+  cursor: pointer;
+  border: none;
+}
+
+.speed-value {
+  font-size: 0.75rem;
+  color: #666;
+  text-align: center;
 }
 
 /* Display controls */

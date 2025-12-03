@@ -1,9 +1,9 @@
 import { useEffect, useState, useRef, useMemo } from 'react'
 import './App.css'
 import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
-import TabNavigation from './components/TabNavigation'
 import { SortTab, FillTab, ExportTab } from './components/tabs'
 import OrderTab from './components/tabs/OrderTab'
+import MergeTab from './components/tabs/MergeTab'
 import { SVGNode } from './types/svg'
 import { getElementColor } from './utils/elementColor'
 import { normalizeColor } from './utils/colorExtractor'
@@ -30,11 +30,14 @@ function AppContent() {
     selectedNodeIds,
     setSelectedNodeIds,
     setFillTargetNodeIds,
+    setWeaveRequested,
     rebuildSvgFromLayers,
     setOrderData,
     isProcessing,
     arrangeHandlers,
     toolHandlers,
+    pendingFlatten,
+    setPendingFlatten,
   } = useAppContext()
 
   // Calculate SVG stats from layer nodes
@@ -692,6 +695,17 @@ function AppContent() {
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [showCrop, setShowCrop, setCropArmed, setStatusMessage])
 
+  // Auto-flatten when pendingFlatten is set (after import with flattenOnImport enabled)
+  useEffect(() => {
+    if (pendingFlatten && layerNodes.length > 0) {
+      setPendingFlatten(false)
+      // Use a short delay to ensure DOM is ready
+      setTimeout(() => {
+        handleFlattenAll()
+      }, 100)
+    }
+  }, [pendingFlatten, layerNodes.length, setPendingFlatten])
+
   // Handle menu commands from Electron
   useEffect(() => {
     if (!window.electron) return
@@ -704,6 +718,13 @@ function AppContent() {
           break
         case 'fill':
           handleFill()
+          break
+        case 'weave':
+          // Navigate to fill tab if not already there, and trigger weave
+          if (activeTab !== 'fill') {
+            setActiveTab('fill')
+          }
+          setWeaveRequested(true)
           break
         case 'order':
           handleOrder()
@@ -790,10 +811,39 @@ function AppContent() {
             <span style={{ color: '#3498db', fontWeight: 'bold' }}>{svgStats.paths.toLocaleString()}</span>
           </div>
         )}
-        <TabNavigation />
         {svgContent && (
           <div className="header-right-controls">
             <div className="header-function-buttons">
+              <button
+                onClick={() => setActiveTab('sort')}
+                className="function-button"
+                disabled={activeTab === 'sort'}
+                title={activeTab === 'sort' ? "Already on Sort view" : "Go to Sort view"}
+                style={{
+                  background: activeTab === 'sort' ? '#2980b9' : '#3498db',
+                  opacity: 1,
+                  cursor: activeTab === 'sort' ? 'default' : 'pointer',
+                }}
+              >
+                ⋮⋮ Sort
+              </button>
+              <button
+                onClick={() => setActiveTab('merge')}
+                className="function-button"
+                disabled={activeTab === 'merge' || selectedNodeIds.size === 0}
+                title={
+                  activeTab === 'merge' ? "Already on Merge view" :
+                  selectedNodeIds.size === 0 ? "Select a group or shapes to merge" :
+                  "Merge shapes (union adjacent polygons)"
+                }
+                style={{
+                  background: activeTab === 'merge' ? '#16a085' : (selectedNodeIds.size >= 1 ? '#1abc9c' : '#bdc3c7'),
+                  opacity: selectedNodeIds.size >= 1 || activeTab === 'merge' ? 1 : 0.5,
+                  cursor: (activeTab === 'merge' || selectedNodeIds.size === 0) ? 'not-allowed' : 'pointer',
+                }}
+              >
+                ⊕ Merge
+              </button>
               <div className="stroke-button-container">
                 <button
                   ref={strokeButtonRef}
@@ -939,6 +989,19 @@ function AppContent() {
               >
                 {showCrop ? '✕ Crop' : '◫ Crop'}
               </button>
+              <button
+                onClick={() => setActiveTab('export')}
+                className="function-button"
+                disabled={activeTab === 'export'}
+                title={activeTab === 'export' ? "Already on Export view" : "Go to Export view"}
+                style={{
+                  background: activeTab === 'export' ? '#1a1a1a' : '#2c2c2c',
+                  opacity: 1,
+                  cursor: activeTab === 'export' ? 'default' : 'pointer',
+                }}
+              >
+                ⬇ Export
+              </button>
             </div>
             <div className="header-zoom-controls">
               <button onClick={handleZoomIn} title="Zoom In">+</button>
@@ -951,6 +1014,7 @@ function AppContent() {
       </header>
       <div className="app-content">
         {activeTab === 'sort' && <SortTab />}
+        {activeTab === 'merge' && <MergeTab />}
         {activeTab === 'fill' && <FillTab />}
         {activeTab === 'order' && <OrderTab />}
         {activeTab === 'export' && <ExportTab />}

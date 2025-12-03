@@ -437,3 +437,45 @@
   color: #b91c1c;
   font-size: 0.875rem;
 }
+
+/* Color Palette */
+.import-colors {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.import-colors h4 {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #374151;
+  margin: 0 0 8px 0;
+}
+
+.import-color-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.import-color-swatch {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  transition: transform 0.1s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.import-color-swatch:hover {
+  transform: scale(1.1);
+}
+
+.import-color-swatch .color-count {
+  font-size: 0.65rem;
+  font-weight: 600;
+  opacity: 0.9;
+}

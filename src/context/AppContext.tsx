@@ -132,6 +132,10 @@ interface AppContextType {
   fillTargetNodeIds: string[]
   setFillTargetNodeIds: (ids: string[]) => void
 
+  // Weave mode state - set to true when menu command is triggered
+  weaveRequested: boolean
+  setWeaveRequested: (requested: boolean) => void
+
   // Order mode state
   orderData: OrderData | null
   setOrderData: (data: OrderData | null) => void
@@ -139,6 +143,14 @@ interface AppContextType {
   // Processing state (for spinning gear indicator)
   isProcessing: boolean
   setIsProcessing: (processing: boolean) => void
+
+  // Import settings
+  flattenOnImport: boolean
+  setFlattenOnImport: (flatten: boolean) => void
+
+  // Pending flatten flag (set by SortTab after parsing when flattenOnImport is true)
+  pendingFlatten: boolean
+  setPendingFlatten: (pending: boolean) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -415,11 +427,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Fill mode state - supports multiple selected nodes
   const [fillTargetNodeIds, setFillTargetNodeIds] = useState<string[]>([])
 
+  // Weave mode state - set to true when menu command is triggered
+  const [weaveRequested, setWeaveRequested] = useState(false)
+
   // Order mode state
   const [orderData, setOrderData] = useState<OrderData | null>(null)
 
   // Processing state (for spinning gear indicator)
   const [isProcessing, setIsProcessing] = useState(false)
+
+  // Import settings - persist to localStorage
+  const [flattenOnImport, setFlattenOnImportState] = useState(() => {
+    try {
+      const stored = localStorage.getItem('svg-grouper-flatten-on-import')
+      return stored === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  const setFlattenOnImport = useCallback((flatten: boolean) => {
+    setFlattenOnImportState(flatten)
+    try {
+      localStorage.setItem('svg-grouper-flatten-on-import', String(flatten))
+    } catch {
+      // localStorage not available
+    }
+  }, [])
+
+  // Pending flatten flag
+  const [pendingFlatten, setPendingFlatten] = useState(false)
 
   const handleLoadStart = useCallback(() => {
     setLoadingState({
@@ -492,10 +529,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setStatusMessage,
     fillTargetNodeIds,
     setFillTargetNodeIds,
+    weaveRequested,
+    setWeaveRequested,
     orderData,
     setOrderData,
     isProcessing,
     setIsProcessing,
+    flattenOnImport,
+    setFlattenOnImport,
+    pendingFlatten,
+    setPendingFlatten,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

@@ -1,0 +1,623 @@
+.merge-tab {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
+  background: #f5f5f5;
+  overflow: hidden;
+}
+
+.merge-tab.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.merge-tab .empty-content {
+  text-align: center;
+  color: #999;
+}
+
+.merge-tab .empty-content h3 {
+  margin-bottom: 0.5rem;
+  color: #666;
+}
+
+.merge-tab .empty-content .hint {
+  font-size: 0.85rem;
+  color: #aaa;
+  margin-top: 0.5rem;
+}
+
+.merge-tab .back-button {
+  margin-top: 1rem;
+  padding: 0.5rem 1rem;
+  background: #1abc9c;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.merge-tab .back-button:hover {
+  background: #16a085;
+}
+
+.merge-sidebar {
+  width: 280px;
+  min-width: 250px;
+  height: 100%;
+  background: #ffffff;
+  border-right: 1px solid #ddd;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.merge-sidebar .sidebar-header {
+  padding: 1rem;
+  border-bottom: 1px solid #ddd;
+  background: #fafafa;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.merge-sidebar .sidebar-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #333;
+}
+
+.back-link {
+  background: none;
+  border: none;
+  color: #1abc9c;
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 0;
+}
+
+.back-link:hover {
+  text-decoration: underline;
+}
+
+.merge-sidebar .sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.merge-section {
+  margin-bottom: 1.5rem;
+}
+
+.merge-section h3 {
+  font-size: 0.9rem;
+  color: #333;
+  margin: 0 0 0.75rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+
+.merge-section .hint {
+  font-size: 0.75rem;
+  color: #999;
+  margin-top: 0.25rem;
+}
+
+/* Shape list */
+.shape-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.5rem;
+  background: #fafafa;
+}
+
+.shape-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 3px;
+  background: white;
+  border: 1px solid #eee;
+}
+
+.shape-item.clickable {
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.shape-item.clickable:hover {
+  background: #f0f9f7;
+  border-color: #1abc9c;
+}
+
+.shape-item.selected {
+  background: #e8f5e9;
+  border-color: #4caf50;
+}
+
+.shape-checkbox {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ccc;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  color: #4caf50;
+  flex-shrink: 0;
+  background: white;
+}
+
+.shape-item.selected .shape-checkbox {
+  background: #4caf50;
+  border-color: #4caf50;
+  color: white;
+}
+
+.shape-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.shape-name {
+  flex: 1;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shape-vertices {
+  font-size: 0.7rem;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Holes indicator */
+.shape-holes {
+  font-size: 0.65rem;
+  color: #9b59b6;
+  margin-left: 2px;
+}
+
+/* Touch badge - shows how many shapes this one touches */
+.shape-touch-badge {
+  font-size: 0.6rem;
+  color: #27ae60;
+  background: #e8f5e9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+}
+
+/* Highlight shapes that touch selected ones */
+.shape-item.touches-selected {
+  background: #fff3e0;
+  border-color: #ff9800;
+}
+
+.shape-item.touches-selected:hover {
+  background: #ffe0b2;
+}
+
+/* Selection buttons */
+.selection-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.mini-btn {
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  background: #f8f8f8;
+  cursor: pointer;
+  color: #666;
+}
+
+.mini-btn:hover {
+  background: #eee;
+  border-color: #ccc;
+}
+
+/* Operation buttons */
+.operation-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.operation-btn {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #f8f8f8;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.operation-btn:hover:not(:disabled) {
+  background: #eee;
+  border-color: #ccc;
+}
+
+.operation-btn.active {
+  background: #1abc9c;
+  border-color: #1abc9c;
+  color: white;
+}
+
+.operation-btn.disabled,
+.operation-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Tolerance control */
+.tolerance-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tolerance-control input[type="range"] {
+  flex: 1;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #ddd;
+  border-radius: 2px;
+  outline: none;
+}
+
+.tolerance-control input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #1abc9c;
+  cursor: pointer;
+}
+
+.tolerance-value {
+  font-size: 0.8rem;
+  color: #666;
+  min-width: 50px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Statistics */
+.merge-stats {
+  background: #f8f8f8;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.75rem;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+}
+
+.stat-row:not(:last-child) {
+  border-bottom: 1px solid #eee;
+}
+
+.stat-label {
+  color: #666;
+}
+
+.stat-value {
+  color: #333;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-row.highlight {
+  background: #e8f5e9;
+  margin: 0.35rem -0.75rem -0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0 0 4px 4px;
+}
+
+.stat-row.highlight .stat-label {
+  color: #2e7d32;
+}
+
+.stat-row.highlight .stat-value {
+  color: #1b5e20;
+}
+
+/* Actions */
+.merge-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid #eee;
+}
+
+.apply-btn {
+  padding: 0.75rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: #1abc9c;
+  color: white;
+}
+
+.apply-btn:hover:not(:disabled) {
+  background: #16a085;
+}
+
+.apply-btn:disabled {
+  background: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.cancel-btn {
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: #f8f8f8;
+  color: #666;
+}
+
+.cancel-btn:hover {
+  background: #eee;
+}
+
+/* Main preview area */
+.merge-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f9f9f9;
+  overflow: hidden;
+  padding: 20px;
+  position: relative;
+  user-select: none;
+}
+
+/* Zoom controls */
+.merge-zoom-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 4px 8px;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  z-index: 10;
+}
+
+.merge-zoom-controls button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.merge-zoom-controls button:hover {
+  background: #f0f0f0;
+  border-color: #ccc;
+}
+
+.merge-zoom-controls .zoom-level {
+  font-size: 12px;
+  color: #666;
+  min-width: 45px;
+  text-align: center;
+}
+
+/* Preview container */
+.merge-preview-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.merge-preview-svg {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.original-shapes path {
+  transition: opacity 0.2s;
+}
+
+.merged-shape path {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
+}
+
+/* Clickable shapes in preview */
+.clickable-shape {
+  transition: all 0.15s;
+}
+
+.clickable-shape:hover {
+  filter: brightness(1.1);
+  stroke-width: 2 !important;
+}
+
+/* Import section */
+.import-section {
+  background: #f0f9f7;
+  border: 1px solid #d0ebe5;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.import-section h3 {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 0.5rem;
+}
+
+.import-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.import-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #1abc9c;
+  border-radius: 4px;
+  background: white;
+  color: #1abc9c;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.import-btn:hover {
+  background: #1abc9c;
+  color: white;
+}
+
+.import-btn.primary {
+  background: #1abc9c;
+  color: white;
+}
+
+.import-btn.primary:hover {
+  background: #16a085;
+  border-color: #16a085;
+}
+
+.import-btn .btn-icon {
+  font-size: 1rem;
+}
+
+/* Section header with clear button */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #eee;
+}
+
+.section-header h3 {
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.clear-btn {
+  font-size: 0.7rem;
+  color: #999;
+  background: none;
+  border: 1px solid #ddd;
+  padding: 0.2rem 0.5rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.clear-btn:hover {
+  background: #f5f5f5;
+  color: #666;
+}
+
+/* Empty hint */
+.empty-hint {
+  font-size: 0.8rem;
+  color: #999;
+  text-align: center;
+  padding: 1rem;
+  background: #fafafa;
+  border: 1px dashed #ddd;
+  border-radius: 4px;
+}
+
+/* Remove shape button */
+.remove-shape-btn {
+  width: 18px;
+  height: 18px;
+  border: none;
+  background: #f0f0f0;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  color: #999;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: all 0.15s;
+}
+
+.shape-item:hover .remove-shape-btn {
+  opacity: 1;
+}
+
+.remove-shape-btn:hover {
+  background: #e74c3c;
+  color: white;
+}
+
+/* Preview empty state */
+.preview-empty {
+  text-align: center;
+  color: #999;
+  padding: 2rem;
+}
+
+.preview-empty p {
+  margin: 0;
+  font-size: 0.9rem;
+}

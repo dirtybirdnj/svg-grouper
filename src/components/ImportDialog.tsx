@@ -6,7 +6,47 @@ import {
   DPI_OPTIONS,
   paperSizeToPixels
 } from '../utils/svgDimensions'
+import { useAppContext } from '../context/AppContext'
+import { normalizeColor } from '../utils/colorExtractor'
 import './ImportDialog.css'
+
+interface DetectedColor {
+  color: string
+  count: number
+}
+
+// Extract colors from SVG content
+function extractColorsFromSVG(svgContent: string): DetectedColor[] {
+  const colorCounts = new Map<string, number>()
+
+  // Parse color from various formats
+  const addColor = (color: string | null) => {
+    if (!color || color === 'none' || color === 'transparent' || color === 'inherit') return
+
+    // Normalize color to consistent format
+    const normalized = normalizeColor(color)
+    if (normalized) {
+      colorCounts.set(normalized, (colorCounts.get(normalized) || 0) + 1)
+    }
+  }
+
+  // Extract fill attributes
+  const fillMatches = svgContent.matchAll(/fill\s*[=:]\s*["']?([^"';\s>]+)/gi)
+  for (const match of fillMatches) {
+    addColor(match[1])
+  }
+
+  // Extract stroke attributes
+  const strokeMatches = svgContent.matchAll(/stroke\s*[=:]\s*["']?([^"';\s>]+)/gi)
+  for (const match of strokeMatches) {
+    addColor(match[1])
+  }
+
+  // Sort by count (most used first)
+  return Array.from(colorCounts.entries())
+    .map(([color, count]) => ({ color, count }))
+    .sort((a, b) => b.count - a.count)
+}
 
 interface ImportDialogProps {
   svgContent: string
@@ -17,6 +57,7 @@ interface ImportDialogProps {
 
 export default function ImportDialog({ svgContent, fileName, onConfirm, onCancel }: ImportDialogProps) {
   const previewRef = useRef<HTMLDivElement>(null)
+  const { flattenOnImport, setFlattenOnImport } = useAppContext()
 
   // Analyze SVG dimensions
   const dimensionInfo = useMemo(() => {
@@ -26,6 +67,11 @@ export default function ImportDialog({ svgContent, fileName, onConfirm, onCancel
       console.error('Failed to analyze SVG:', e)
       return null
     }
+  }, [svgContent])
+
+  // Extract colors from SVG
+  const detectedColors = useMemo(() => {
+    return extractColorsFromSVG(svgContent)
   }, [svgContent])
 
   // Import settings state
@@ -142,6 +188,47 @@ export default function ImportDialog({ svgContent, fileName, onConfirm, onCancel
                 dangerouslySetInnerHTML={{ __html: svgContent }}
               />
             </div>
+
+            {/* Color Palette */}
+            {detectedColors.length > 0 && (
+              <div className="import-colors">
+                <h4>Detected Colors ({detectedColors.length})</h4>
+                <div className="import-color-palette">
+                  {detectedColors.map((colorData, index) => {
+                    // Determine text color for contrast
+                    let textColor = '#333'
+                    try {
+                      // Simple luminance check
+                      const hex = colorData.color.replace('#', '')
+                      if (hex.length === 6) {
+                        const r = parseInt(hex.substr(0, 2), 16)
+                        const g = parseInt(hex.substr(2, 2), 16)
+                        const b = parseInt(hex.substr(4, 2), 16)
+                        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+                        textColor = luminance > 0.5 ? '#000' : '#fff'
+                      }
+                    } catch {
+                      // Keep default
+                    }
+
+                    return (
+                      <div
+                        key={index}
+                        className="import-color-swatch"
+                        title={`${colorData.color} (${colorData.count} uses)`}
+                        style={{
+                          backgroundColor: colorData.color,
+                          color: textColor,
+                          border: `1px solid ${textColor === '#000' ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.3)'}`
+                        }}
+                      >
+                        <span className="color-count">{colorData.count}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Dimension Info Section */}
@@ -304,6 +391,15 @@ export default function ImportDialog({ svgContent, fileName, onConfirm, onCancel
                   <span>Normalize coordinates to (0, 0) origin</span>
                 </label>
               )}
+
+              <label className="checkbox-label">
+                <input
+                  type="checkbox"
+                  checked={flattenOnImport}
+                  onChange={(e) => setFlattenOnImport(e.target.checked)}
+                />
+                <span>Flatten on import (ungroup and group by color)</span>
+              </label>
 
               <div className="output-summary">
                 <label>Output Size</label>

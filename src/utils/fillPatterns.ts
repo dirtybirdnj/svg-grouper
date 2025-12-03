@@ -326,6 +326,32 @@ export function generateHoneycombLines(
               })
               candidateSegments.push({ x1: inside.x, y1: inside.y, x2: closest.x, y2: closest.y })
             }
+          } else {
+            // Both points outside - check if line passes through polygon
+            const intersections = linePolygonIntersections(
+              { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y },
+              workingPolygon
+            )
+            // Need at least 2 intersections to have a segment inside
+            if (intersections.length >= 2) {
+              // Sort intersections by distance from p1
+              const sorted = intersections.sort((a, b) => {
+                const distA = Math.pow(a.x - p1.x, 2) + Math.pow(a.y - p1.y, 2)
+                const distB = Math.pow(b.x - p1.x, 2) + Math.pow(b.y - p1.y, 2)
+                return distA - distB
+              })
+              // Take pairs of intersections - segments between pairs are inside
+              for (let j = 0; j < sorted.length - 1; j += 2) {
+                const midX = (sorted[j].x + sorted[j + 1].x) / 2
+                const midY = (sorted[j].y + sorted[j + 1].y) / 2
+                if (pointInPolygon({ x: midX, y: midY }, workingPolygon)) {
+                  candidateSegments.push({
+                    x1: sorted[j].x, y1: sorted[j].y,
+                    x2: sorted[j + 1].x, y2: sorted[j + 1].y
+                  })
+                }
+              }
+            }
           }
 
           for (const seg of candidateSegments) {
@@ -405,7 +431,7 @@ export function generateWiggleLines(
   const straightLines = generateGlobalHatchLines(globalBbox, spacing, angleDegrees)
   const clippedLines = clipLinesToPolygon(straightLines, polygonData, inset)
 
-  const wiggleLines: HatchLine[] = []
+  const rawWiggleLines: HatchLine[] = []
 
   for (const line of clippedLines) {
     const wigglePoints = generateWiggleLine(
@@ -416,7 +442,7 @@ export function generateWiggleLines(
     )
 
     for (let i = 0; i < wigglePoints.length - 1; i++) {
-      wiggleLines.push({
+      rawWiggleLines.push({
         x1: wigglePoints[i].x,
         y1: wigglePoints[i].y,
         x2: wigglePoints[i + 1].x,
@@ -425,7 +451,9 @@ export function generateWiggleLines(
     }
   }
 
-  return wiggleLines
+  // Re-clip wiggle lines to polygon - the amplitude displacement can push
+  // segments outside the original polygon boundary
+  return clipLinesToPolygon(rawWiggleLines, polygonData, inset)
 }
 
 // Generate an Archimedean spiral from center outward
@@ -436,32 +464,12 @@ export function generateSpiralLines(
   angleDegrees: number = 0,
   overDiameter: number = 1.5
 ): HatchLine[] {
-  const { outer, holes } = polygonData
+  const { outer } = polygonData
   if (outer.length < 3) return []
 
-  let workingPolygon = outer
-  if (inset > 0) {
-    workingPolygon = offsetPolygon(outer, -inset)
-    if (workingPolygon.length < 3) return []
-  }
-
-  const workingHoles = holes.map(hole => {
-    if (inset > 0) {
-      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
-      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
-      return hole.map(p => {
-        const dx = p.x - centroidX
-        const dy = p.y - centroidY
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        const scale = (dist + inset) / dist
-        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
-      })
-    }
-    return hole
-  })
-
+  // Find bounding box for center calculation
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const p of workingPolygon) {
+  for (const p of outer) {
     minX = Math.min(minX, p.x)
     minY = Math.min(minY, p.y)
     maxX = Math.max(maxX, p.x)
@@ -472,7 +480,7 @@ export function generateSpiralLines(
   const centerY = (minY + maxY) / 2
 
   let maxRadius = 0
-  for (const p of workingPolygon) {
+  for (const p of outer) {
     const dist = Math.sqrt(Math.pow(p.x - centerX, 2) + Math.pow(p.y - centerY, 2))
     maxRadius = Math.max(maxRadius, dist)
   }
@@ -481,7 +489,7 @@ export function generateSpiralLines(
   const angleOffset = (angleDegrees * Math.PI) / 180
 
   const spiralPoints: Point[] = []
-  // Use finer angle step (0.02 rad) for better coverage, matching global spiral
+  // Use finer angle step (0.02 rad) for better coverage
   const angleStep = 0.02
   const radiusPerTurn = spacing
   let angle = 0
@@ -501,21 +509,16 @@ export function generateSpiralLines(
     if (spiralPoints.length > 50000) break
   }
 
-  const lines: HatchLine[] = []
+  // Convert points to raw line segments
+  const rawLines: HatchLine[] = []
   for (let i = 0; i < spiralPoints.length - 1; i++) {
     const p1 = spiralPoints[i]
     const p2 = spiralPoints[i + 1]
-
-    if (pointInPolygon(p1, workingPolygon) && pointInPolygon(p2, workingPolygon)) {
-      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
-      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
-      for (const seg of clippedSegments) {
-        lines.push(seg)
-      }
-    }
+    rawLines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
   }
 
-  return lines
+  // Clip all segments to polygon (handles boundary crossings and holes)
+  return clipLinesToPolygon(rawLines, polygonData, inset)
 }
 
 // Generate a single spiral from a given center point, returning raw lines (not clipped)
@@ -1131,32 +1134,12 @@ export function generateFermatLines(
   angleDegrees: number = 0,
   overDiameter: number = 1.5
 ): HatchLine[] {
-  const { outer, holes } = polygonData
+  const { outer } = polygonData
   if (outer.length < 3) return []
 
-  let workingPolygon = outer
-  if (inset > 0) {
-    workingPolygon = offsetPolygon(outer, -inset)
-    if (workingPolygon.length < 3) return []
-  }
-
-  const workingHoles = holes.map(hole => {
-    if (inset > 0) {
-      const centroidX = hole.reduce((sum, p) => sum + p.x, 0) / hole.length
-      const centroidY = hole.reduce((sum, p) => sum + p.y, 0) / hole.length
-      return hole.map(p => {
-        const dx = p.x - centroidX
-        const dy = p.y - centroidY
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        const scale = (dist + inset) / dist
-        return { x: centroidX + dx * scale, y: centroidY + dy * scale }
-      })
-    }
-    return hole
-  })
-
+  // Find bounding box for center calculation
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const p of workingPolygon) {
+  for (const p of outer) {
     minX = Math.min(minX, p.x)
     minY = Math.min(minY, p.y)
     maxX = Math.max(maxX, p.x)
@@ -1167,7 +1150,7 @@ export function generateFermatLines(
   const centerY = (minY + maxY) / 2
 
   let maxRadius = 0
-  for (const p of workingPolygon) {
+  for (const p of outer) {
     const dist = Math.sqrt(Math.pow(p.x - centerX, 2) + Math.pow(p.y - centerY, 2))
     maxRadius = Math.max(maxRadius, dist)
   }
@@ -1179,28 +1162,17 @@ export function generateFermatLines(
   // We want spacing between arms, so a = spacing / sqrt(2*PI)
   const a = spacing / Math.sqrt(2 * Math.PI)
 
-  // OPTIMIZATION: Bounding box check before expensive pointInPolygon
-  const inBounds = (p: Point): boolean => {
-    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY
-  }
-
   // OPTIMIZATION: Adaptive angle step - larger steps for outer rings
-  // This reduces points from 50k to ~10k while maintaining visual quality
   const getAngleStep = (currentAngle: number): number => {
-    // For small angles (center), use smaller steps for smoothness
-    // For larger angles (outer), use larger steps since arcs are longer
-    const baseStep = 0.15 // Increased from 0.05
+    const baseStep = 0.15
     const radius = a * Math.sqrt(currentAngle)
     if (radius < 1) return 0.1 // Very center needs fine detail
-    // Target arc length of about spacing/2 for consistent visual density
     const targetArcLength = spacing / 2
-    // Arc length = radius * angle_step, so angle_step = targetArcLength / radius
     return Math.min(0.5, Math.max(baseStep, targetArcLength / radius))
   }
 
   const spiralPoints: Point[] = []
   let angle = 0
-  // OPTIMIZATION: Reduced point limit from 50k to 15k
   const maxPoints = 15000
 
   while (spiralPoints.length < maxPoints) {
@@ -1232,45 +1204,23 @@ export function generateFermatLines(
     angle += getAngleStep(angle)
   }
 
-  const lines: HatchLine[] = []
+  // Convert points to raw line segments
+  const rawLines: HatchLine[] = []
 
-  // Process main spiral
   for (let i = 0; i < spiralPoints.length - 1; i++) {
     const p1 = spiralPoints[i]
     const p2 = spiralPoints[i + 1]
-
-    // OPTIMIZATION: Skip if both points clearly outside bounds
-    if (!inBounds(p1) && !inBounds(p2)) continue
-
-    const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
-    const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
-
-    if (p1In && p2In) {
-      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
-      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
-      lines.push(...clippedSegments)
-    }
+    rawLines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
   }
 
-  // Process mirror spiral
   for (let i = 0; i < mirrorPoints.length - 1; i++) {
     const p1 = mirrorPoints[i]
     const p2 = mirrorPoints[i + 1]
-
-    // OPTIMIZATION: Skip if both points clearly outside bounds
-    if (!inBounds(p1) && !inBounds(p2)) continue
-
-    const p1In = inBounds(p1) && pointInPolygon(p1, workingPolygon)
-    const p2In = inBounds(p2) && pointInPolygon(p2, workingPolygon)
-
-    if (p1In && p2In) {
-      const segment = { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y }
-      const clippedSegments = clipSegmentAroundHoles(segment, workingHoles)
-      lines.push(...clippedSegments)
-    }
+    rawLines.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y })
   }
 
-  return lines
+  // Clip all segments to polygon (handles boundary crossings and holes)
+  return clipLinesToPolygon(rawLines, polygonData, inset)
 }
 
 // Generate a global Fermat spiral that spans the entire bounding box

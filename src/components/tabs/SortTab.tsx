@@ -74,6 +74,8 @@ export default function SortTab() {
     setOrderData,
     flattenArmed,
     setFlattenArmed,
+    flattenOnImport,
+    setPendingFlatten,
   } = useAppContext()
 
   // Ref for the canvas container to get its dimensions
@@ -214,6 +216,11 @@ export default function SortTab() {
             setSvgDimensions({ width, height })
           }
         }
+      }
+
+      // Trigger auto-flatten if enabled
+      if (flattenOnImport) {
+        setPendingFlatten(true)
       }
 
       setTimeout(() => {
@@ -906,7 +913,14 @@ export default function SortTab() {
 
     const updatedNodes = deleteNode(layerNodes)
     setLayerNodes(updatedNodes)
-    setSelectedNodeIds(new Set())
+
+    // If exactly 1 top-level node remains, auto-select it
+    if (updatedNodes.length === 1) {
+      setSelectedNodeIds(new Set([updatedNodes[0].id]))
+    } else {
+      setSelectedNodeIds(new Set())
+    }
+
     rebuildSvgFromLayers(updatedNodes)
   }
 

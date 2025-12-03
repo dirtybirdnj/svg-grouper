@@ -14,23 +14,20 @@ interface OrderedLine extends OrderLine {
   reversed: boolean
 }
 
-// Animation speeds (in seconds for full animation)
-const SPEED_OPTIONS = [
-  { label: '0.5x', duration: 10000 },
-  { label: '1x', duration: 5000 },
-  { label: '2x', duration: 2500 },
-  { label: '4x', duration: 1250 },
-]
+// Animation speed range (in milliseconds for full animation)
+const MIN_DURATION = 500   // Fastest (0.5 seconds)
+const MAX_DURATION = 30000 // Slowest (30 seconds)
+const DEFAULT_DURATION = 5000 // Default (5 seconds)
 
 // Maximum lines for O(n²) optimization - beyond this, use chunked approach
 const MAX_LINES_FOR_FULL_OPTIMIZATION = 5000
 
-// Optimize lines using nearest-neighbor algorithm
-// For large datasets, uses chunked optimization to avoid O(n²) blowup
-function optimizeLines(lines: OrderLine[]): OrderedLine[] {
+// Optimize lines by color - groups lines by color, optimizes within each group
+// This simulates real pen plotter behavior: draw all of one color before changing pens
+function optimizeLinesByColor(lines: OrderLine[], colorOrder: string[]): OrderedLine[] {
   if (lines.length === 0) return []
 
-  // Filter out any invalid lines (missing coordinates)
+  // Filter out any invalid lines
   const validLines = lines.filter(line =>
     typeof line.x1 === 'number' && !isNaN(line.x1) &&
     typeof line.y1 === 'number' && !isNaN(line.y1) &&
@@ -40,12 +37,43 @@ function optimizeLines(lines: OrderLine[]): OrderedLine[] {
 
   if (validLines.length === 0) return []
 
-  // For very large datasets, use chunked optimization
-  if (validLines.length > MAX_LINES_FOR_FULL_OPTIMIZATION) {
-    return optimizeLinesChunked(validLines)
+  // Group lines by color
+  const colorGroups = new Map<string, OrderLine[]>()
+  for (const line of validLines) {
+    const key = line.color
+    if (!colorGroups.has(key)) {
+      colorGroups.set(key, [])
+    }
+    colorGroups.get(key)!.push(line)
   }
 
-  return optimizeLinesNearestNeighbor(validLines)
+  // Process colors in specified order, then any remaining colors
+  const result: OrderedLine[] = []
+  const processedColors = new Set<string>()
+
+  // First, process colors in the specified order
+  for (const color of colorOrder) {
+    const groupLines = colorGroups.get(color)
+    if (groupLines && groupLines.length > 0) {
+      const optimizedGroup = groupLines.length > MAX_LINES_FOR_FULL_OPTIMIZATION
+        ? optimizeLinesChunked(groupLines)
+        : optimizeLinesNearestNeighbor(groupLines)
+      result.push(...optimizedGroup)
+      processedColors.add(color)
+    }
+  }
+
+  // Then process any colors not in the specified order
+  for (const [color, groupLines] of colorGroups) {
+    if (!processedColors.has(color) && groupLines.length > 0) {
+      const optimizedGroup = groupLines.length > MAX_LINES_FOR_FULL_OPTIMIZATION
+        ? optimizeLinesChunked(groupLines)
+        : optimizeLinesNearestNeighbor(groupLines)
+      result.push(...optimizedGroup)
+    }
+  }
+
+  return result
 }
 
 // Full O(n²) nearest-neighbor optimization - only for smaller datasets
@@ -204,10 +232,11 @@ export default function OrderTab() {
 
   const [isAnimating, setIsAnimating] = useState(false)
   const [animationProgress, setAnimationProgress] = useState(0)
-  const [speedIndex, setSpeedIndex] = useState(1) // Default to 1x speed
+  const [animationDuration, setAnimationDuration] = useState(DEFAULT_DURATION) // Duration in ms for full animation
   const [showTravelLines, setShowTravelLines] = useState(true)
-  const [colorByLayer, setColorByLayer] = useState(true) // Use layer colors vs gradient
+  const [showGradient, setShowGradient] = useState(false) // Show red→blue gradient (for debugging order)
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set())
+  const [colorOrder, setColorOrder] = useState<string[]>([]) // Order in which colors are drawn
   const animationRef = useRef<number | null>(null)
   const animationStartRef = useRef<{ time: number; progress: number }>({ time: 0, progress: 0 })
 
@@ -239,11 +268,22 @@ export default function OrderTab() {
     }))
   }, [orderData, visibleLayers])
 
-  // Initialize visible layers when orderData changes
+  // Initialize visible layers and color order when orderData changes
   useEffect(() => {
     if (orderData && orderData.lines.length > 0) {
       const allPathIds = new Set(orderData.lines.map(l => l.pathId))
       setVisibleLayers(allPathIds)
+
+      // Initialize color order from unique colors (preserving order of first appearance)
+      const seenColors = new Set<string>()
+      const colors: string[] = []
+      for (const line of orderData.lines) {
+        if (!seenColors.has(line.color)) {
+          seenColors.add(line.color)
+          colors.push(line.color)
+        }
+      }
+      setColorOrder(colors)
     }
   }, [orderData])
 
@@ -254,12 +294,13 @@ export default function OrderTab() {
     return orderData.lines.filter(line => visibleLayers.has(line.pathId))
   }, [orderData, visibleLayers])
 
-  // Optimize lines (only visible ones)
-  const { optimizedLines, stats } = useMemo(() => {
+  // Optimize lines (only visible ones) - groups by color to simulate real plotter behavior
+  const { optimizedLines, stats, penChanges } = useMemo(() => {
     if (visibleLines.length === 0) {
       return {
         optimizedLines: [],
-        stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0 }
+        stats: { unoptimizedDistance: 0, optimizedDistance: 0, improvement: 0 },
+        penChanges: []
       }
     }
 
@@ -270,7 +311,8 @@ export default function OrderTab() {
       reversed: false
     }))
 
-    const optimized = optimizeLines(visibleLines)
+    // Use color-based optimization (real plotter behavior)
+    const optimized = optimizeLinesByColor(visibleLines, colorOrder)
 
     const unoptimizedDistance = calculateTravelDistance(unoptimized)
     const optimizedDistance = calculateTravelDistance(optimized)
@@ -278,11 +320,24 @@ export default function OrderTab() {
       ? ((unoptimizedDistance - optimizedDistance) / unoptimizedDistance) * 100
       : 0
 
+    // Track pen changes (where color switches)
+    const changes: { index: number; fromColor: string; toColor: string }[] = []
+    for (let i = 1; i < optimized.length; i++) {
+      if (optimized[i].color !== optimized[i - 1].color) {
+        changes.push({
+          index: i,
+          fromColor: optimized[i - 1].color,
+          toColor: optimized[i].color
+        })
+      }
+    }
+
     return {
       optimizedLines: optimized,
-      stats: { unoptimizedDistance, optimizedDistance, improvement }
+      stats: { unoptimizedDistance, optimizedDistance, improvement },
+      penChanges: changes
     }
-  }, [visibleLines])
+  }, [visibleLines, colorOrder])
 
   // Calculate pen position based on animation progress
   const penPosition = useMemo(() => {
@@ -340,7 +395,8 @@ export default function OrderTab() {
       for (let i = 0; i < visibleCount; i++) {
         const line = optimizedLines[i]
         if (!line) continue
-        const color = colorByLayer ? sanitizeColor(line.color || '#333') : getGradientColor(totalLines > 1 ? i / (totalLines - 1) : 0)
+        // Default: use actual colors. Gradient is opt-in for debugging draw order.
+        const color = showGradient ? getGradientColor(totalLines > 1 ? i / (totalLines - 1) : 0) : sanitizeColor(line.color || '#333')
         if (!colorGroups.has(color)) {
           colorGroups.set(color, [])
         }
@@ -355,11 +411,12 @@ export default function OrderTab() {
       linesHtml = optimizedLines.slice(0, visibleCount).map((line, index) => {
         if (!line) return ''
         let color: string
-        if (colorByLayer) {
-          color = sanitizeColor(line.color || '#333')
-        } else {
+        // Default: use actual colors. Gradient is opt-in for debugging draw order.
+        if (showGradient) {
           const position = totalLines > 1 ? index / (totalLines - 1) : 0
           color = getGradientColor(position)
+        } else {
+          color = sanitizeColor(line.color || '#333')
         }
         return `<line x1="${line.x1.toFixed(2)}" y1="${line.y1.toFixed(2)}" x2="${line.x2.toFixed(2)}" y2="${line.y2.toFixed(2)}" stroke="${color}" stroke-width="1" stroke-linecap="round" />`
       }).join('\n')
@@ -406,7 +463,7 @@ export default function OrderTab() {
     `
 
     return { viewBox, content }
-  }, [orderData, optimizedLines, isAnimating, animationProgress, showTravelLines, penPosition, colorByLayer])
+  }, [orderData, optimizedLines, isAnimating, animationProgress, showTravelLines, penPosition, showGradient])
 
   // Handlers
   const handleBack = useCallback(() => {
@@ -427,12 +484,11 @@ export default function OrderTab() {
 
   // Start animation from current progress
   const startAnimation = useCallback((fromProgress: number = 0) => {
-    const duration = SPEED_OPTIONS[speedIndex].duration
     animationStartRef.current = { time: performance.now(), progress: fromProgress }
 
     const animate = (currentTime: number) => {
       const elapsed = currentTime - animationStartRef.current.time
-      const progressGain = (elapsed / duration) * 100
+      const progressGain = (elapsed / animationDuration) * 100
       const progress = Math.min(animationStartRef.current.progress + progressGain, 100)
       setAnimationProgress(progress)
 
@@ -445,7 +501,7 @@ export default function OrderTab() {
     }
 
     animationRef.current = requestAnimationFrame(animate)
-  }, [speedIndex])
+  }, [animationDuration])
 
   const handleToggleAnimation = useCallback(() => {
     if (isAnimating) {
@@ -524,7 +580,7 @@ export default function OrderTab() {
       cancelAnimationFrame(animationRef.current)
       startAnimation(animationProgress)
     }
-  }, [speedIndex]) // Only re-run when speed changes
+  }, [animationDuration]) // Only re-run when speed changes
 
   // Wheel zoom handler - use native event listener to support passive: false
   useEffect(() => {
@@ -591,6 +647,10 @@ export default function OrderTab() {
               <div className="stat-row">
                 <span className="stat-label">Total Lines:</span>
                 <span className="stat-value">{optimizedLines.length}</span>
+              </div>
+              <div className="stat-row">
+                <span className="stat-label">Pen Changes:</span>
+                <span className="stat-value">{penChanges.length}</span>
               </div>
               <div className="stat-row">
                 <span className="stat-label">Travel (original):</span>
@@ -701,20 +761,23 @@ export default function OrderTab() {
                 </div>
               </div>
 
-              {/* Speed controls */}
+              {/* Speed slider */}
               <div className="speed-controls">
                 <span className="speed-label">Speed:</span>
-                <div className="speed-buttons">
-                  {SPEED_OPTIONS.map((opt, idx) => (
-                    <button
-                      key={opt.label}
-                      className={`speed-btn ${speedIndex === idx ? 'active' : ''}`}
-                      onClick={() => setSpeedIndex(idx)}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
+                <div className="speed-slider-row">
+                  <span className="speed-slow">Slow</span>
+                  <input
+                    type="range"
+                    min={MIN_DURATION}
+                    max={MAX_DURATION}
+                    step={100}
+                    value={MAX_DURATION + MIN_DURATION - animationDuration}
+                    onChange={(e) => setAnimationDuration(MAX_DURATION + MIN_DURATION - parseInt(e.target.value))}
+                    className="speed-slider"
+                  />
+                  <span className="speed-fast">Fast</span>
                 </div>
+                <span className="speed-value">{(animationDuration / 1000).toFixed(1)}s</span>
               </div>
             </div>
           </div>
@@ -733,22 +796,22 @@ export default function OrderTab() {
               <label className="toggle-row">
                 <input
                   type="checkbox"
-                  checked={colorByLayer}
-                  onChange={(e) => setColorByLayer(e.target.checked)}
+                  checked={showGradient}
+                  onChange={(e) => setShowGradient(e.target.checked)}
                 />
-                <span>Color by layer</span>
+                <span>Show order gradient (debug)</span>
               </label>
             </div>
             <div className="order-legend">
-              {colorByLayer ? (
-                <div className="legend-item">
-                  <span className="legend-layers" />
-                  <span className="legend-text">Colored by layer</span>
-                </div>
-              ) : (
+              {showGradient ? (
                 <div className="legend-item">
                   <span className="legend-gradient" />
                   <span className="legend-text">Draw order (red → blue)</span>
+                </div>
+              ) : (
+                <div className="legend-item">
+                  <span className="legend-layers" />
+                  <span className="legend-text">Actual layer colors</span>
                 </div>
               )}
               {showTravelLines && (

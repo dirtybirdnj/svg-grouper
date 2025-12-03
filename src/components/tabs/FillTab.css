@@ -1462,3 +1462,247 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* Big Apply CTA button at top of right sidebar */
+.apply-btn-primary {
+  width: 100%;
+  padding: 1rem;
+  border: none;
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+  color: white;
+  margin-bottom: 1rem;
+  box-shadow: 0 2px 6px rgba(74, 144, 226, 0.3);
+}
+
+.apply-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #357abd 0%, #2868a8 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(74, 144, 226, 0.4);
+}
+
+.apply-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(74, 144, 226, 0.3);
+}
+
+.apply-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Empty layers message */
+.no-layers-message {
+  padding: 1rem;
+  text-align: center;
+  color: #999;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Weave hint when 2 layers selected */
+.weave-hint {
+  padding: 0.5rem;
+  background: #fef3cd;
+  color: #856404;
+  font-size: 0.75rem;
+  text-align: center;
+  border-top: 1px solid #ffc107;
+}
+
+/* Weave section */
+.weave-section {
+  background: linear-gradient(135deg, #fef9e7 0%, #fef3cd 100%);
+  border: 1px solid #f39c12;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.weave-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(243, 156, 18, 0.3);
+}
+
+.weave-header span:first-child {
+  font-weight: 600;
+  color: #8a6d3b;
+  font-size: 0.85rem;
+}
+
+.weave-selection-count {
+  font-size: 0.7rem;
+  color: #a07b3a;
+  background: rgba(243, 156, 18, 0.2);
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+}
+
+.weave-control {
+  margin-bottom: 0.75rem;
+}
+
+.weave-control label {
+  display: block;
+  font-size: 0.75rem;
+  color: #8a6d3b;
+  margin-bottom: 0.35rem;
+  font-weight: 500;
+}
+
+.weave-pattern-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.25rem;
+}
+
+.weave-pattern-btn {
+  padding: 0.35rem 0.25rem;
+  font-size: 0.65rem;
+  border: 1px solid #d4a84b;
+  border-radius: 4px;
+  background: white;
+  color: #8a6d3b;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-weight: 500;
+}
+
+.weave-pattern-btn:hover {
+  background: #fff8e1;
+  border-color: #f39c12;
+}
+
+.weave-pattern-btn.active {
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+  color: white;
+  border-color: #e67e22;
+}
+
+.weave-slider {
+  width: 100%;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #f5deb3;
+  border-radius: 3px;
+  outline: none;
+  cursor: pointer;
+}
+
+.weave-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.weave-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+
+.weave-slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.6rem;
+  color: #a07b3a;
+  margin-top: 0.2rem;
+}
+
+.weave-apply-btn {
+  width: 100%;
+  padding: 0.5rem;
+  margin-top: 0.25rem;
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 2px 6px rgba(243, 156, 18, 0.3);
+}
+
+.weave-apply-btn:hover {
+  background: linear-gradient(135deg, #e67e22 0%, #d35400 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(243, 156, 18, 0.4);
+}
+
+.weave-patterns {
+  grid-template-columns: 1fr 1fr;
+}
+
+.weave-btn {
+  margin-top: 0.75rem;
+  background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%) !important;
+  box-shadow: 0 2px 6px rgba(243, 156, 18, 0.3) !important;
+}
+
+.weave-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #e67e22 0%, #d35400 100%) !important;
+}
+
+/* Color controls in right sidebar */
+.fill-section .control-row.color-row {
+  gap: 0.5rem;
+}
+
+.fill-section .layer-color-picker {
+  width: 36px;
+  height: 32px;
+  padding: 2px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.fill-section .layer-color-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.85rem;
+  font-family: monospace;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.fill-section .layer-color-reset {
+  background: #e74c3c;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  width: 32px;
+  height: 32px;
+  font-size: 1rem;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fill-section .layer-color-reset:hover {
+  background: #c0392b;
+}
