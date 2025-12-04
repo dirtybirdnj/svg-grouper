@@ -206,7 +206,7 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
 
             switch (fillPattern) {
               case 'concentric':
-                lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                lines = generateConcentricLines(polygonData, lineSpacing, true)
                 break
               case 'wiggle':
                 lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
@@ -268,7 +268,7 @@ function generateFills(params: FillGenerationParams): { paths: FillPathOutput[];
           try {
             switch (fillPattern) {
               case 'concentric':
-                lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+                lines = generateConcentricLines(polygonData, lineSpacing, true)
                 break
               case 'wiggle':
                 lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)

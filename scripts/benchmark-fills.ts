@@ -195,7 +195,7 @@ function benchmarkPattern(
         lines = generateCrosshatchLines(polygon, boundingBox, lineSpacing, angle, inset)
         break
       case 'concentric':
-        lines = generateConcentricLines(polygon.outer, lineSpacing, true)
+        lines = generateConcentricLines(polygon, lineSpacing, true)
         break
       case 'spiral':
         lines = clipSpiralToPolygon(globalSpiralLines, polygon, inset)

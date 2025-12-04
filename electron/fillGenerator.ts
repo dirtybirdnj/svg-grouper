@@ -275,7 +275,7 @@ async function generateFillsMainProcess(
 
         switch (fillPattern) {
           case 'concentric':
-            lines = generateConcentricLines(polygonData.outer, lineSpacing, true)
+            lines = generateConcentricLines(polygonData, lineSpacing, true)
             break
           case 'wiggle':
             lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)

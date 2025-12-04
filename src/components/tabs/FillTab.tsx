@@ -347,7 +347,7 @@ async function generateFillsLocally(
 
           switch (fillPattern) {
             case 'concentric':
-              lines = generateConcentricLines(polygonData.outer, lineSpacing, false)
+              lines = generateConcentricLines(polygonData, lineSpacing, false)
               break
             case 'wiggle':
               lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
@@ -403,7 +403,7 @@ async function generateFillsLocally(
         try {
           switch (fillPattern) {
             case 'concentric':
-              lines = generateConcentricLines(polygonData.outer, lineSpacing, false)
+              lines = generateConcentricLines(polygonData, lineSpacing, false)
               break
             case 'wiggle':
               lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)

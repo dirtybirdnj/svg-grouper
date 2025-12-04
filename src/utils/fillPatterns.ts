@@ -108,17 +108,18 @@ function robustInsetPolygon(polygon: Point[], insetDistance: number): Point[] {
 
 // Generate concentric fill lines (snake pattern from outside in)
 export function generateConcentricLines(
-  polygon: Point[],
+  polygonData: PolygonWithHoles,
   spacing: number,
   connectLoops: boolean = true
 ): HatchLine[] {
   const lines: HatchLine[] = []
-  if (polygon.length < 3) return lines
+  const { outer, holes } = polygonData
+  if (outer.length < 3) return lines
 
   const minArea = spacing * spacing * 0.5 // Reduced threshold for small shapes
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  for (const p of polygon) {
+  for (const p of outer) {
     minX = Math.min(minX, p.x)
     minY = Math.min(minY, p.y)
     maxX = Math.max(maxX, p.x)
@@ -128,7 +129,7 @@ export function generateConcentricLines(
   const maxLoops = Math.min(100, Math.ceil(maxDimension / spacing) + 2)
 
   const loops: Point[][] = []
-  let currentPolygon = [...polygon]
+  let currentPolygon = [...outer]
   let lastArea = Math.abs(polygonSignedArea(currentPolygon))
 
   for (let loopCount = 0; loopCount < maxLoops; loopCount++) {
@@ -147,8 +148,8 @@ export function generateConcentricLines(
   }
 
   // If no loops were generated, at least draw the original polygon outline
-  if (loops.length === 0 && polygon.length >= 3) {
-    loops.push([...polygon])
+  if (loops.length === 0 && outer.length >= 3) {
+    loops.push([...outer])
   }
 
   for (let loopIdx = 0; loopIdx < loops.length; loopIdx++) {
@@ -156,12 +157,19 @@ export function generateConcentricLines(
 
     for (let i = 0; i < loop.length; i++) {
       const j = (i + 1) % loop.length
-      lines.push({
+      const segment: HatchLine = {
         x1: loop[i].x,
         y1: loop[i].y,
         x2: loop[j].x,
         y2: loop[j].y
-      })
+      }
+      // Clip around holes
+      if (holes.length > 0) {
+        const clippedSegments = clipSegmentAroundHoles(segment, holes)
+        lines.push(...clippedSegments)
+      } else {
+        lines.push(segment)
+      }
     }
 
     if (connectLoops && loopIdx < loops.length - 1) {
@@ -181,12 +189,19 @@ export function generateConcentricLines(
         }
       }
 
-      lines.push({
+      const connectorSegment: HatchLine = {
         x1: lastPoint.x,
         y1: lastPoint.y,
         x2: nextLoop[closestIdx].x,
         y2: nextLoop[closestIdx].y
-      })
+      }
+      // Clip connector around holes too
+      if (holes.length > 0) {
+        const clippedSegments = clipSegmentAroundHoles(connectorSegment, holes)
+        lines.push(...clippedSegments)
+      } else {
+        lines.push(connectorSegment)
+      }
     }
   }
 

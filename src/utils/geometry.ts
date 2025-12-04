@@ -727,8 +727,9 @@ export function generateGlobalHatchLines(
   const dirX = Math.cos(angleRad)
   const dirY = Math.sin(angleRad)
 
-  const centerX = 0
-  const centerY = 0
+  // Center on the bounding box, not on origin
+  const centerX = globalBbox.x + globalBbox.width / 2
+  const centerY = globalBbox.y + globalBbox.height / 2
   const numLines = Math.ceil(diagonal / spacing) + 1
 
   for (let i = -numLines; i <= numLines; i++) {
