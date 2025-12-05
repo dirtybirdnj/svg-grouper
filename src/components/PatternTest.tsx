@@ -181,6 +181,9 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     spiralOverDiameter: number
   }
 
+  // 15 second timeout for pattern generation
+  const PATTERN_TIMEOUT_MS = 15000
+
   // Generate fills using rat-king via IPC (same as main app)
   const generatePatternFillAsync = useCallback(async (
     pattern: FillPatternType,
@@ -195,7 +198,13 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     }
 
     try {
-      const result = await window.electron.generateFills({
+      // Race between the actual call and a timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('DNF - exceeded 15s timeout')), PATTERN_TIMEOUT_MS)
+      })
+
+      const result = await Promise.race([
+        window.electron.generateFills({
         paths: polygons.map(p => ({
           id: p.id,
           color: '#000000',
@@ -220,7 +229,9 @@ export default function PatternTest({ onBack }: PatternTestProps) {
         enableCrop: false,
         cropInset: 0,
         useEvenOdd: true,
-      })
+      }),
+        timeoutPromise
+      ])
 
       const timeMs = performance.now() - startTime
 
