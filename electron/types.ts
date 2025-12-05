@@ -100,3 +100,8 @@ export interface FlattenShapesArgs {
 export interface NormalizeSVGArgs {
   svg: string
 }
+
+export interface RatKingResult {
+  success: boolean
+  svg: string
+}

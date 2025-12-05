@@ -57,7 +57,11 @@ contextBridge.exposeInMainWorld('electron', {
   abortFillGeneration: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('abort-fill-generation')
   },
-  // Fill pattern using rat-king-cli
+  // rat-king fill generation (Rust-based, much faster)
+  generateFillsRatKing: (svgContent: string, pattern: string, spacing: number, angle: number): Promise<{ success: boolean; svg: string }> => {
+    return ipcRenderer.invoke('generate-fills-ratking', svgContent, pattern, spacing, angle)
+  },
+  // Fill pattern using rat-king-cli (alternative API)
   fillPattern: (args: { svg: string; pattern: string; spacing: number; angle: number }): Promise<string> => {
     return ipcRenderer.invoke('fill-pattern', args)
   },

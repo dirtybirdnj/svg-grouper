@@ -64,6 +64,7 @@ declare global {
       onFillProgress: (callback: (data: { progress: number; status: string }) => void) => void
       offFillProgress: () => void
       abortFillGeneration: () => Promise<{ success: boolean }>
+      generateFillsRatKing: (svgContent: string, pattern: string, spacing: number, angle: number) => Promise<{ success: boolean; svg: string }>
       fillPattern: (args: { svg: string; pattern: string; spacing: number; angle: number }) => Promise<string>
     }
   }

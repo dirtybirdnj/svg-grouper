@@ -4,6 +4,9 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { Worker } from 'worker_threads'
 import * as path from 'path'
+import { spawn } from 'child_process'
+import * as fs from 'fs'
+import * as os from 'os'
 import {
   Point,
   HatchLine,
@@ -376,7 +379,7 @@ async function generateFillsMainProcess(
 
 // Register IPC handlers
 export function registerFillGeneratorIPC() {
-  // Main fill generation handler
+  // Main fill generation handler - USES RAT-KING with JSON output
   ipcMain.handle('generate-fills', async (event, params: FillGenerationParams) => {
     const win = BrowserWindow.fromWebContents(event.sender)
 
@@ -386,18 +389,72 @@ export function registerFillGeneratorIPC() {
       }
     }
 
+    const { paths, boundingBox, fillPattern, lineSpacing, angle } = params
+
+    // Convert FillPathInput polygons to simple polygon format for rat-king
+    const allPolygons: Array<{ id: string; points: Point[] }> = []
+    for (const pathInput of paths) {
+      for (const poly of pathInput.polygons) {
+        if (poly.outer.length >= 3) {
+          allPolygons.push({
+            id: pathInput.id,
+            points: poly.outer
+          })
+        }
+      }
+    }
+
+    if (allPolygons.length === 0) {
+      return { paths: [], success: true }
+    }
+
+    const ratKingPattern = mapPatternName(fillPattern)
+    const svgContent = buildSvgFromPolygons(allPolygons, boundingBox)
+
     try {
-      // Try to use worker thread first
-      const result = await runInWorker<FillGenerationResult>(
-        'generate',
-        params,
-        sendProgress
-      )
-      return result
+      sendProgress(10, `Running rat-king ${ratKingPattern}...`)
+
+      // Use new JSON stdin/stdout approach - no temp files!
+      const result = await runRatKingJson(svgContent, ratKingPattern, lineSpacing, angle)
+
+      sendProgress(90, 'Processing results...')
+
+      // Build ID lookup map for matching shapes back to paths
+      const pathIdMap = new Map<string, { pathInput: typeof paths[0]; polygon: Point[] }>()
+      for (const pathInput of paths) {
+        for (const poly of pathInput.polygons) {
+          if (poly.outer.length >= 3) {
+            pathIdMap.set(pathInput.id, { pathInput, polygon: poly.outer })
+          }
+        }
+      }
+
+      // Map rat-king shapes back to path results with per-shape colors
+      const pathResults: FillPathOutput[] = []
+      for (const shape of result.shapes) {
+        const match = pathIdMap.get(shape.id)
+        if (match && shape.lines.length > 0) {
+          pathResults.push({
+            pathId: shape.id,
+            lines: shape.lines,
+            polygon: match.polygon
+          })
+        }
+      }
+
+      sendProgress(100, 'rat-king complete')
+
+      return {
+        paths: pathResults,
+        success: true
+      }
     } catch (error) {
-      console.warn('[fillGenerator] Worker failed, falling back to main process:', error)
-      // Fallback to main process if worker fails
-      return generateFillsMainProcess(params, sendProgress)
+      console.error('[fillGenerator] rat-king error:', error)
+      return {
+        paths: [],
+        success: false,
+        error: error instanceof Error ? error.message : 'rat-king failed'
+      }
     }
   })
 
@@ -435,4 +492,239 @@ export function registerFillGeneratorIPC() {
     abortAllWorkers()
     return { success: true }
   })
+
+  // rat-king fill generation (Rust-based, much faster) - returns full SVG
+  ipcMain.handle('generate-fills-ratking', async (event, svgContent: string, pattern: string, spacing: number, angle: number) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const sendProgress = (progress: number, status: string) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('fill-progress', { progress, status })
+      }
+    }
+
+    const ratKingPattern = mapPatternName(pattern)
+    const { inputPath, outputPath } = getTempPaths()
+
+    try {
+      fs.writeFileSync(inputPath, svgContent)
+      sendProgress(10, `Running rat-king ${ratKingPattern}...`)
+
+      const result = await runRatKing(inputPath, outputPath, ratKingPattern, spacing, angle)
+      sendProgress(100, 'rat-king complete')
+      return { success: true, svg: result }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    } finally {
+      try { fs.unlinkSync(inputPath) } catch {}
+      try { fs.unlinkSync(outputPath) } catch {}
+    }
+  })
+
+  // rat-king fill for layer workflow - takes polygons, returns lines
+  ipcMain.handle('generate-fills-ratking-polygons', async (event, params: {
+    polygons: Array<{ id: string; points: Point[] }>
+    boundingBox: Rect
+    pattern: string
+    spacing: number
+    angle: number
+  }) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const sendProgress = (progress: number, status: string) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('fill-progress', { progress, status })
+      }
+    }
+
+    const { polygons, boundingBox, pattern, spacing, angle } = params
+    const ratKingPattern = mapPatternName(pattern)
+
+    // Build minimal SVG with just the polygons
+    const svgContent = buildSvgFromPolygons(polygons, boundingBox)
+    const { inputPath, outputPath } = getTempPaths()
+
+    try {
+      fs.writeFileSync(inputPath, svgContent)
+      sendProgress(10, `Running rat-king ${ratKingPattern}...`)
+
+      const resultSvg = await runRatKing(inputPath, outputPath, ratKingPattern, spacing, angle)
+
+      // Parse lines from output SVG
+      const lines = parseLinesFromSvg(resultSvg)
+      sendProgress(100, 'rat-king complete')
+
+      return {
+        success: true,
+        lines,
+        // Return all lines under a single "all" path since rat-king doesn't track per-polygon
+        paths: [{ pathId: 'all', lines, polygon: polygons[0]?.points || [] }]
+      }
+    } catch (e) {
+      console.error('rat-king error:', e)
+      return { success: false, error: String(e), paths: [] }
+    } finally {
+      try { fs.unlinkSync(inputPath) } catch {}
+      try { fs.unlinkSync(outputPath) } catch {}
+    }
+  })
+}
+
+// Helper functions for rat-king integration
+
+function mapPatternName(pattern: string): string {
+  const patternMap: Record<string, string> = {
+    'lines': 'lines',
+    'crosshatch': 'crosshatch',
+    'zigzag': 'zigzag',
+    'wiggle': 'wiggle',
+    'spiral': 'spiral',
+    'fermat': 'fermat',
+    'concentric': 'concentric',
+    'radial': 'radial',
+    'honeycomb': 'honeycomb',
+    'crossspiral': 'crossspiral',
+    'hilbert': 'hilbert',
+    'gyroid': 'gyroid',
+    'scribble': 'scribble',
+    'guilloche': 'guilloche',
+    'lissajous': 'lissajous',
+    'rose': 'rose',
+    'phyllotaxis': 'phyllotaxis',
+    // Map unsupported patterns to lines
+    'wave': 'wiggle',
+    'custom': 'lines',
+  }
+  return patternMap[pattern] || 'lines'
+}
+
+function getTempPaths() {
+  const tmpDir = os.tmpdir()
+  const timestamp = Date.now()
+  return {
+    inputPath: path.join(tmpDir, `ratking-input-${timestamp}.svg`),
+    outputPath: path.join(tmpDir, `ratking-output-${timestamp}.svg`)
+  }
+}
+
+function findRatKingBinary(): string {
+  const paths = [
+    path.join(os.homedir(), '.cargo', 'bin', 'rat-king'),
+    '/usr/local/bin/rat-king',
+    'rat-king'
+  ]
+  for (const p of paths) {
+    if (fs.existsSync(p)) return p
+  }
+  return 'rat-king'
+}
+
+function runRatKing(inputPath: string, outputPath: string, pattern: string, spacing: number, angle: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const ratKingBin = findRatKingBinary()
+    const args = [
+      'fill', inputPath,
+      '-p', pattern,
+      '-s', spacing.toString(),
+      '-a', angle.toString(),
+      '-o', outputPath
+    ]
+
+    const proc = spawn(ratKingBin, args)
+    let stderr = ''
+
+    proc.stderr.on('data', (d) => stderr += d.toString())
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const outputSvg = fs.readFileSync(outputPath, 'utf-8')
+          resolve(outputSvg)
+        } catch (e) {
+          reject(new Error(`Failed to read output: ${e}`))
+        }
+      } else {
+        reject(new Error(`rat-king failed (code ${code}): ${stderr}`))
+      }
+    })
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn rat-king: ${err.message}`))
+    })
+  })
+}
+
+// New: Run rat-king with JSON output via stdin/stdout (no temp files)
+interface RatKingLine { x1: number; y1: number; x2: number; y2: number }
+interface RatKingShape { id: string; index: number; lines: RatKingLine[] }
+interface RatKingJsonResult { shapes: RatKingShape[] }
+
+function runRatKingJson(svgContent: string, pattern: string, spacing: number, angle: number): Promise<RatKingJsonResult> {
+  return new Promise((resolve, reject) => {
+    const ratKingBin = findRatKingBinary()
+    const args = [
+      'fill', '-',  // stdin
+      '-p', pattern,
+      '-s', spacing.toString(),
+      '-a', angle.toString(),
+      '-f', 'json',
+      '--grouped',
+      '-o', '-'  // stdout
+    ]
+
+    const proc = spawn(ratKingBin, args)
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (d) => stdout += d.toString())
+    proc.stderr.on('data', (d) => stderr += d.toString())
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout) as RatKingJsonResult
+          resolve(result)
+        } catch (e) {
+          reject(new Error(`Failed to parse JSON: ${e}`))
+        }
+      } else {
+        reject(new Error(`rat-king failed (code ${code}): ${stderr}`))
+      }
+    })
+
+    proc.on('error', (err) => {
+      reject(new Error(`Failed to spawn rat-king: ${err.message}`))
+    })
+
+    // Write SVG to stdin
+    proc.stdin.write(svgContent)
+    proc.stdin.end()
+  })
+}
+
+function buildSvgFromPolygons(polygons: Array<{ id: string; points: Point[] }>, boundingBox: Rect): string {
+  let svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="${boundingBox.x} ${boundingBox.y} ${boundingBox.width} ${boundingBox.height}">
+`
+  for (const poly of polygons) {
+    if (poly.points.length < 3) continue
+    const d = poly.points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ') + ' Z'
+    svg += `  <path d="${d}" fill="black" id="${poly.id}"/>\n`
+  }
+  svg += '</svg>\n'
+  return svg
+}
+
+function parseLinesFromSvg(svgContent: string): HatchLine[] {
+  const lines: HatchLine[] = []
+  // Parse <line x1="..." y1="..." x2="..." y2="..."/> elements
+  const lineRegex = /<line\s+x1="([^"]+)"\s+y1="([^"]+)"\s+x2="([^"]+)"\s+y2="([^"]+)"/g
+  let match
+  while ((match = lineRegex.exec(svgContent)) !== null) {
+    lines.push({
+      x1: parseFloat(match[1]),
+      y1: parseFloat(match[2]),
+      x2: parseFloat(match[3]),
+      y2: parseFloat(match[4])
+    })
+  }
+  return lines
 }
