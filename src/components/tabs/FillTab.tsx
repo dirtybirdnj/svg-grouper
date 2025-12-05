@@ -45,7 +45,15 @@ import {
   optimizeLineOrderMultiPass,
 } from '../../utils/fillPatterns'
 import simplify from 'simplify-js'
+import patternStats from '../../patternStats.json'
 import './FillTab.css'
+
+// Filter out DNF patterns
+const DNF_PATTERNS = new Set(
+  Object.entries(patternStats.patterns)
+    .filter(([_, stats]) => stats.status === 'dnf')
+    .map(([name]) => name)
+)
 
 interface FillPathInfo {
   id: string
@@ -2415,6 +2423,7 @@ export default function FillTab() {
               >
                 Lines
               </button>
+              {!DNF_PATTERNS.has('concentric') && (
               <button
                 className={`pattern-btn ${fillPattern === 'concentric' ? 'active' : ''}`}
                 onClick={() => setFillPattern('concentric')}
@@ -2422,6 +2431,7 @@ export default function FillTab() {
               >
                 Concentric
               </button>
+              )}
               <button
                 className={`pattern-btn ${fillPattern === 'wiggle' ? 'active' : ''}`}
                 onClick={() => setFillPattern('wiggle')}

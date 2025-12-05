@@ -1,0 +1,21 @@
+{
+  "patterns": {
+    "lines": { "status": "ok", "avgMs": 50 },
+    "crosshatch": { "status": "ok", "avgMs": 60 },
+    "zigzag": { "status": "ok", "avgMs": 100 },
+    "wiggle": { "status": "ok", "avgMs": 100 },
+    "spiral": { "status": "ok", "avgMs": 150 },
+    "fermat": { "status": "ok", "avgMs": 150 },
+    "concentric": { "status": "dnf", "avgMs": 15000 },
+    "radial": { "status": "ok", "avgMs": 80 },
+    "honeycomb": { "status": "ok", "avgMs": 200 },
+    "crossspiral": { "status": "ok", "avgMs": 200 },
+    "hilbert": { "status": "ok", "avgMs": 300 },
+    "gyroid": { "status": "ok", "avgMs": 250 },
+    "scribble": { "status": "ok", "avgMs": 100 },
+    "guilloche": { "status": "ok", "avgMs": 150 },
+    "lissajous": { "status": "ok", "avgMs": 150 },
+    "rose": { "status": "ok", "avgMs": 150 },
+    "phyllotaxis": { "status": "ok", "avgMs": 150 }
+  }
+}
