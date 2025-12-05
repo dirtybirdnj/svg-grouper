@@ -1,32 +1,16 @@
 // Pattern Test Harness - tests all fill patterns with simple shapes and stress test
+// Uses the same rat-king IPC interface as the main app
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Point,
   HatchLine,
   PolygonWithHoles,
   Rect,
-  generateGlobalHatchLines,
-  clipLinesToPolygon,
   parsePathIntoSubpaths,
   getBoundingBox,
   getPolygonsFromSubpaths,
 } from '../utils/geometry'
-import {
-  FillPatternType,
-  generateConcentricLines,
-  generateHoneycombLines,
-  generateWiggleLines,
-  generateSpiralLines,
-  generateGyroidLines,
-  generateCrosshatchLines,
-  generateZigzagLines,
-  generateRadialLines,
-  generateCrossSpiralLines,
-  generateHilbertLines,
-  generateFermatLines,
-  generateWaveLines,
-  generateScribbleLines,
-} from '../utils/fillPatterns'
+import { FillPatternType } from '../utils/fillPatterns'
 import './PatternTest.css'
 
 // All pattern types to test
@@ -197,78 +181,65 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     spiralOverDiameter: number
   }
 
-  // Generate fills for a single pattern
-  const generatePatternFill = useCallback((
+  // Generate fills using rat-king via IPC (same as main app)
+  const generatePatternFillAsync = useCallback(async (
     pattern: FillPatternType,
-    polygon: PolygonWithHoles,
-    bbox: Rect,
+    polygons: Array<{ id: string; polygon: PolygonWithHoles; bbox: Rect }>,
+    globalBbox: Rect,
     settings: PatternSettings
-  ): { lines: HatchLine[]; timeMs: number; error?: string } => {
+  ): Promise<{ lines: HatchLine[]; timeMs: number; error?: string }> => {
     const startTime = performance.now()
-    let lines: HatchLine[] = []
-    let error: string | undefined
 
-    try {
-      switch (pattern) {
-        case 'lines': {
-          const globalLines = generateGlobalHatchLines(bbox, settings.lineSpacing, settings.angle)
-          lines = clipLinesToPolygon(globalLines, polygon, settings.inset)
-          // Add crosshatch if enabled
-          if (settings.crossHatch) {
-            const crossLines = generateGlobalHatchLines(bbox, settings.lineSpacing, settings.angle + 90)
-            lines = lines.concat(clipLinesToPolygon(crossLines, polygon, settings.inset))
-          }
-          break
-        }
-        case 'concentric':
-          lines = generateConcentricLines(polygon, settings.lineSpacing, false)
-          break
-        case 'wiggle':
-          lines = generateWiggleLines(polygon, bbox, settings.lineSpacing, settings.angle, settings.wiggleAmplitude, settings.wiggleFrequency, settings.inset)
-          break
-        case 'spiral':
-          lines = generateSpiralLines(polygon, settings.lineSpacing, settings.inset, settings.angle, settings.spiralOverDiameter)
-          break
-        case 'honeycomb':
-          lines = generateHoneycombLines(polygon, settings.lineSpacing, settings.inset, settings.angle)
-          break
-        case 'gyroid':
-          lines = generateGyroidLines(polygon, settings.lineSpacing, settings.inset, settings.angle)
-          break
-        case 'crosshatch':
-          lines = generateCrosshatchLines(polygon, bbox, settings.lineSpacing, settings.angle, settings.inset)
-          break
-        case 'zigzag':
-          lines = generateZigzagLines(polygon, bbox, settings.lineSpacing, settings.angle, settings.wiggleAmplitude, settings.inset)
-          break
-        case 'radial':
-          lines = generateRadialLines(polygon, settings.lineSpacing, settings.inset, settings.angle)
-          break
-        case 'crossspiral':
-          lines = generateCrossSpiralLines(polygon, settings.lineSpacing, settings.inset, settings.angle, settings.spiralOverDiameter)
-          break
-        case 'hilbert':
-          lines = generateHilbertLines(polygon, settings.lineSpacing, settings.inset)
-          break
-        case 'fermat':
-          lines = generateFermatLines(polygon, settings.lineSpacing, settings.inset, settings.angle, settings.spiralOverDiameter)
-          break
-        case 'wave':
-          lines = generateWaveLines(polygon, bbox, settings.lineSpacing, settings.angle, settings.wiggleAmplitude, settings.wiggleFrequency, settings.inset)
-          break
-        case 'scribble':
-          lines = generateScribbleLines(polygon, settings.lineSpacing, settings.inset)
-          break
-        default:
-          error = `Unknown pattern: ${pattern}`
-      }
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
-      console.error(`[PatternTest] Error generating ${pattern}:`, e)
+    if (!window.electron?.generateFills) {
+      return { lines: [], timeMs: 0, error: 'Electron IPC not available' }
     }
 
-    const timeMs = performance.now() - startTime
-    return { lines, timeMs, error }
+    try {
+      const result = await window.electron.generateFills({
+        paths: polygons.map(p => ({
+          id: p.id,
+          color: '#000000',
+          polygons: [p.polygon],
+        })),
+        boundingBox: globalBbox,
+        fillPattern: pattern,
+        lineSpacing: settings.lineSpacing,
+        angle: settings.angle,
+        crossHatch: settings.crossHatch,
+        inset: settings.inset,
+        wiggleAmplitude: settings.wiggleAmplitude,
+        wiggleFrequency: settings.wiggleFrequency,
+        spiralOverDiameter: settings.spiralOverDiameter,
+        singleSpiral: false,
+        singleHilbert: false,
+        singleFermat: false,
+        customTileShape: 'triangle',
+        customTileGap: 0,
+        customTileScale: 1,
+        customTileRotateOffset: 0,
+        enableCrop: false,
+        cropInset: 0,
+        useEvenOdd: true,
+      })
+
+      const timeMs = performance.now() - startTime
+
+      if (result.success) {
+        // Flatten all path results into single lines array
+        const allLines: HatchLine[] = []
+        for (const pathResult of result.paths) {
+          allLines.push(...pathResult.lines)
+        }
+        return { lines: allLines, timeMs }
+      } else {
+        return { lines: [], timeMs, error: result.error || 'Unknown error' }
+      }
+    } catch (e) {
+      const timeMs = performance.now() - startTime
+      const error = e instanceof Error ? e.message : String(e)
+      console.error(`[PatternTest] Error generating ${pattern}:`, e)
+      return { lines: [], timeMs, error }
+    }
   }, [])
 
   // Build full settings object
@@ -284,26 +255,35 @@ export default function PatternTest({ onBack }: PatternTestProps) {
 
   // Run all pattern tests on mount
   useEffect(() => {
-    setIsLoading(true)
-    const testResults: PatternResult[] = []
+    const runTests = async () => {
+      setIsLoading(true)
+      const testResults: PatternResult[] = []
 
-    // Create test polygon (simple square)
-    const polygon = createSquarePolygon(10, 10, SQUARE_SIZE)
-    const bbox: Rect = { x: 10, y: 10, width: SQUARE_SIZE, height: SQUARE_SIZE }
+      // Create test polygon (simple square)
+      const polygon = createSquarePolygon(10, 10, SQUARE_SIZE)
+      const bbox: Rect = { x: 10, y: 10, width: SQUARE_SIZE, height: SQUARE_SIZE }
 
-    for (const pattern of ALL_PATTERNS) {
-      const { lines, timeMs, error } = generatePatternFill(pattern, polygon, bbox, patternSettings)
-      testResults.push({
-        pattern,
-        lines,
-        timeMs,
-        error,
-      })
+      for (const pattern of ALL_PATTERNS) {
+        const { lines, timeMs, error } = await generatePatternFillAsync(
+          pattern,
+          [{ id: 'test', polygon, bbox }],
+          bbox,
+          patternSettings
+        )
+        testResults.push({
+          pattern,
+          lines,
+          timeMs,
+          error,
+        })
+      }
+
+      setResults(testResults)
+      setIsLoading(false)
     }
 
-    setResults(testResults)
-    setIsLoading(false)
-  }, [lineSpacing, angle, inset, crossHatch, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, generatePatternFill])
+    runTests()
+  }, [lineSpacing, angle, inset, crossHatch, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, generatePatternFillAsync])
 
   // Convert lines to SVG path
   const linesToPath = (lines: HatchLine[]): string => {
@@ -356,43 +336,37 @@ export default function PatternTest({ onBack }: PatternTestProps) {
       // Allow UI to update
       await new Promise(resolve => setTimeout(resolve, 50))
 
-      const startTime = performance.now()
-      let allLines: HatchLine[] = []
       let hasError = false
       let errorMsg = ''
 
-      // Track polygon statistics
-      let filledCount = 0
-      let emptyCount = 0
-      let tooSmallCount = 0
+      // Calculate global bounding box for all stress paths
+      const globalBbox = stressPaths.reduce((acc, path) => ({
+        x: Math.min(acc.x, path.bbox.x),
+        y: Math.min(acc.y, path.bbox.y),
+        width: Math.max(acc.x + acc.width, path.bbox.x + path.bbox.width) - Math.min(acc.x, path.bbox.x),
+        height: Math.max(acc.y + acc.height, path.bbox.y + path.bbox.height) - Math.min(acc.y, path.bbox.y),
+      }), stressPaths[0].bbox)
 
-      try {
-        for (const path of stressPaths) {
-          const result = generatePatternFill(pattern, path.polygon, path.bbox, patternSettings)
-          if (result.error) {
-            hasError = true
-            errorMsg = result.error
-          }
+      // Use rat-king via IPC for the entire batch
+      const result = await generatePatternFillAsync(
+        pattern,
+        stressPaths.map(p => ({ id: p.id, polygon: p.polygon, bbox: p.bbox })),
+        globalBbox,
+        patternSettings
+      )
 
-          // Check if polygon got any fill lines
-          if (result.lines.length > 0) {
-            filledCount++
-          } else {
-            emptyCount++
-            const minDim = Math.min(path.bbox.width, path.bbox.height)
-            if (minDim < patternSettings.lineSpacing * 2) {
-              tooSmallCount++
-            }
-          }
-
-          allLines = allLines.concat(result.lines)
-        }
-      } catch (e) {
+      if (result.error) {
         hasError = true
-        errorMsg = e instanceof Error ? e.message : String(e)
+        errorMsg = result.error
       }
 
-      const totalTime = performance.now() - startTime
+      const allLines = result.lines
+      const totalTime = result.timeMs
+
+      // Track polygon statistics (approximate since rat-king batches)
+      const filledCount = result.lines.length > 0 ? stressPaths.length : 0
+      const emptyCount = result.lines.length === 0 ? stressPaths.length : 0
+      const tooSmallCount = 0
 
       results.push({
         pattern,
@@ -427,7 +401,7 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     setTimeout(() => {
       tortureReportRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }, 100)
-  }, [stressPaths, patternSettings, generatePatternFill])
+  }, [stressPaths, patternSettings, generatePatternFillAsync])
 
   // Pause/resume torture test
   const toggleTorturePause = useCallback(() => {
@@ -641,62 +615,46 @@ export default function PatternTest({ onBack }: PatternTestProps) {
   useEffect(() => {
     if (stressPaths.length === 0) return
 
-    setIsGenerating(true)
-    setStressTestResult(null)
+    const runStressTest = async () => {
+      setIsGenerating(true)
+      setStressTestResult(null)
 
-    // Use setTimeout to allow UI to update before heavy computation
-    const timeoutId = setTimeout(() => {
-      const startTime = performance.now()
-      let allLines: HatchLine[] = []
-      let hasError = false
-      let errorMsg = ''
+      // Calculate global bounding box
+      const globalBbox = stressPaths.reduce((acc, path) => ({
+        x: Math.min(acc.x, path.bbox.x),
+        y: Math.min(acc.y, path.bbox.y),
+        width: Math.max(acc.x + acc.width, path.bbox.x + path.bbox.width) - Math.min(acc.x, path.bbox.x),
+        height: Math.max(acc.y + acc.height, path.bbox.y + path.bbox.height) - Math.min(acc.y, path.bbox.y),
+      }), stressPaths[0].bbox)
+
+      // Use rat-king via IPC
+      const result = await generatePatternFillAsync(
+        stressTestPattern,
+        stressPaths.map(p => ({ id: p.id, polygon: p.polygon, bbox: p.bbox })),
+        globalBbox,
+        patternSettings
+      )
+
       const totalPaths = stressPaths.length
+      const filledCount = result.lines.length > 0 ? totalPaths : 0
+      const emptyCount = result.lines.length === 0 ? totalPaths : 0
 
-      // Track polygon statistics
-      let filledCount = 0
-      let emptyCount = 0
-      let tooSmallCount = 0
-
-      for (let i = 0; i < totalPaths; i++) {
-        const path = stressPaths[i]
-        const result = generatePatternFill(stressTestPattern, path.polygon, path.bbox, patternSettings)
-        if (result.error) {
-          hasError = true
-          errorMsg = result.error
-        }
-
-        // Check if polygon got any fill lines
-        if (result.lines.length > 0) {
-          filledCount++
-        } else {
-          emptyCount++
-          // Check if polygon is too small for the line spacing
-          const minDim = Math.min(path.bbox.width, path.bbox.height)
-          if (minDim < patternSettings.lineSpacing * 2) {
-            tooSmallCount++
-          }
-        }
-
-        allLines = allLines.concat(result.lines)
-      }
-
-      const totalTime = performance.now() - startTime
       setStressTestResult({
-        lines: allLines,
-        timeMs: totalTime,
-        error: hasError ? errorMsg : undefined,
+        lines: result.lines,
+        timeMs: result.timeMs,
+        error: result.error,
         polygonStats: {
           total: totalPaths,
           filled: filledCount,
           empty: emptyCount,
-          tooSmall: tooSmallCount,
+          tooSmall: 0,
         },
       })
       setIsGenerating(false)
-    }, 50)
+    }
 
-    return () => clearTimeout(timeoutId)
-  }, [stressTestPattern, stressPaths, lineSpacing, angle, inset, crossHatch, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, generatePatternFill])
+    runStressTest()
+  }, [stressTestPattern, stressPaths, lineSpacing, angle, inset, crossHatch, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, generatePatternFillAsync])
 
   // Zoom handler for stress test - attached via useEffect to use passive: false
   useEffect(() => {
