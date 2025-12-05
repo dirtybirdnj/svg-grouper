@@ -64,6 +64,7 @@ declare global {
       onFillProgress: (callback: (data: { progress: number; status: string }) => void) => void
       offFillProgress: () => void
       abortFillGeneration: () => Promise<{ success: boolean }>
+      fillPattern: (args: { svg: string; pattern: string; spacing: number; angle: number }) => Promise<string>
     }
   }
 }

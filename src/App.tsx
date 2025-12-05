@@ -6,8 +6,11 @@ import OrderTab from './components/tabs/OrderTab'
 import MergeTab from './components/tabs/MergeTab'
 import PatternTest from './components/PatternTest'
 import { SVGNode } from './types/svg'
-import { getElementColor } from './utils/elementColor'
+import { getElementColor, getElementTypeClass } from './utils/elementColor'
 import { normalizeColor } from './utils/colorExtractor'
+import { ToolsOverlay } from './components/ToolsOverlay'
+import { FillPatternOverlay } from './components/FillPatternOverlay'
+import { executeMergeColors, executeReducePalette } from './utils/colorDistance'
 
 function AppContent() {
   const {
@@ -38,6 +41,15 @@ function AppContent() {
     toolHandlers,
     pendingFlatten,
     setPendingFlatten,
+    activeTool,
+    setActiveTool,
+    mergeColorTolerance,
+    reducePaletteCount,
+    svgElementRef,
+    fillPatternType,
+    fillPatternSpacing,
+    fillPatternAngle,
+    fillPatternKeepStrokes,
   } = useAppContext()
 
   // Calculate SVG stats from layer nodes
@@ -283,6 +295,93 @@ function AppContent() {
       return result
     }
 
+    // Split elements that have both fill AND stroke into separate elements
+    // This is essential for pen plotters where each color = one pen
+    const splitFillAndStroke = (nodes: SVGNode[]): SVGNode[] => {
+      const result: SVGNode[] = []
+      const svgElement = document.querySelector('.canvas-content svg')
+      if (!svgElement) return nodes
+
+      for (const node of nodes) {
+        // Skip nodes with customMarkup (already processed line fills)
+        if (node.customMarkup) {
+          result.push(node)
+          continue
+        }
+
+        const elementType = getElementTypeClass(node.element)
+
+        if (elementType === 'both') {
+          // This element has both fill and stroke - split it
+          const originalElement = node.element
+
+          // Capture stroke values BEFORE modifying the original element
+          const strokeValue = originalElement.getAttribute('stroke') ||
+            (originalElement.getAttribute('style')?.match(/stroke:\s*([^;]+)/)?.[1])
+          const strokeWidth = originalElement.getAttribute('stroke-width') ||
+            (originalElement.getAttribute('style')?.match(/stroke-width:\s*([^;]+)/)?.[1])
+          const strokeLinejoin = originalElement.getAttribute('stroke-linejoin')
+          const strokeLinecap = originalElement.getAttribute('stroke-linecap')
+
+          // Create stroke-only version (clone BEFORE modifying original)
+          const strokeClone = originalElement.cloneNode(true) as Element
+          strokeClone.setAttribute('fill', 'none')
+          strokeClone.setAttribute('stroke', strokeValue || '#000000')
+          if (strokeWidth) strokeClone.setAttribute('stroke-width', strokeWidth)
+          if (strokeLinejoin) strokeClone.setAttribute('stroke-linejoin', strokeLinejoin)
+          if (strokeLinecap) strokeClone.setAttribute('stroke-linecap', strokeLinecap)
+
+          // Create fill-only version (modify original)
+          originalElement.setAttribute('stroke', 'none')
+          originalElement.removeAttribute('stroke-width')
+          originalElement.removeAttribute('stroke-linejoin')
+          originalElement.removeAttribute('stroke-linecap')
+          // Remove stroke from style if present
+          const origStyle = originalElement.getAttribute('style')
+          if (origStyle) {
+            originalElement.setAttribute('style',
+              origStyle
+                .replace(/stroke:\s*[^;]+;?/g, '')
+                .replace(/stroke-width:\s*[^;]+;?/g, '')
+                .replace(/stroke-linejoin:\s*[^;]+;?/g, '')
+                .replace(/stroke-linecap:\s*[^;]+;?/g, ''))
+          }
+
+          const fillNodeId = `${node.id}-fill`
+          originalElement.setAttribute('id', fillNodeId)
+
+          result.push({
+            id: fillNodeId,
+            type: node.type,
+            name: `${node.name} (fill)`,
+            element: originalElement,
+            children: [],
+            isGroup: false
+          })
+
+          const strokeNodeId = `${node.id}-stroke`
+          strokeClone.setAttribute('id', strokeNodeId)
+
+          // Insert stroke clone after the fill element in DOM
+          originalElement.parentElement?.insertBefore(strokeClone, originalElement.nextSibling)
+
+          result.push({
+            id: strokeNodeId,
+            type: node.type,
+            name: `${node.name} (stroke)`,
+            element: strokeClone,
+            children: [],
+            isGroup: false
+          })
+        } else {
+          // Element has only fill or only stroke - keep as is
+          result.push(node)
+        }
+      }
+
+      return result
+    }
+
     const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
       const colorGroups = new Map<string, SVGNode[]>()
       nodes.forEach(node => {
@@ -341,6 +440,7 @@ function AppContent() {
 
     processedNodes = deleteEmptyLayers(processedNodes)
     processedNodes = ungroupAll(processedNodes)
+    processedNodes = splitFillAndStroke(processedNodes)
     processedNodes = groupByColor(processedNodes)
 
     setLayerNodes(processedNodes)
@@ -360,6 +460,155 @@ function AppContent() {
       window.dispatchEvent(new CustomEvent('apply-crop'))
     }
     setShowCrop(!showCrop)
+  }
+
+  // Handle tool overlay accept (merge colors or reduce palette)
+  const handleToolAccept = () => {
+    const svgElement = svgElementRef.current
+    if (!svgElement || layerNodes.length === 0) {
+      setActiveTool('none')
+      return
+    }
+
+    let newNodes: SVGNode[] = []
+
+    if (activeTool === 'merge-colors') {
+      newNodes = executeMergeColors(layerNodes, mergeColorTolerance, svgElement)
+      setStatusMessage(`Merged to ${newNodes.length} color groups`)
+    } else if (activeTool === 'reduce-palette') {
+      newNodes = executeReducePalette(layerNodes, reducePaletteCount, svgElement)
+      setStatusMessage(`Reduced to ${newNodes.length} color groups`)
+    }
+
+    if (newNodes.length > 0) {
+      setLayerNodes(newNodes)
+      setSelectedNodeIds(new Set())
+      rebuildSvgFromLayers(newNodes)
+    }
+
+    setActiveTool('none')
+  }
+
+  // Handle fill pattern accept (using rat-king-cli)
+  const handleFillPatternAccept = async () => {
+    if (selectedNodeIds.size === 0) {
+      setStatusMessage('error:Select layers to fill with pattern')
+      setActiveTool('none')
+      return
+    }
+
+    if (!window.electron?.fillPattern) {
+      setStatusMessage('error:Fill pattern not available')
+      setActiveTool('none')
+      return
+    }
+
+    setStatusMessage('Generating fill patterns...')
+
+    try {
+      // For each selected node, extract its SVG content and send to rat-king-cli
+      for (const nodeId of selectedNodeIds) {
+        const node = getNodeById(nodeId)
+        if (!node) continue
+
+        // Serialize the node's element to SVG
+        const serializer = new XMLSerializer()
+        let nodeContent = ''
+
+        if (node.customMarkup) {
+          nodeContent = node.customMarkup
+        } else {
+          nodeContent = serializer.serializeToString(node.element)
+        }
+
+        // Wrap in an SVG element with the document's dimensions
+        const svgElement = svgElementRef.current
+        const viewBox = svgElement?.getAttribute('viewBox') || '0 0 100 100'
+        const width = svgElement?.getAttribute('width') || '100'
+        const height = svgElement?.getAttribute('height') || '100'
+
+        const wrappedSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${width}" height="${height}">${nodeContent}</svg>`
+
+        // Call rat-king-cli
+        const result = await window.electron.fillPattern({
+          svg: wrappedSvg,
+          pattern: fillPatternType,
+          spacing: fillPatternSpacing,
+          angle: fillPatternAngle,
+        })
+
+        if (result) {
+          // Parse the result and extract the fill lines
+          const parser = new DOMParser()
+          const resultDoc = parser.parseFromString(result, 'image/svg+xml')
+          const resultSvg = resultDoc.querySelector('svg')
+
+          if (resultSvg) {
+            // Get the fill lines content (everything inside the SVG)
+            const fillContent = resultSvg.innerHTML
+
+            // Determine stroke color: use node's fill color or existing stroke
+            let strokeColor = '#000000'
+            const nodeFill = node.element.getAttribute('fill')
+            const nodeStroke = node.element.getAttribute('stroke')
+
+            if (nodeStroke && nodeStroke !== 'none') {
+              strokeColor = nodeStroke
+            } else if (nodeFill && nodeFill !== 'none') {
+              strokeColor = nodeFill
+            }
+
+            // Build new customMarkup with the fill pattern
+            let newMarkup = ''
+
+            if (fillPatternKeepStrokes) {
+              // Keep original strokes and add fill pattern
+              const originalStroke = serializer.serializeToString(node.element)
+              // Remove fill from original, keep stroke
+              const strokeOnly = originalStroke
+                .replace(/fill="[^"]*"/g, 'fill="none"')
+                .replace(/fill:[^;]+;?/g, '')
+
+              newMarkup = `<g id="fill-pattern-${nodeId}">
+                <g class="fill-lines" stroke="${strokeColor}" fill="none">${fillContent}</g>
+                <g class="original-stroke">${strokeOnly}</g>
+              </g>`
+            } else {
+              // Replace with just fill pattern
+              newMarkup = `<g id="fill-pattern-${nodeId}" stroke="${strokeColor}" fill="none">${fillContent}</g>`
+            }
+
+            // Update the node with the new customMarkup
+            const updateNode = (nodes: SVGNode[]): SVGNode[] => {
+              return nodes.map(n => {
+                if (n.id === nodeId) {
+                  return {
+                    ...n,
+                    customMarkup: newMarkup,
+                    fillColor: strokeColor,
+                  }
+                }
+                if (n.children.length > 0) {
+                  return { ...n, children: updateNode(n.children) }
+                }
+                return n
+              })
+            }
+
+            const updatedNodes = updateNode(layerNodes)
+            setLayerNodes(updatedNodes)
+            rebuildSvgFromLayers(updatedNodes)
+          }
+        }
+      }
+
+      setStatusMessage(`Applied ${fillPatternType} pattern to ${selectedNodeIds.size} layer(s)`)
+    } catch (error) {
+      console.error('Fill pattern error:', error)
+      setStatusMessage(`error:Fill pattern failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+    }
+
+    setActiveTool('none')
   }
 
   const handleFill = () => {
@@ -708,12 +957,17 @@ function AppContent() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [showStrokePanel])
 
-  // Handle Escape key to cancel crop
+  // Handle Escape key to cancel crop and prevent native select-all
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && showCrop) {
         setShowCrop(false)
         setStatusMessage('')
+      }
+      // Prevent native text selection on Cmd+A / Ctrl+A
+      // The Electron menu will handle this and trigger select-all-layers
+      if (e.key === 'a' && (e.metaKey || e.ctrlKey) && !e.shiftKey) {
+        e.preventDefault()
       }
     }
     document.addEventListener('keydown', handleKeyDown)
@@ -810,6 +1064,15 @@ function AppContent() {
           break
         case 'separate-compound-paths':
           toolHandlers.current?.separateCompoundPaths()
+          break
+        case 'merge-colors':
+          setActiveTool('merge-colors')
+          break
+        case 'reduce-palette':
+          setActiveTool('reduce-palette')
+          break
+        case 'fill-pattern':
+          setActiveTool('fill-pattern')
           break
       }
     })
@@ -1057,6 +1320,12 @@ function AppContent() {
             {activeTab === 'fill' && <FillTab />}
             {activeTab === 'order' && <OrderTab />}
             {activeTab === 'export' && <ExportTab />}
+            {(activeTool === 'merge-colors' || activeTool === 'reduce-palette') && (
+              <ToolsOverlay onAccept={handleToolAccept} />
+            )}
+            {activeTool === 'fill-pattern' && (
+              <FillPatternOverlay onAccept={handleFillPatternAccept} />
+            )}
           </>
         )}
       </div>

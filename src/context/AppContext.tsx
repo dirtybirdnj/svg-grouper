@@ -149,6 +149,24 @@ interface AppContextType {
   // Pending flatten flag (set by SortTab after parsing when flattenOnImport is true)
   pendingFlatten: boolean
   setPendingFlatten: (pending: boolean) => void
+
+  // Tool overlay state
+  activeTool: 'none' | 'merge-colors' | 'reduce-palette' | 'fill-pattern'
+  setActiveTool: (tool: 'none' | 'merge-colors' | 'reduce-palette' | 'fill-pattern') => void
+  mergeColorTolerance: number
+  setMergeColorTolerance: (tolerance: number) => void
+  reducePaletteCount: number
+  setReducePaletteCount: (count: number) => void
+
+  // Fill pattern settings
+  fillPatternType: string
+  setFillPatternType: (pattern: string) => void
+  fillPatternSpacing: number
+  setFillPatternSpacing: (spacing: number) => void
+  fillPatternAngle: number
+  setFillPatternAngle: (angle: number) => void
+  fillPatternKeepStrokes: boolean
+  setFillPatternKeepStrokes: (keep: boolean) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -455,6 +473,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Pending flatten flag
   const [pendingFlatten, setPendingFlatten] = useState(false)
 
+  // Tool overlay state
+  const [activeTool, setActiveTool] = useState<'none' | 'merge-colors' | 'reduce-palette' | 'fill-pattern'>('none')
+  const [mergeColorTolerance, setMergeColorTolerance] = useState(30) // 0-100, default 30
+  const [reducePaletteCount, setReducePaletteCount] = useState(6) // 2-16, default 6
+
+  // Fill pattern settings
+  const [fillPatternType, setFillPatternType] = useState('lines')
+  const [fillPatternSpacing, setFillPatternSpacing] = useState(2.5)
+  const [fillPatternAngle, setFillPatternAngle] = useState(45)
+  const [fillPatternKeepStrokes, setFillPatternKeepStrokes] = useState(true)
+
   const handleLoadStart = useCallback(() => {
     setLoadingState({
       isLoading: true,
@@ -534,6 +563,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFlattenOnImport,
     pendingFlatten,
     setPendingFlatten,
+    activeTool,
+    setActiveTool,
+    mergeColorTolerance,
+    setMergeColorTolerance,
+    reducePaletteCount,
+    setReducePaletteCount,
+    fillPatternType,
+    setFillPatternType,
+    fillPatternSpacing,
+    setFillPatternSpacing,
+    fillPatternAngle,
+    setFillPatternAngle,
+    fillPatternKeepStrokes,
+    setFillPatternKeepStrokes,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

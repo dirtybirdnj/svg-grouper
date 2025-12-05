@@ -134,7 +134,17 @@ interface PatternTestProps {
 export default function PatternTest({ onBack }: PatternTestProps) {
   const [results, setResults] = useState<PatternResult[]>([])
   const [stressTestPattern, setStressTestPattern] = useState<FillPatternType>('lines')
-  const [stressTestResult, setStressTestResult] = useState<{ lines: HatchLine[]; timeMs: number; error?: string } | null>(null)
+  const [stressTestResult, setStressTestResult] = useState<{
+    lines: HatchLine[]
+    timeMs: number
+    error?: string
+    polygonStats: {
+      total: number
+      filled: number
+      empty: number
+      tooSmall: number  // Polygons smaller than line spacing
+    }
+  } | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [showPatterns, setShowPatterns] = useState(true)
   const [showHatchLines, setShowHatchLines] = useState(true)
@@ -146,6 +156,9 @@ export default function PatternTest({ onBack }: PatternTestProps) {
   const [stressSvgOutlines, setStressSvgOutlines] = useState<string[]>([])
   const [stressSvgTransform, setStressSvgTransform] = useState<string>('')
   const [isGenerating, setIsGenerating] = useState(false)
+  // Cached background PNG - rendered once, used as background layer
+  const [backgroundPngUrl, setBackgroundPngUrl] = useState<string | null>(null)
+  const [backgroundPngSize, setBackgroundPngSize] = useState({ width: 0, height: 0 })
 
   // Torture test state (runs all patterns on stress geometry)
   const [tortureTestResults, setTortureTestResults] = useState<TortureTestResult[]>([])
@@ -348,6 +361,11 @@ export default function PatternTest({ onBack }: PatternTestProps) {
       let hasError = false
       let errorMsg = ''
 
+      // Track polygon statistics
+      let filledCount = 0
+      let emptyCount = 0
+      let tooSmallCount = 0
+
       try {
         for (const path of stressPaths) {
           const result = generatePatternFill(pattern, path.polygon, path.bbox, patternSettings)
@@ -355,6 +373,18 @@ export default function PatternTest({ onBack }: PatternTestProps) {
             hasError = true
             errorMsg = result.error
           }
+
+          // Check if polygon got any fill lines
+          if (result.lines.length > 0) {
+            filledCount++
+          } else {
+            emptyCount++
+            const minDim = Math.min(path.bbox.width, path.bbox.height)
+            if (minDim < patternSettings.lineSpacing * 2) {
+              tooSmallCount++
+            }
+          }
+
           allLines = allLines.concat(result.lines)
         }
       } catch (e) {
@@ -380,6 +410,12 @@ export default function PatternTest({ onBack }: PatternTestProps) {
         lines: allLines,
         timeMs: totalTime,
         error: hasError ? errorMsg : undefined,
+        polygonStats: {
+          total: stressPaths.length,
+          filled: filledCount,
+          empty: emptyCount,
+          tooSmall: tooSmallCount,
+        },
       })
     }
 
@@ -524,6 +560,83 @@ export default function PatternTest({ onBack }: PatternTestProps) {
     setStressOffset({ x: offsetX, y: offsetY })
   }, [stressPaths.length, stressViewBox])
 
+  // Generate high-res background PNG when SVG data loads
+  // This is rendered once and cached, used as background layer for performance
+  useEffect(() => {
+    if (stressSvgOutlines.length === 0 || !stressViewBox) return
+
+    const generateBackgroundPng = async () => {
+      const vbParts = stressViewBox.split(' ').map(Number)
+      if (vbParts.length !== 4) return
+
+      const [vbX, vbY, vbWidth, vbHeight] = vbParts
+
+      // High-res: 4x the viewBox size (same as display)
+      const scale = 4
+      const width = Math.ceil(vbWidth * scale)
+      const height = Math.ceil(vbHeight * scale)
+
+      // Create offscreen canvas
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+
+      // White background
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
+
+      // Apply transform to match SVG coordinate system
+      ctx.save()
+      ctx.scale(scale, scale)
+      ctx.translate(-vbX, -vbY)
+
+      // Parse and apply the SVG transform if present
+      if (stressSvgTransform) {
+        // Parse transform like "translate(10, 32.867) scale(0.111) translate(0, 0)"
+        const transforms = stressSvgTransform.match(/\w+\([^)]+\)/g) || []
+        for (const t of transforms) {
+          const match = t.match(/(\w+)\(([^)]+)\)/)
+          if (match) {
+            const [, fn, args] = match
+            const nums = args.split(/[,\s]+/).map(Number)
+            if (fn === 'translate' && nums.length >= 2) {
+              ctx.translate(nums[0], nums[1])
+            } else if (fn === 'scale') {
+              if (nums.length >= 2) {
+                ctx.scale(nums[0], nums[1])
+              } else if (nums.length === 1) {
+                ctx.scale(nums[0], nums[0])
+              }
+            }
+          }
+        }
+      }
+
+      // Draw all paths with solid fill (for ground truth) and stroke
+      ctx.fillStyle = '#a8d483'
+      ctx.strokeStyle = '#666666'
+      ctx.lineWidth = 0.5
+
+      for (const d of stressSvgOutlines) {
+        const path = new Path2D(d)
+        ctx.fill(path)
+        ctx.stroke(path)
+      }
+
+      ctx.restore()
+
+      // Convert to PNG data URL
+      const dataUrl = canvas.toDataURL('image/png')
+      setBackgroundPngUrl(dataUrl)
+      setBackgroundPngSize({ width, height })
+      console.log(`[PatternTest] Generated background PNG: ${width}x${height}`)
+    }
+
+    generateBackgroundPng()
+  }, [stressSvgOutlines, stressViewBox, stressSvgTransform])
+
   // Run stress test when pattern changes or paths load
   useEffect(() => {
     if (stressPaths.length === 0) return
@@ -539,6 +652,11 @@ export default function PatternTest({ onBack }: PatternTestProps) {
       let errorMsg = ''
       const totalPaths = stressPaths.length
 
+      // Track polygon statistics
+      let filledCount = 0
+      let emptyCount = 0
+      let tooSmallCount = 0
+
       for (let i = 0; i < totalPaths; i++) {
         const path = stressPaths[i]
         const result = generatePatternFill(stressTestPattern, path.polygon, path.bbox, patternSettings)
@@ -546,6 +664,19 @@ export default function PatternTest({ onBack }: PatternTestProps) {
           hasError = true
           errorMsg = result.error
         }
+
+        // Check if polygon got any fill lines
+        if (result.lines.length > 0) {
+          filledCount++
+        } else {
+          emptyCount++
+          // Check if polygon is too small for the line spacing
+          const minDim = Math.min(path.bbox.width, path.bbox.height)
+          if (minDim < patternSettings.lineSpacing * 2) {
+            tooSmallCount++
+          }
+        }
+
         allLines = allLines.concat(result.lines)
       }
 
@@ -554,6 +685,12 @@ export default function PatternTest({ onBack }: PatternTestProps) {
         lines: allLines,
         timeMs: totalTime,
         error: hasError ? errorMsg : undefined,
+        polygonStats: {
+          total: totalPaths,
+          filled: filledCount,
+          empty: emptyCount,
+          tooSmall: tooSmallCount,
+        },
       })
       setIsGenerating(false)
     }, 50)
@@ -861,11 +998,28 @@ export default function PatternTest({ onBack }: PatternTestProps) {
               <div className="stress-test-result">
                 <div className="stress-test-stats">
                   <div>Polygons: {stressPaths.length}</div>
-                  <div>Total vertices: {stressPaths.reduce((sum, p) => sum + p.polygon.outer.length, 0).toLocaleString()}</div>
+                  <div>Vertices: {stressPaths.reduce((sum, p) => sum + p.polygon.outer.length, 0).toLocaleString()}</div>
+                  {backgroundPngSize.width > 0 && (
+                    <div>BG: {backgroundPngSize.width}x{backgroundPngSize.height}</div>
+                  )}
                   {stressTestResult && (
                     <>
                       <div>Generated lines: {stressTestResult.lines.length.toLocaleString()}</div>
                       <div>Time: {stressTestResult.timeMs.toFixed(1)}ms</div>
+                      <div className="polygon-stats">
+                        <span className="stat-filled">Filled: {stressTestResult.polygonStats.filled}</span>
+                        {stressTestResult.polygonStats.empty > 0 && (
+                          <>
+                            <span className="stat-empty"> | Empty: {stressTestResult.polygonStats.empty}</span>
+                            {stressTestResult.polygonStats.tooSmall > 0 && (
+                              <span className="stat-small"> ({stressTestResult.polygonStats.tooSmall} too small)</span>
+                            )}
+                            {stressTestResult.polygonStats.empty - stressTestResult.polygonStats.tooSmall > 0 && (
+                              <span className="stat-bug"> ({stressTestResult.polygonStats.empty - stressTestResult.polygonStats.tooSmall} missing!)</span>
+                            )}
+                          </>
+                        )}
+                      </div>
                       {stressTestResult.error && (
                         <div className="error-text">Error: {stressTestResult.error}</div>
                       )}
@@ -898,20 +1052,35 @@ export default function PatternTest({ onBack }: PatternTestProps) {
                         height: `${parseFloat(stressViewBox.split(' ')[3] || '297') * 4}px`,
                       }}
                     >
-                      {/* Apply the transform from the original SVG */}
+                      {/* Use cached PNG as background layer (much faster than drawing paths) */}
+                      {backgroundPngUrl && (
+                        <image
+                          href={backgroundPngUrl}
+                          x={stressViewBox.split(' ')[0]}
+                          y={stressViewBox.split(' ')[1]}
+                          width={stressViewBox.split(' ')[2]}
+                          height={stressViewBox.split(' ')[3]}
+                          opacity={shapeFillOpacity / 100}
+                          preserveAspectRatio="none"
+                        />
+                      )}
+                      {/* Fallback: draw paths if PNG not ready */}
+                      {!backgroundPngUrl && (
+                        <g transform={stressSvgTransform}>
+                          {stressSvgOutlines.map((d, i) => (
+                            <path
+                              key={`outline-${i}`}
+                              d={d}
+                              fill="#a8d483"
+                              fillOpacity={shapeFillOpacity / 100}
+                              stroke="#666"
+                              strokeWidth={0.5}
+                            />
+                          ))}
+                        </g>
+                      )}
+                      {/* Draw the hatch/pattern lines on top */}
                       <g transform={stressSvgTransform}>
-                        {/* Draw all original path outlines with controllable fill opacity */}
-                        {stressSvgOutlines.map((d, i) => (
-                          <path
-                            key={`outline-${i}`}
-                            d={d}
-                            fill="#a8d483"
-                            fillOpacity={shapeFillOpacity / 100}
-                            stroke="#666"
-                            strokeWidth={0.5}
-                          />
-                        ))}
-                        {/* Draw the hatch/pattern lines */}
                         {showHatchLines && stressTestResult && (
                           <path
                             d={linesToPath(stressTestResult.lines)}

@@ -445,6 +445,30 @@
   font-weight: 600;
 }
 
+.stress-test-stats .polygon-stats {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.stress-test-stats .stat-filled {
+  color: #27ae60;
+  font-weight: 500;
+}
+
+.stress-test-stats .stat-empty {
+  color: #f39c12;
+}
+
+.stress-test-stats .stat-small {
+  color: #95a5a6;
+  font-style: italic;
+}
+
+.stress-test-stats .stat-bug {
+  color: #e74c3c;
+  font-weight: 600;
+}
+
 .stress-test-viewport {
   background: white;
   border: 1px solid #ddd;

@@ -301,6 +301,91 @@ ipcMain.handle('export-multiple-files', async (_event, args: { files: { name: st
   }
 })
 
+// Hardcoded path to rat-king-cli for MVP
+const RAT_KING_CLI = '/Users/mgilbert/Code/rat-king/target/release/rat-king'
+
+// IPC Handler for fill pattern generation using rat-king-cli
+ipcMain.handle('fill-pattern', async (_event, args: {
+  svg: string
+  pattern: string
+  spacing: number
+  angle: number
+}) => {
+  return new Promise<string>((resolve, reject) => {
+    try {
+      const { svg, pattern, spacing, angle } = args
+
+      if (!svg || typeof svg !== 'string') {
+        reject(new Error('Invalid SVG input'))
+        return
+      }
+
+      // Write SVG to a temp file
+      const tmpDir = app.getPath('temp')
+      const tmpInput = path.join(tmpDir, `svg-grouper-fill-input-${Date.now()}.svg`)
+
+      fs.writeFileSync(tmpInput, svg, 'utf-8')
+
+      // Build command arguments
+      const cliArgs = [
+        'fill',
+        tmpInput,
+        '-p', pattern,
+        '-s', spacing.toString(),
+        '-a', angle.toString()
+      ]
+
+      console.log(`[fill-pattern] Running: ${RAT_KING_CLI} ${cliArgs.join(' ')}`)
+
+      const proc = spawn(RAT_KING_CLI, cliArgs, {
+        maxBuffer: 50 * 1024 * 1024
+      })
+
+      let output = ''
+      let errorOutput = ''
+
+      proc.stdout.on('data', (data) => {
+        output += data.toString()
+      })
+
+      proc.stderr.on('data', (data) => {
+        errorOutput += data.toString()
+        console.log(`[fill-pattern] stderr: ${data.toString()}`)
+      })
+
+      proc.on('close', (code) => {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tmpInput)
+        } catch {
+          // Ignore cleanup errors
+        }
+
+        if (code !== 0) {
+          reject(new Error(`rat-king-cli failed with code ${code}: ${errorOutput}`))
+        } else {
+          resolve(output)
+        }
+      })
+
+      proc.on('error', (err) => {
+        // Clean up temp file
+        try {
+          fs.unlinkSync(tmpInput)
+        } catch {
+          // Ignore cleanup errors
+        }
+
+        console.error(`[fill-pattern] Process error:`, err)
+        reject(new Error(`Failed to start rat-king-cli: ${err.message}`))
+      })
+    } catch (err) {
+      console.error(`[fill-pattern] Unexpected error:`, err)
+      reject(new Error(`Unexpected error: ${err instanceof Error ? err.message : 'Unknown error'}`))
+    }
+  })
+})
+
 // Send menu command to renderer
 function sendMenuCommand(command: string) {
   if (win) {
@@ -370,11 +455,9 @@ function createMenu() {
         { role: 'cut' as const },
         { role: 'copy' as const },
         { role: 'paste' as const },
-        { role: 'selectAll' as const },
-        { type: 'separator' as const },
         {
           label: 'Select All Layers',
-          accelerator: 'CmdOrCtrl+Shift+A',
+          accelerator: 'CmdOrCtrl+A',
           click: () => sendMenuCommand('select-all-layers')
         }
       ]
@@ -462,6 +545,23 @@ function createMenu() {
         {
           label: 'Separate Compound Paths',
           click: () => sendMenuCommand('separate-compound-paths')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Merge Similar Colors...',
+          accelerator: 'CmdOrCtrl+Shift+M',
+          click: () => sendMenuCommand('merge-colors')
+        },
+        {
+          label: 'Reduce to Palette...',
+          accelerator: 'CmdOrCtrl+Shift+R',
+          click: () => sendMenuCommand('reduce-palette')
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Fill with Pattern...',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: () => sendMenuCommand('fill-pattern')
         }
       ]
     },
