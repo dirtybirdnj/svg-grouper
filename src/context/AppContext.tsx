@@ -42,7 +42,8 @@ export interface OrderData {
   boundingBox: { x: number; y: number; width: number; height: number }
   source: 'fill' | 'sort'
   // For fill source, store the callback to apply the fill
-  onApply?: (orderedLines: OrderLine[]) => void
+  // improvement is the % travel distance saved by optimization
+  onApply?: (orderedLines: OrderLine[], improvement: number) => void
 }
 
 interface AppContextType {
@@ -167,6 +168,18 @@ interface AppContextType {
   setFillPatternAngle: (angle: number) => void
   fillPatternKeepStrokes: boolean
   setFillPatternKeepStrokes: (keep: boolean) => void
+
+  // Plotter optimization settings (shared between OrderTab and ExportTab)
+  optimizationSettings: {
+    optimizePaths: boolean
+    joinPaths: boolean
+    joinTolerance: number
+  }
+  setOptimizationSettings: (settings: {
+    optimizePaths: boolean
+    joinPaths: boolean
+    joinTolerance: number
+  }) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -323,7 +336,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // For leaf nodes, use the element's outer HTML
       const serializer = new XMLSerializer()
+
+      // Clean up any highlight/selection styles before serializing
+      // These are temporary UI styles that shouldn't be persisted
+      const svgEl = node.element as SVGElement
+      const originalOutline = svgEl.style?.outline || ''
+      const originalOutlineOffset = svgEl.style?.outlineOffset || ''
+      if (svgEl.style) {
+        svgEl.style.outline = ''
+        svgEl.style.outlineOffset = ''
+      }
+
       let markup = serializer.serializeToString(node.element)
+
+      // Restore original styles (in case element is still in use)
+      if (svgEl.style) {
+        svgEl.style.outline = originalOutline
+        svgEl.style.outlineOffset = originalOutlineOffset
+      }
 
       // Ensure the element has an ID for later lookup
       if (!markup.includes(` id="`)) {
@@ -484,6 +514,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [fillPatternAngle, setFillPatternAngle] = useState(45)
   const [fillPatternKeepStrokes, setFillPatternKeepStrokes] = useState(true)
 
+  // Plotter optimization settings (shared between OrderTab and ExportTab)
+  const [optimizationSettings, setOptimizationSettings] = useState({
+    optimizePaths: true,
+    joinPaths: true,
+    joinTolerance: 0.5,
+  })
+
   const handleLoadStart = useCallback(() => {
     setLoadingState({
       isLoading: true,
@@ -577,6 +614,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFillPatternAngle,
     fillPatternKeepStrokes,
     setFillPatternKeepStrokes,
+    optimizationSettings,
+    setOptimizationSettings,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
