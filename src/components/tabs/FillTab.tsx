@@ -3,6 +3,7 @@ import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import { findNodeById } from '../../utils/nodeUtils'
 import { OPTIMIZATION, UI } from '../../constants'
+import { usePanZoom } from '../../hooks'
 import {
   Point,
   HatchLine,
@@ -923,11 +924,10 @@ export default function FillTab() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [selectedControl, lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth])
 
-  // Drag state for pan
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-
-  const previewRef = useRef<HTMLDivElement>(null)
+  // Use shared pan/zoom hook with global state
+  const { isPanning: isDragging, containerRef: previewRef, handlers: panZoomHandlers } = usePanZoom({
+    externalState: { scale, setScale, offset, setOffset }
+  })
 
   // Find the target nodes (supports multiple selection)
   // Falls back to selectedNodeIds from Sort tab when fillTargetNodeIds is empty
@@ -2134,40 +2134,7 @@ export default function FillTab() {
     }, 0)
   }, [boundingBox, simplifiedHatchedPaths, setOrderData, setActiveTab, handleApplyFill, setIsProcessing])
 
-  // Wheel zoom handler - use native event listener to support passive: false
-  useEffect(() => {
-    const element = previewRef.current
-    if (!element) return
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const delta = e.deltaY > 0 ? 0.9 : 1.1
-      setScale(Math.max(0.1, Math.min(10, scale * delta)))
-    }
-
-    element.addEventListener('wheel', handleWheel, { passive: false })
-    return () => element.removeEventListener('wheel', handleWheel)
-  }, [scale, setScale])
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button === 0) {
-      setIsDragging(true)
-      setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y })
-    }
-  }, [offset])
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isDragging) {
-      setOffset({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
-      })
-    }
-  }, [isDragging, dragStart, setOffset])
-
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false)
-  }, [])
+  // Pan/zoom is now handled by usePanZoom hook
 
   if (!svgContent) {
     return (
@@ -2363,10 +2330,7 @@ export default function FillTab() {
       <main
         className="fill-main"
         ref={previewRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        {...panZoomHandlers}
       >
         {previewSvg ? (
           <div

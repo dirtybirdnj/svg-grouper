@@ -1,0 +1,122 @@
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.layer-list.empty {
+  padding: 12px;
+  color: #666;
+  font-style: italic;
+}
+
+.layer-list-empty {
+  text-align: center;
+  padding: 8px;
+}
+
+.layer-list-controls {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.layer-list-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.layer-list-btn:hover:not(:disabled) {
+  background: #e0e0e0;
+}
+
+.layer-list-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.layer-list-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.layer-list-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  background: #f8f8f8;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+
+.layer-list-item:hover {
+  background: #f0f0f0;
+}
+
+.layer-list-item.selected {
+  background: #e3f2fd;
+  border-color: #2196f3;
+}
+
+.layer-list-item.dragging {
+  opacity: 0.5;
+}
+
+.layer-list-item.drag-over {
+  border-color: #4caf50;
+  border-style: dashed;
+}
+
+/* Color Layer Item Styles */
+.color-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.layer-checkbox {
+  margin: 0;
+  cursor: pointer;
+}
+
+.layer-color-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+
+.layer-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.layer-badge {
+  font-size: 10px;
+  padding: 1px 4px;
+  background: #e0e0e0;
+  border-radius: 2px;
+  color: #666;
+}
+
+.layer-count {
+  font-size: 11px;
+  color: #888;
+  flex-shrink: 0;
+}

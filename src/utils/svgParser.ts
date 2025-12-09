@@ -1,9 +1,12 @@
 import { SVGNode } from '../types/svg'
+import { nanoid } from 'nanoid'
 
-let nodeIdCounter = 0
-
+/**
+ * Generate a unique node ID using nanoid.
+ * This ensures IDs are unique across multiple parse operations and SVG imports.
+ */
 function generateNodeId(): string {
-  return `node-${nodeIdCounter++}`
+  return `svg-${nanoid(10)}`
 }
 
 function getElementName(element: Element): string {
@@ -63,8 +66,6 @@ function parseNode(element: Element): SVGNode {
 }
 
 export function parseSVG(svgElement: SVGSVGElement): SVGNode[] {
-  nodeIdCounter = 0 // Reset counter for each parse
-
   const children = Array.from(svgElement.children).filter(shouldIncludeElement)
   return children.map(child => parseNode(child))
 }
@@ -74,8 +75,6 @@ export async function parseSVGProgressively(
   svgElement: SVGSVGElement,
   onProgress?: (progress: number, status: string) => void
 ): Promise<SVGNode[]> {
-  nodeIdCounter = 0
-
   const children = Array.from(svgElement.children).filter(shouldIncludeElement)
   const totalElements = countTotalElements(svgElement)
   let processedElements = 0
@@ -171,7 +170,6 @@ const LEAF_TAGS = ['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'pol
  * This is the preferred parsing mode for pen plotter workflows.
  */
 export function parseSVGFlat(svgElement: SVGSVGElement): SVGNode[] {
-  nodeIdCounter = 0
   const result: SVGNode[] = []
 
   function extractLeaves(
@@ -246,7 +244,6 @@ export async function parseSVGFlatProgressively(
   svgElement: SVGSVGElement,
   onProgress?: (progress: number, status: string) => void
 ): Promise<SVGNode[]> {
-  nodeIdCounter = 0
   const result: SVGNode[] = []
 
   // Count total leaf elements

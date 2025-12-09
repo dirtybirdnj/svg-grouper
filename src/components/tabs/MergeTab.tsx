@@ -3,6 +3,8 @@ import { useAppContext } from '../../context/AppContext'
 import { SVGNode } from '../../types/svg'
 import { Point, getAllPolygonsFromElement, PolygonWithHoles } from '../../utils/geometry'
 import { OPTIMIZATION, UI } from '../../constants'
+import { usePanZoom } from '../../hooks'
+import { StatSection, StatRow } from '../shared'
 import './MergeTab.css'
 
 // Debug logging - set to false for production
@@ -327,10 +329,10 @@ export default function MergeTab() {
     setActiveTab,
     rebuildSvgFromLayers,
     setStatusMessage,
-    scale,  // Use global zoom state
-    setScale,  // Update global zoom
-    offset, // Use global pan state
-    setOffset, // Update global pan
+    scale,
+    setScale,
+    offset,
+    setOffset,
   } = useAppContext()
 
   const [operation, setOperation] = useState<MergeOperation>('union')
@@ -343,11 +345,10 @@ export default function MergeTab() {
   // Which shapes are selected for merging
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set())
 
-  // Pan state
-  const [isPanning, setIsPanning] = useState(false)
-  const [panStart, setPanStart] = useState({ x: 0, y: 0 })
-
-  const canvasRef = useRef<HTMLDivElement>(null)
+  // Use shared pan/zoom hook with global state
+  const { isPanning, containerRef: canvasRef, handlers: panZoomHandlers } = usePanZoom({
+    externalState: { scale, setScale, offset, setOffset }
+  })
   const hasInitialized = useRef(false)
 
   // Helper to find node by ID
@@ -735,50 +736,7 @@ export default function MergeTab() {
     setActiveTab('sort')
   }, [setActiveTab])
 
-  // Handle scroll wheel zoom on merge preview - updates global scale
-  useEffect(() => {
-    const container = canvasRef.current
-    if (!container) return
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      // Support both regular scroll and pinch-to-zoom (ctrlKey is set for pinch)
-      const delta = e.ctrlKey
-        ? (e.deltaY > 0 ? 0.95 : 1.05)  // Finer control for pinch
-        : (e.deltaY > 0 ? 0.9 : 1.1)
-      setScale(Math.min(10, Math.max(0.1, scale * delta)))
-    }
-
-    container.addEventListener('wheel', handleWheel, { passive: false })
-    return () => container.removeEventListener('wheel', handleWheel)
-  }, [scale, setScale])
-
-  // Pan handlers
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    // Only pan on left click
-    if (e.button === 0) {
-      setIsPanning(true)
-      setPanStart({ x: e.clientX - offset.x, y: e.clientY - offset.y })
-    }
-  }, [offset])
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isPanning) {
-      setOffset({
-        x: e.clientX - panStart.x,
-        y: e.clientY - panStart.y
-      })
-    }
-  }, [isPanning, panStart, setOffset])
-
-  const handleMouseUp = useCallback(() => {
-    setIsPanning(false)
-  }, [])
-
-  const handleMouseLeave = useCallback(() => {
-    setIsPanning(false)
-  }, [])
+  // Pan/zoom is now handled by usePanZoom hook
 
   // Stats
   const stats = useMemo(() => {
@@ -924,33 +882,15 @@ export default function MergeTab() {
           </div>
 
           {selectedPolygons.length >= 2 && (
-            <div className="merge-section">
-              <h3>Statistics</h3>
-              <div className="merge-stats">
-                <div className="stat-row">
-                  <span className="stat-label">Original vertices</span>
-                  <span className="stat-value">{stats.originalVertices}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-label">Merged vertices</span>
-                  <span className="stat-value">{stats.mergedVertices}</span>
-                </div>
-                {stats.originalHoles > 0 && (
-                  <div className="stat-row">
-                    <span className="stat-label">Holes preserved</span>
-                    <span className="stat-value">{stats.mergedHoles}</span>
-                  </div>
-                )}
-                <div className="stat-row highlight">
-                  <span className="stat-label">Shared edges</span>
-                  <span className="stat-value">{stats.sharedEdges}</span>
-                </div>
-                <div className="stat-row highlight">
-                  <span className="stat-label">Edges removed</span>
-                  <span className="stat-value">{stats.removedEdges}</span>
-                </div>
-              </div>
-            </div>
+            <StatSection title="Statistics" className="merge-section">
+              <StatRow label="Original vertices" value={stats.originalVertices} />
+              <StatRow label="Merged vertices" value={stats.mergedVertices} />
+              {stats.originalHoles > 0 && (
+                <StatRow label="Holes preserved" value={stats.mergedHoles} />
+              )}
+              <StatRow label="Shared edges" value={stats.sharedEdges} highlight />
+              <StatRow label="Edges removed" value={stats.removedEdges} highlight />
+            </StatSection>
           )}
 
           <div className="merge-actions">
@@ -981,10 +921,7 @@ export default function MergeTab() {
       <div
         className={`merge-main ${isPanning ? 'panning' : ''}`}
         ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeave}
+        {...panZoomHandlers}
       >
         <div className="merge-preview-container">
           {boundingBox && (

@@ -10,7 +10,8 @@
     "package": "npm run build && electron-builder --mac",
     "package:win": "npm run build && electron-builder --win",
     "package:linux": "npm run build && electron-builder --linux",
-    "package:all": "npm run build && electron-builder --mac --win --linux"
+    "package:all": "npm run build && electron-builder --mac --win --linux",
+    "validate-svg": "node scripts/validate-svg.js"
   },
   "build": {
     "appId": "com.dirtybirdnj.svg-grouper",
@@ -96,6 +97,7 @@
     "@types/react": "^19.2.6",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "cheerio": "^1.1.2",
     "electron": "^39.2.1",
     "electron-builder": "^26.0.12",
     "typescript": "^5.9.3",
@@ -105,6 +107,7 @@
   },
   "dependencies": {
     "font-color-contrast": "^11.1.0",
+    "nanoid": "^5.1.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "simplify-js": "^1.2.4"

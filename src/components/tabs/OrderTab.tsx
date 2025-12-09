@@ -2,6 +2,8 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useAppContext, OrderLine } from '../../context/AppContext'
 import { Point, distance } from '../../utils/geometry'
 import { ANIMATION, OPTIMIZATION, UI } from '../../constants'
+import { usePanZoom } from '../../hooks'
+import { StatSection, StatRow, LayerList, ColorLayerItem } from '../shared'
 import './OrderTab.css'
 
 // Sanitize color to prevent XSS in SVG innerHTML
@@ -231,10 +233,10 @@ export default function OrderTab() {
   const animationRef = useRef<number | null>(null)
   const animationStartRef = useRef<{ time: number; progress: number }>({ time: 0, progress: 0 })
 
-  // Drag state for pan
-  const [isDragging, setIsDragging] = useState(false)
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
-  const previewRef = useRef<HTMLDivElement>(null)
+  // Use shared pan/zoom hook with global state
+  const { isPanning: isDragging, containerRef: previewRef, handlers: panZoomHandlers } = usePanZoom({
+    externalState: { scale, setScale, offset, setOffset }
+  })
 
   // Extract unique layers from lines
   const layers = useMemo((): LayerInfo[] => {
@@ -573,40 +575,7 @@ export default function OrderTab() {
     }
   }, [animationDuration]) // Only re-run when speed changes
 
-  // Wheel zoom handler - use native event listener to support passive: false
-  useEffect(() => {
-    const element = previewRef.current
-    if (!element) return
-
-    const handleWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const delta = e.deltaY > 0 ? 0.9 : 1.1
-      setScale(Math.max(0.1, Math.min(10, scale * delta)))
-    }
-
-    element.addEventListener('wheel', handleWheel, { passive: false })
-    return () => element.removeEventListener('wheel', handleWheel)
-  }, [scale, setScale])
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (e.button === 0) {
-      setIsDragging(true)
-      setDragStart({ x: e.clientX - offset.x, y: e.clientY - offset.y })
-    }
-  }, [offset])
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (isDragging) {
-      setOffset({
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
-      })
-    }
-  }, [isDragging, dragStart, setOffset])
-
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false)
-  }, [])
+  // Pan/zoom is now handled by usePanZoom hook
 
   if (!orderData) {
     return (
@@ -632,75 +601,44 @@ export default function OrderTab() {
           <h2>Path Order</h2>
         </div>
         <div className="sidebar-content">
-          <div className="order-section">
-            <h3>Statistics</h3>
-            <div className="order-stats">
-              <div className="stat-row">
-                <span className="stat-label">Total Lines:</span>
-                <span className="stat-value">{optimizedLines.length}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Pen Changes:</span>
-                <span className="stat-value">{penChanges.length}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Travel (original):</span>
-                <span className="stat-value">{stats.unoptimizedDistance.toFixed(1)}px</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-label">Travel (optimized):</span>
-                <span className="stat-value">{stats.optimizedDistance.toFixed(1)}px</span>
-              </div>
-              <div className="stat-row highlight">
-                <span className="stat-label">Saved:</span>
-                <span className="stat-value">{stats.improvement.toFixed(1)}%</span>
-              </div>
-            </div>
-          </div>
+          <StatSection title="Statistics" className="order-section">
+            <StatRow label="Total Lines" value={optimizedLines.length} />
+            <StatRow label="Pen Changes" value={penChanges.length} />
+            <StatRow label="Travel (original)" value={`${stats.unoptimizedDistance.toFixed(1)}px`} />
+            <StatRow label="Travel (optimized)" value={`${stats.optimizedDistance.toFixed(1)}px`} />
+            <StatRow label="Saved" value={`${stats.improvement.toFixed(1)}%`} highlight />
+          </StatSection>
 
           {/* Layers section - only show if multiple layers */}
           {layers.length > 1 && (
             <div className="order-section">
               <h3>Layers ({layers.length})</h3>
-              <div className="layer-controls">
-                <div className="layer-actions">
-                  <button
-                    className="layer-action-btn"
-                    onClick={() => handleToggleAllLayers(true)}
-                    disabled={visibleLayers.size === layers.length}
-                  >
-                    All
-                  </button>
-                  <button
-                    className="layer-action-btn"
-                    onClick={() => handleToggleAllLayers(false)}
-                    disabled={visibleLayers.size === 0}
-                  >
-                    None
-                  </button>
-                </div>
-                <div className="layer-list">
-                  {layers.map((layer, idx) => (
-                    <label key={layer.pathId} className="layer-item">
-                      <input
-                        type="checkbox"
-                        checked={visibleLayers.has(layer.pathId)}
-                        onChange={() => handleToggleLayer(layer.pathId)}
-                      />
-                      <span
-                        className="layer-color"
-                        style={{ backgroundColor: layer.color }}
-                      />
-                      <span className="layer-name">
-                        Layer {idx + 1}
-                      </span>
-                      <span className="layer-count">
-                        {layer.lineCount}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <LayerList
+                items={layers.map((layer, idx) => ({
+                  id: layer.pathId,
+                  color: layer.color,
+                  name: `Layer ${idx + 1}`,
+                  lineCount: layer.lineCount,
+                }))}
+                selectedIds={visibleLayers}
+                onSelectionChange={(ids) => {
+                  setVisibleLayers(ids)
+                  setAnimationProgress(0)
+                }}
+                showToggleAll
+                onToggleAll={(selectAll) => handleToggleAllLayers(selectAll)}
+                renderItem={(item, isSelected) => (
+                  <ColorLayerItem
+                    color={item.color || '#666'}
+                    name={item.name || item.id}
+                    count={item.lineCount}
+                    countLabel="lines"
+                    showCheckbox
+                    checked={isSelected}
+                    onCheckChange={() => handleToggleLayer(item.id)}
+                  />
+                )}
+              />
             </div>
           )}
 
@@ -834,10 +772,7 @@ export default function OrderTab() {
       <main
         className="order-main"
         ref={previewRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        {...panZoomHandlers}
       >
         {previewSvg ? (
           <div
