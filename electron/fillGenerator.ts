@@ -232,13 +232,25 @@ interface RatKingJsonResult {
 function runRatKingJson(svgContent: string, pattern: string, spacing: number, angle: number): Promise<RatKingJsonResult> {
   return new Promise((resolve, reject) => {
     const ratKingBin = findRatKingBinary()
+
+    // Use temp file since stdin mode (-) is broken in current rat-king
+    const tmpDir = os.tmpdir()
+    const tmpInput = path.join(tmpDir, `ratking-input-${Date.now()}.svg`)
+
+    try {
+      fs.writeFileSync(tmpInput, svgContent)
+    } catch (e) {
+      reject(new Error(`Failed to write temp file: ${e}`))
+      return
+    }
+
     const args = [
-      'fill', '-',  // stdin (read SVG from stdin)
+      'fill', tmpInput,
       '-p', pattern,
       '-s', spacing.toString(),
       '-a', angle.toString(),
-      '--json',     // output as JSON (not -f json)
-      '--grouped',  // group lines by polygon
+      '--json',
+      '--grouped',
     ]
 
     const proc = spawn(ratKingBin, args)
@@ -249,6 +261,9 @@ function runRatKingJson(svgContent: string, pattern: string, spacing: number, an
     proc.stderr.on('data', (d) => stderr += d.toString())
 
     proc.on('close', (code) => {
+      // Clean up temp file
+      try { fs.unlinkSync(tmpInput) } catch {}
+
       if (code === 0) {
         try {
           const result = JSON.parse(stdout) as RatKingJsonResult
@@ -262,20 +277,9 @@ function runRatKingJson(svgContent: string, pattern: string, spacing: number, an
     })
 
     proc.on('error', (err) => {
+      try { fs.unlinkSync(tmpInput) } catch {}
       reject(new Error(`Failed to spawn rat-king: ${err.message}`))
     })
-
-    // Handle stdin errors (EPIPE if process exits early)
-    proc.stdin.on('error', (err) => {
-      // EPIPE is expected if process exits before we finish writing
-      if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
-        console.error('[rat-king] stdin error:', err)
-      }
-    })
-
-    // Write SVG to stdin
-    proc.stdin.write(svgContent)
-    proc.stdin.end()
   })
 }
 
