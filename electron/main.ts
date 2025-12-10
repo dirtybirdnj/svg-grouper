@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, MenuItemConstructorOptions }
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
-import { registerFillGeneratorIPC } from './fillGenerator'
+import { registerFillGeneratorIPC, findRatKingBinary } from './fillGenerator'
 
 process.env.DIST = path.join(__dirname, '../dist')
 process.env.VITE_PUBLIC = app.isPackaged
@@ -301,9 +301,6 @@ ipcMain.handle('export-multiple-files', async (_event, args: { files: { name: st
   }
 })
 
-// Hardcoded path to rat-king-cli for MVP
-const RAT_KING_CLI = '/Users/mgilbert/Code/rat-king/target/release/rat-king'
-
 // IPC Handler for fill pattern generation using rat-king-cli
 ipcMain.handle('fill-pattern', async (_event, args: {
   svg: string
@@ -327,6 +324,7 @@ ipcMain.handle('fill-pattern', async (_event, args: {
       fs.writeFileSync(tmpInput, svg, 'utf-8')
 
       // Build command arguments
+      const ratKingBin = findRatKingBinary()
       const cliArgs = [
         'fill',
         tmpInput,
@@ -335,9 +333,9 @@ ipcMain.handle('fill-pattern', async (_event, args: {
         '-a', angle.toString()
       ]
 
-      console.log(`[fill-pattern] Running: ${RAT_KING_CLI} ${cliArgs.join(' ')}`)
+      console.log(`[fill-pattern] Running: ${ratKingBin} ${cliArgs.join(' ')}`)
 
-      const proc = spawn(RAT_KING_CLI, cliArgs, {
+      const proc = spawn(ratKingBin, cliArgs, {
         maxBuffer: 50 * 1024 * 1024
       })
 

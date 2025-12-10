@@ -197,7 +197,7 @@ function mapPatternName(pattern: string): string {
   return patternMap[pattern] || 'lines'
 }
 
-function findRatKingBinary(): string {
+export function findRatKingBinary(): string {
   const paths = [
     path.join(os.homedir(), '.cargo', 'bin', 'rat-king'),
     '/usr/local/bin/rat-king',
@@ -233,13 +233,12 @@ function runRatKingJson(svgContent: string, pattern: string, spacing: number, an
   return new Promise((resolve, reject) => {
     const ratKingBin = findRatKingBinary()
     const args = [
-      'fill', '-',  // stdin
+      'fill', '-',  // stdin (read SVG from stdin)
       '-p', pattern,
       '-s', spacing.toString(),
       '-a', angle.toString(),
-      '-f', 'json',
-      '--grouped',
-      '-o', '-'  // stdout
+      '--json',     // output as JSON (not -f json)
+      '--grouped',  // group lines by polygon
     ]
 
     const proc = spawn(ratKingBin, args)
