@@ -173,23 +173,43 @@ export function registerFillGeneratorIPC() {
 
 function mapPatternName(pattern: string): string {
   const patternMap: Record<string, string> = {
+    // Basic line patterns
     'lines': 'lines',
     'crosshatch': 'crosshatch',
+    'diagonal': 'diagonal',
+    'stripe': 'stripe',
+    'herringbone': 'herringbone',
     'zigzag': 'zigzag',
     'wiggle': 'wiggle',
+    // Grid/tile patterns
+    'grid': 'grid',
+    'brick': 'brick',
+    'honeycomb': 'honeycomb',
+    'truchet': 'truchet',
+    'tessellation': 'tessellation',
+    // Spiral/circular patterns
     'spiral': 'spiral',
-    'fermat': 'fermat',
     'concentric': 'concentric',
     'radial': 'radial',
-    'honeycomb': 'honeycomb',
     'crossspiral': 'crossspiral',
+    'fermat': 'fermat',
+    'phyllotaxis': 'phyllotaxis',
+    // Mathematical curves
     'hilbert': 'hilbert',
+    'peano': 'peano',
+    'sierpinski': 'sierpinski',
     'gyroid': 'gyroid',
-    'scribble': 'scribble',
+    // Artistic patterns
     'guilloche': 'guilloche',
     'lissajous': 'lissajous',
     'rose': 'rose',
-    'phyllotaxis': 'phyllotaxis',
+    'harmonograph': 'harmonograph',
+    'scribble': 'scribble',
+    // Pentagon tilings
+    'pentagon15': 'pentagon15',
+    'pentagon14': 'pentagon14',
+    // Point-based
+    'stipple': 'stipple',
     // Map unsupported patterns to lines
     'wave': 'wiggle',
     'custom': 'lines',

@@ -13,22 +13,46 @@ import {
 import { FillPatternType } from '../utils/fillPatterns'
 import './PatternTest.css'
 
-// All pattern types to test
+// All pattern types to test - organized by category
 const ALL_PATTERNS: FillPatternType[] = [
+  // Basic line patterns
   'lines',
-  'concentric',
-  'wiggle',
-  'spiral',
-  'honeycomb',
-  'gyroid',
   'crosshatch',
+  'diagonal',
+  'stripe',
+  'herringbone',
   'zigzag',
+  'wiggle',
+  'wave',
+  // Grid/tile patterns
+  'grid',
+  'brick',
+  'honeycomb',
+  'truchet',
+  'tessellation',
+  // Spiral/circular patterns
+  'spiral',
+  'concentric',
   'radial',
   'crossspiral',
-  'hilbert',
   'fermat',
-  'wave',
+  'phyllotaxis',
+  // Mathematical curves
+  'hilbert',
+  'peano',
+  'sierpinski',
+  'gyroid',
+  // Artistic patterns
+  'guilloche',
+  'lissajous',
+  'rose',
+  'harmonograph',
   'scribble',
+  // Pentagon tilings
+  'pentagon15',
+  'pentagon14',
+  // Point-based
+  'stipple',
 ]
 
 // Performance thresholds (ms) for stress test
@@ -731,9 +755,6 @@ export default function PatternTest({ onBack }: PatternTestProps) {
   return (
     <div className="pattern-test">
       <div className="pattern-test-header">
-        <button onClick={onBack} className="back-button">← Back</button>
-        <h2>Pattern Tests</h2>
-
         {/* Pattern selection buttons in header */}
         <div className="header-pattern-buttons">
           {ALL_PATTERNS.map((p) => {
@@ -770,7 +791,7 @@ export default function PatternTest({ onBack }: PatternTestProps) {
               disabled={stressPaths.length === 0}
               title="Run all patterns on stress geometry"
             >
-              Run Torture Test
+              Torture Test
             </button>
           ) : (
             <>
@@ -790,6 +811,7 @@ export default function PatternTest({ onBack }: PatternTestProps) {
               </button>
             </>
           )}
+          <button onClick={onBack} className="back-button">← Back</button>
         </div>
       </div>
 
@@ -858,7 +880,8 @@ export default function PatternTest({ onBack }: PatternTestProps) {
               unit="px"
             />
 
-            {['lines', 'wiggle', 'wave', 'zigzag', 'crosshatch', 'honeycomb', 'gyroid', 'spiral', 'crossspiral', 'fermat', 'radial'].includes(stressTestPattern) && (
+            {/* Most patterns use angle - only concentric and tessellation don't */}
+            {!['concentric', 'tessellation'].includes(stressTestPattern) && (
               <SliderInput
                 label="Angle"
                 value={angle}
@@ -926,8 +949,6 @@ export default function PatternTest({ onBack }: PatternTestProps) {
                 unit="×"
               />
             )}
-
-            <span className="settings-label">{stressTestPattern}</span>
           </div>
 
           {/* View controls bar */}

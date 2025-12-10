@@ -29,6 +29,23 @@ export type FillPatternType =
   | 'wave'
   | 'scribble'
   | 'custom'
+  | 'guilloche'
+  | 'lissajous'
+  | 'rose'
+  | 'phyllotaxis'
+  | 'pentagon15'
+  | 'pentagon14'
+  | 'grid'
+  | 'brick'
+  | 'truchet'
+  | 'stipple'
+  | 'peano'
+  | 'sierpinski'
+  | 'diagonal'
+  | 'herringbone'
+  | 'stripe'
+  | 'tessellation'
+  | 'harmonograph'
 
 // Tile shape type for custom pattern
 export type TileShapeType =
