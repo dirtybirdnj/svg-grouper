@@ -3,7 +3,7 @@ import { useAppContext, OrderLine } from '../../context/AppContext'
 import { Point, distance } from '../../utils/geometry'
 import { ANIMATION, OPTIMIZATION, UI } from '../../constants'
 import { usePanZoom } from '../../hooks'
-import { StatSection, StatRow, LayerList, ColorLayerItem } from '../shared'
+import { StatSection, StatRow, UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../shared'
 import './OrderTab.css'
 
 // Sanitize color to prevent XSS in SVG innerHTML
@@ -218,6 +218,11 @@ interface LayerInfo {
   color: string
   lineCount: number
   visible: boolean
+}
+
+// Type for UnifiedLayerList items
+type OrderLayerListItem = LayerListItemFull & {
+  layerInfo: LayerInfo
 }
 
 export default function OrderTab() {
@@ -557,15 +562,43 @@ export default function OrderTab() {
     setAnimationProgress(0)
   }, [])
 
-  // Toggle all layers on/off
-  const handleToggleAllLayers = useCallback((visible: boolean) => {
-    if (visible && orderData) {
-      setVisibleLayers(new Set(orderData.lines.map(l => l.pathId)))
-    } else {
-      setVisibleLayers(new Set())
-    }
+  // Convert layers to UnifiedLayerList items
+  const layerListItems = useMemo((): OrderLayerListItem[] => {
+    return layers.map((layer, idx) => ({
+      id: layer.pathId,
+      name: `Layer ${idx + 1}`,
+      color: layer.color,
+      isVisible: layer.visible,
+      layerInfo: layer,
+      pointCount: layer.lineCount,
+    }))
+  }, [layers])
+
+  // Handle selection changes from UnifiedLayerList
+  const handleLayerSelectionChange = useCallback((ids: Set<string>) => {
+    setVisibleLayers(ids)
     setAnimationProgress(0)
-  }, [orderData])
+  }, [])
+
+  // Render function for layer list items
+  const renderLayerItem = useCallback((item: OrderLayerListItem, state: ItemRenderState) => {
+    return (
+      <div className="order-layer-item">
+        <input
+          type="checkbox"
+          checked={state.isSelected}
+          onChange={() => handleToggleLayer(item.id)}
+          onClick={(e) => e.stopPropagation()}
+        />
+        <span
+          className="layer-color-swatch"
+          style={{ backgroundColor: item.color || '#666' }}
+        />
+        <span className="layer-name">{item.name}</span>
+        <span className="layer-count">{item.layerInfo.lineCount} lines</span>
+      </div>
+    )
+  }, [handleToggleLayer])
 
   // Restart animation after speed change while playing
   useEffect(() => {
@@ -613,31 +646,17 @@ export default function OrderTab() {
           {layers.length > 1 && (
             <div className="order-section">
               <h3>Layers ({layers.length})</h3>
-              <LayerList
-                items={layers.map((layer, idx) => ({
-                  id: layer.pathId,
-                  color: layer.color,
-                  name: `Layer ${idx + 1}`,
-                  lineCount: layer.lineCount,
-                }))}
+              <UnifiedLayerList
+                items={layerListItems}
+                mode="flat"
                 selectedIds={visibleLayers}
-                onSelectionChange={(ids) => {
-                  setVisibleLayers(ids)
-                  setAnimationProgress(0)
-                }}
+                onSelectionChange={handleLayerSelectionChange}
+                selectionMode="multi"
                 showToggleAll
-                onToggleAll={(selectAll) => handleToggleAllLayers(selectAll)}
-                renderItem={(item, isSelected) => (
-                  <ColorLayerItem
-                    color={item.color || '#666'}
-                    name={item.name || item.id}
-                    count={item.lineCount}
-                    countLabel="lines"
-                    showCheckbox
-                    checked={isSelected}
-                    onCheckChange={() => handleToggleLayer(item.id)}
-                  />
-                )}
+                renderItem={renderLayerItem}
+                emptyMessage="No layers"
+                className="order-layer-list"
+                itemClassName="order-layer-item-wrapper"
               />
             </div>
           )}

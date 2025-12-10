@@ -4,7 +4,7 @@ import { SVGNode } from '../../types/svg'
 import { Point, getAllPolygonsFromElement, PolygonWithHoles } from '../../utils/geometry'
 import { OPTIMIZATION, UI } from '../../constants'
 import { usePanZoom } from '../../hooks'
-import { StatSection, StatRow } from '../shared'
+import { StatSection, StatRow, UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../shared'
 import { countSubpaths, analyzePathD, separateSubpaths, PathDiagnostics } from '../../utils/pathAnalysis'
 import polygonClipping, { Polygon as ClipPolygon } from 'polygon-clipping'
 import './MergeTab.css'
@@ -24,6 +24,16 @@ interface PolygonData {
   element: Element  // Original element for rendering
   subpathCount: number  // Number of subpaths in original element
   pathD: string  // Original path d attribute
+}
+
+// Type for UnifiedLayerList items - extends LayerListItemFull with PolygonData reference
+type MergeShapeListItem = LayerListItemFull & {
+  polygon: PolygonData
+  isMergeable: boolean
+  touchesSelected: boolean
+  touchCount: number
+  hasHoles: boolean
+  isCompound: boolean
 }
 
 // Edge key for finding duplicates
@@ -654,7 +664,7 @@ export default function MergeTab() {
     }
   }, [selectedForMerge, availableShapes])
 
-  // Toggle shape selection
+  // Toggle shape selection (kept for programmatic use)
   const toggleShapeSelection = useCallback((nodeId: string) => {
     setSelectedForMerge(prev => {
       const next = new Set(prev)
@@ -665,6 +675,74 @@ export default function MergeTab() {
       }
       return next
     })
+  }, [])
+
+  // UnifiedLayerList items with computed properties for each shape
+  const shapeListItems = useMemo((): MergeShapeListItem[] => {
+    return availableShapes.map((poly) => {
+      const isMergeable = mergeableShapes.has(poly.nodeId)
+      // Check if this shape touches any OTHER selected shape
+      const touchesSelected = Array.from(selectedForMerge).some(otherId => {
+        if (otherId === poly.nodeId) return false
+        const pairKey = poly.nodeId < otherId
+          ? `${poly.nodeId}|${otherId}`
+          : `${otherId}|${poly.nodeId}`
+        return touchingPairs.has(pairKey)
+      })
+      // Count how many shapes this one touches (selected or not)
+      const touchCount = availableShapes.filter(other => {
+        if (other.nodeId === poly.nodeId) return false
+        const pairKey = poly.nodeId < other.nodeId
+          ? `${poly.nodeId}|${other.nodeId}`
+          : `${other.nodeId}|${poly.nodeId}`
+        return touchingPairs.has(pairKey)
+      }).length
+      const hasHoles = poly.polygonWithHoles.holes.length > 0
+      const isCompound = poly.subpathCount > 1
+
+      return {
+        id: poly.nodeId,
+        name: poly.name,
+        color: poly.color,
+        pointCount: poly.vertices.length,
+        polygon: poly,
+        isMergeable,
+        touchesSelected,
+        touchCount,
+        hasHoles,
+        isCompound,
+      }
+    })
+  }, [availableShapes, selectedForMerge, touchingPairs, mergeableShapes])
+
+  // Handle selection changes from UnifiedLayerList
+  const handleShapeSelectionChange = useCallback((ids: Set<string>) => {
+    setSelectedForMerge(ids)
+  }, [])
+
+  // Custom render function for shape items
+  const renderShapeItem = useCallback((item: MergeShapeListItem, state: ItemRenderState) => {
+    const { isMergeable, touchesSelected, touchCount, hasHoles, isCompound, polygon } = item
+
+    return (
+      <div
+        className={`shape-item-inner ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''} ${isCompound ? 'compound' : ''}`}
+        title={touchCount > 0 ? `Touches ${touchCount} other shape${touchCount > 1 ? 's' : ''}` : 'Not adjacent to other shapes'}
+      >
+        <div className="shape-checkbox">
+          {state.isSelected ? '✓' : ''}
+        </div>
+        <div
+          className="shape-color"
+          style={{ backgroundColor: item.color }}
+        />
+        <span className="shape-name">{item.name}</span>
+        {isCompound && <span className="shape-compound-badge" title={`Compound path: ${polygon.subpathCount} subpaths`}>◈{polygon.subpathCount}</span>}
+        {hasHoles && <span className="shape-holes" title={`${polygon.polygonWithHoles.holes.length} holes`}>◯</span>}
+        {touchCount > 0 && <span className="shape-touch-badge" title={`Touches ${touchCount}`}>⟷{touchCount}</span>}
+        <span className="shape-vertices">{item.pointCount} pts</span>
+      </div>
+    )
   }, [])
 
   // Explode a compound path into separate shapes
@@ -957,53 +1035,18 @@ export default function MergeTab() {
                 ? 'Red shapes have shared edges and can be merged.'
                 : 'No shapes with shared edges found.'}
             </p>
-            <div className="shape-list">
-              {availableShapes.map((poly) => {
-                const isSelected = selectedForMerge.has(poly.nodeId)
-                const isMergeable = mergeableShapes.has(poly.nodeId)
-                // Check if this shape touches any OTHER selected shape
-                const touchesSelected = Array.from(selectedForMerge).some(otherId => {
-                  if (otherId === poly.nodeId) return false
-                  const pairKey = poly.nodeId < otherId
-                    ? `${poly.nodeId}|${otherId}`
-                    : `${otherId}|${poly.nodeId}`
-                  return touchingPairs.has(pairKey)
-                })
-                // Count how many shapes this one touches (selected or not)
-                const touchCount = availableShapes.filter(other => {
-                  if (other.nodeId === poly.nodeId) return false
-                  const pairKey = poly.nodeId < other.nodeId
-                    ? `${poly.nodeId}|${other.nodeId}`
-                    : `${other.nodeId}|${poly.nodeId}`
-                  return touchingPairs.has(pairKey)
-                }).length
-                const hasHoles = poly.polygonWithHoles.holes.length > 0
-
-                const isCompound = poly.subpathCount > 1
-
-                return (
-                  <div
-                    key={poly.nodeId}
-                    className={`shape-item clickable ${isSelected ? 'selected' : ''} ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''} ${isCompound ? 'compound' : ''}`}
-                    onClick={() => toggleShapeSelection(poly.nodeId)}
-                    title={touchCount > 0 ? `Touches ${touchCount} other shape${touchCount > 1 ? 's' : ''}` : 'Not adjacent to other shapes'}
-                  >
-                    <div className="shape-checkbox">
-                      {isSelected ? '✓' : ''}
-                    </div>
-                    <div
-                      className="shape-color"
-                      style={{ backgroundColor: poly.color }}
-                    />
-                    <span className="shape-name">{poly.name}</span>
-                    {isCompound && <span className="shape-compound-badge" title={`Compound path: ${poly.subpathCount} subpaths`}>◈{poly.subpathCount}</span>}
-                    {hasHoles && <span className="shape-holes" title={`${poly.polygonWithHoles.holes.length} holes`}>◯</span>}
-                    {touchCount > 0 && <span className="shape-touch-badge" title={`Touches ${touchCount}`}>⟷{touchCount}</span>}
-                    <span className="shape-vertices">{poly.vertices.length} pts</span>
-                  </div>
-                )
-              })}
-            </div>
+            <UnifiedLayerList
+              items={shapeListItems}
+              mode="flat"
+              selectedIds={selectedForMerge}
+              onSelectionChange={handleShapeSelectionChange}
+              selectionMode="multi"
+              enableDragDrop={false}
+              renderItem={renderShapeItem}
+              emptyMessage="No shapes available"
+              className="shape-list"
+              itemClassName="shape-item"
+            />
           </div>
 
           <div className="merge-section">

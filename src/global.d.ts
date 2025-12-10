@@ -65,6 +65,7 @@ declare global {
       offFillProgress: () => void
       abortFillGeneration: () => Promise<{ success: boolean }>
       fillPattern: (args: { svg: string; pattern: string; spacing: number; angle: number }) => Promise<string>
+      patternBanner: (args: { pattern: string; spacing: number; seed: number; width?: number; height?: number; cells?: number }) => Promise<string>
     }
   }
 }

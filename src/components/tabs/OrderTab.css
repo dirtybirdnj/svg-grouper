@@ -489,6 +489,64 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* UnifiedLayerList styles for order layers */
+.order-layer-list {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  padding: 0.25rem;
+  background: #fafafa;
+}
+
+.order-layer-item-wrapper {
+  padding: 0.25rem;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+
+.order-layer-item-wrapper:hover {
+  background: #eee;
+}
+
+.order-layer-item-wrapper.selected {
+  background: #e3f2fd;
+}
+
+.order-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.order-layer-item input[type="checkbox"] {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.order-layer-item .layer-color-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+.order-layer-item .layer-name {
+  flex: 1;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.order-layer-item .layer-count {
+  font-size: 0.7rem;
+  color: #999;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Actions */
 .order-actions {
   display: flex;

@@ -19,6 +19,7 @@ import {
   TILE_SHAPES,
   optimizeLineOrderMultiPass,
 } from '../../utils/fillPatterns'
+import { UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../shared'
 import simplify from 'simplify-js'
 import patternStats from '../../patternStats.json'
 import './FillTab.css'
@@ -532,11 +533,20 @@ export default function FillTab() {
     inset: number
     lineCount: number  // For display
     penWidth: number   // Pen width in mm - used for weave gap calculation
+    visible: boolean   // Layer visibility toggle
   }
+
+  // Extended type for UnifiedLayerList that includes FillLayer fields
+  type FillLayerListItem = LayerListItemFull & {
+    fillLayer: FillLayer  // Reference to original layer
+  }
+
   const [accumulatedLayers, setAccumulatedLayers] = useState<FillLayer[]>([])
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
-  const [draggedLayerId, setDraggedLayerId] = useState<string | null>(null)
+  // Note: draggedLayerId removed - drag state is now managed by UnifiedLayerList
   const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
+  // Cache for pattern banner previews (keyed by "pattern|spacing")
+  const [bannerCache, setBannerCache] = useState<Map<string, string>>(new Map())
   const [highlightedPathId, _setHighlightedPathId] = useState<string | null>(null)
   const [newLayerAngle, setNewLayerAngle] = useState(45) // Angle increment when adding a new layer
   const [selectedLayerIds, setSelectedLayerIds] = useState<Set<string>>(new Set()) // Multi-select for accumulated layers (for weaving)
@@ -1060,9 +1070,10 @@ export default function FillTab() {
     if (showHatchPreview) {
       // Draw accumulated layers (as compound paths for efficiency)
       // These ARE the fill preview - each layer represents committed fills
-      accumulatedLayers.forEach(layer => {
+      // Only render visible layers
+      accumulatedLayers.filter(layer => layer.visible).forEach(layer => {
         const pathD = linesToCompoundPath(layer.lines, 2)
-        pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="none" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
+        pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="${layer.color}" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
       })
 
       // Add outline strokes if retaining strokes
@@ -1159,7 +1170,8 @@ export default function FillTab() {
       const allLinesByColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
 
       // Add accumulated layers first (each layer now contains all lines for that layer)
-      accumulatedLayers.forEach(layer => {
+      // Only export visible layers - hidden layers are excluded from final output
+      accumulatedLayers.filter(layer => layer.visible).forEach(layer => {
         const existing = allLinesByColor.get(layer.color) || []
         layer.lines.forEach(line => {
           existing.push({ x1: line.x1, y1: line.y1, x2: line.x2, y2: line.y2 })
@@ -1207,7 +1219,7 @@ export default function FillTab() {
           : `Fill`
 
         // Create as a path element
-        const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
+        const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="${color}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
 
         // Create element for the node
         const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
@@ -1350,6 +1362,7 @@ export default function FillTab() {
         inset,
         lineCount: colorLines.length,
         penWidth,
+        visible: true,
       }
 
       newLayers.push(newLayer)
@@ -1491,6 +1504,7 @@ export default function FillTab() {
           inset,
           lineCount: colorLines.length,
           penWidth,
+          visible: true,
         }
 
         newLayers.push(newLayer)
@@ -1651,32 +1665,7 @@ export default function FillTab() {
     }
   }, [weaveRequested, setWeaveRequested, selectedLayerIds, accumulatedLayers, setStatusMessage, setIsProcessing, weavePattern, weaveGapMargin])
 
-  // Handle layer selection with multi-select support
-  const handleLayerClick = useCallback((layerId: string, e: React.MouseEvent) => {
-    if (e.shiftKey || e.metaKey || e.ctrlKey) {
-      // Multi-select mode
-      setSelectedLayerIds(prev => {
-        const newSet = new Set(prev)
-        if (newSet.has(layerId)) {
-          newSet.delete(layerId)
-        } else {
-          newSet.add(layerId)
-        }
-        return newSet
-      })
-    } else {
-      // Single select - also load settings
-      const layer = accumulatedLayers.find(l => l.id === layerId)
-      if (layer) {
-        setSelectedLayerIds(new Set([layerId]))
-        setAngle(layer.angle)
-        setLineSpacing(layer.lineSpacing)
-        setFillPattern(layer.pattern)
-        setInset(layer.inset)
-        setLayerColor(layer.color)
-      }
-    }
-  }, [accumulatedLayers])
+  // Note: Layer selection is now handled by UnifiedLayerList via handleLayerSelectionChange
 
   // Delete a specific layer
   const handleDeleteLayer = useCallback((layerId: string) => {
@@ -1700,39 +1689,152 @@ export default function FillTab() {
     }
   }, [selectedLayerId])
 
-  // Drag and drop handlers for reordering
-  const handleDragStart = useCallback((layerId: string) => {
-    setDraggedLayerId(layerId)
+  // Toggle visibility for a specific layer
+  const handleToggleLayerVisibility = useCallback((layerId: string) => {
+    setAccumulatedLayers(prev => prev.map(l =>
+      l.id === layerId ? { ...l, visible: !l.visible } : l
+    ))
   }, [])
 
-  const handleDragOver = useCallback((e: React.DragEvent, targetLayerId: string) => {
-    e.preventDefault()
-    if (!draggedLayerId || draggedLayerId === targetLayerId) return
-  }, [draggedLayerId])
+  // Note: Drag-drop is now handled by UnifiedLayerList via handleLayerReorder
 
-  const handleDrop = useCallback((targetLayerId: string) => {
-    if (!draggedLayerId || draggedLayerId === targetLayerId) {
-      setDraggedLayerId(null)
-      return
+  // Convert FillLayer[] to FillLayerListItem[] for UnifiedLayerList
+  const layerListItems = useMemo<FillLayerListItem[]>(() => {
+    return accumulatedLayers.map((layer) => ({
+      id: layer.id,
+      name: layer.pattern,
+      color: layer.color,
+      fillLayer: layer,
+      // Additional metadata for badges
+      pointCount: layer.lineCount,
+      isVisible: layer.visible,
+    }))
+  }, [accumulatedLayers])
+
+  // Handler for UnifiedLayerList selection changes
+  const handleLayerSelectionChange = useCallback((ids: Set<string>) => {
+    setSelectedLayerIds(ids)
+    // If single selection, also load settings
+    if (ids.size === 1) {
+      const layerId = Array.from(ids)[0]
+      const layer = accumulatedLayers.find(l => l.id === layerId)
+      if (layer) {
+        setAngle(layer.angle)
+        setLineSpacing(layer.lineSpacing)
+        setFillPattern(layer.pattern)
+        setInset(layer.inset)
+        setLayerColor(layer.color)
+      }
     }
+  }, [accumulatedLayers])
 
+  // Handler for UnifiedLayerList reorder (flat mode)
+  const handleLayerReorder = useCallback((fromIndex: number, toIndex: number) => {
     setAccumulatedLayers(prev => {
-      const draggedIndex = prev.findIndex(l => l.id === draggedLayerId)
-      const targetIndex = prev.findIndex(l => l.id === targetLayerId)
-      if (draggedIndex === -1 || targetIndex === -1) return prev
-
       const newLayers = [...prev]
-      const [dragged] = newLayers.splice(draggedIndex, 1)
-      newLayers.splice(targetIndex, 0, dragged)
+      const [dragged] = newLayers.splice(fromIndex, 1)
+      newLayers.splice(toIndex, 0, dragged)
       return newLayers
     })
-
-    setDraggedLayerId(null)
-  }, [draggedLayerId])
-
-  const handleDragEnd = useCallback(() => {
-    setDraggedLayerId(null)
   }, [])
+
+  // Fetch pattern banners for layers that don't have cached previews
+  useEffect(() => {
+    if (!window.electron?.patternBanner) return
+
+    // Get unique pattern+spacing combinations that need banners
+    const needed = new Map<string, { pattern: string; spacing: number }>()
+    accumulatedLayers.forEach(layer => {
+      const key = `${layer.pattern}|${layer.lineSpacing}`
+      if (!bannerCache.has(key) && !needed.has(key)) {
+        needed.set(key, { pattern: layer.pattern, spacing: layer.lineSpacing })
+      }
+    })
+
+    if (needed.size === 0) return
+
+    // Fetch each banner
+    needed.forEach(async ({ pattern, spacing }, key) => {
+      try {
+        // Use pattern name hash as seed for consistency
+        const seed = pattern.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
+        const svg = await window.electron!.patternBanner({
+          pattern,
+          spacing,
+          seed,
+          width: 4,
+          height: 0.5,
+          cells: 20,
+        })
+        setBannerCache(prev => new Map(prev).set(key, svg))
+      } catch (err) {
+        console.warn(`[FillTab] Failed to generate banner for ${pattern}:`, err)
+      }
+    })
+  }, [accumulatedLayers, bannerCache])
+
+  // Get cached banner preview for a layer, or fall back to color swatch
+  const getLayerPreview = useCallback((layer: FillLayer): string | null => {
+    const key = `${layer.pattern}|${layer.lineSpacing}`
+    return bannerCache.get(key) || null
+  }, [bannerCache])
+
+  // Render function for layer list items
+  const renderLayerItem = useCallback((item: FillLayerListItem, state: ItemRenderState) => {
+    const layer = item.fillLayer
+    const bannerSvg = getLayerPreview(layer)
+    // Apply layer color to banner SVG by replacing stroke colors
+    const coloredBanner = bannerSvg
+      ? bannerSvg.replace(/stroke="[^"]*"/g, `stroke="${layer.color}"`)
+      : null
+
+    return (
+      <div className="accumulated-layer-item-content">
+        <span className="layer-drag-handle">⋮⋮</span>
+        <button
+          className={`layer-visibility-btn ${state.isVisible ? 'visible' : 'hidden'}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            handleToggleLayerVisibility(layer.id)
+          }}
+          title={state.isVisible ? 'Hide layer' : 'Show layer'}
+        >
+          {state.isVisible ? '👁' : '👁‍🗨'}
+        </button>
+        {coloredBanner ? (
+          <span
+            className="layer-preview"
+            style={{ opacity: state.isVisible ? 1 : 0.4 }}
+            dangerouslySetInnerHTML={{ __html: coloredBanner }}
+          />
+        ) : (
+          <span
+            className="layer-color-swatch"
+            style={{ backgroundColor: layer.color, opacity: state.isVisible ? 1 : 0.4 }}
+          />
+        )}
+        <span className="layer-info" style={{ opacity: state.isVisible ? 1 : 0.5 }}>
+          <span className="layer-pattern">{layer.pattern}</span>
+          <span className="layer-details">{layer.angle}° • {layer.penWidth}mm • {layer.lineCount.toLocaleString()}</span>
+        </span>
+        <button
+          className="layer-delete-btn"
+          onClick={(e) => {
+            e.stopPropagation()
+            handleDeleteLayer(layer.id)
+            setSelectedLayerIds(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(layer.id)
+              return newSet
+            })
+          }}
+          title="Delete this layer"
+        >
+          ×
+        </button>
+      </div>
+    )
+  }, [handleDeleteLayer, handleToggleLayerVisibility, getLayerPreview])
 
   const handleNavigateToOrder = useCallback(() => {
     if (!boundingBox || simplifiedHatchedPaths.length === 0) return
@@ -1848,51 +1950,19 @@ export default function FillTab() {
                 </button>
               )}
             </div>
-            <div className="accumulated-layers-items">
-              {accumulatedLayers.map((layer) => (
-                <div
-                  key={layer.id}
-                  className={`accumulated-layer-item ${selectedLayerIds.has(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''}`}
-                  draggable
-                  onDragStart={() => handleDragStart(layer.id)}
-                  onDragOver={(e) => handleDragOver(e, layer.id)}
-                  onDrop={() => handleDrop(layer.id)}
-                  onDragEnd={handleDragEnd}
-                  onClick={(e) => handleLayerClick(layer.id, e)}
-                  title="Click to select, Shift/Cmd+click for multi-select, drag to reorder"
-                >
-                  <span className="layer-drag-handle">⋮⋮</span>
-                  <span
-                    className="layer-color-swatch"
-                    style={{ backgroundColor: layer.color }}
-                  />
-                  <span className="layer-info">
-                    <span className="layer-pattern">{layer.pattern}</span>
-                    <span className="layer-details">{layer.angle}° • {layer.penWidth}mm • {layer.lineCount.toLocaleString()}</span>
-                  </span>
-                  <button
-                    className="layer-delete-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleDeleteLayer(layer.id)
-                      setSelectedLayerIds(prev => {
-                        const newSet = new Set(prev)
-                        newSet.delete(layer.id)
-                        return newSet
-                      })
-                    }}
-                    title="Delete this layer"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              {accumulatedLayers.length === 0 && (
-                <div className="no-layers-message">
-                  Click "Add Layer" to create fill layers
-                </div>
-              )}
-            </div>
+            <UnifiedLayerList
+              items={layerListItems}
+              mode="flat"
+              selectedIds={selectedLayerIds}
+              onSelectionChange={handleLayerSelectionChange}
+              selectionMode="multi-with-modifiers"
+              enableDragDrop={true}
+              onReorderFlat={handleLayerReorder}
+              renderItem={renderLayerItem}
+              emptyMessage="Click &quot;Add Layer&quot; to create fill layers"
+              className="accumulated-layers-items"
+              itemClassName="accumulated-layer-item"
+            />
             {selectedLayerIds.size === 2 && (
               <div className="weave-section">
                 <div className="weave-header">

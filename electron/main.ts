@@ -384,6 +384,72 @@ ipcMain.handle('fill-pattern', async (_event, args: {
   })
 })
 
+// IPC Handler for pattern banner preview using rat-king banner command
+ipcMain.handle('pattern-banner', async (_event, args: {
+  pattern: string
+  spacing: number
+  seed: number
+  width?: number
+  height?: number
+  cells?: number
+}) => {
+  return new Promise<string>((resolve, reject) => {
+    try {
+      const { pattern, spacing, seed, width = 4, height = 0.5, cells = 20 } = args
+
+      if (!pattern || typeof pattern !== 'string') {
+        reject(new Error('Invalid pattern name'))
+        return
+      }
+
+      const ratKingBin = findRatKingBinary()
+      const cliArgs = [
+        'banner',
+        '--only', pattern,
+        '-w', width.toString(),
+        '--height', height.toString(),
+        '-n', cells.toString(),
+        '-s', spacing.toString(),
+        '--seed', seed.toString(),
+      ]
+
+      console.log(`[pattern-banner] Running: ${ratKingBin} ${cliArgs.join(' ')}`)
+
+      const proc = spawn(ratKingBin, cliArgs, {
+        maxBuffer: 10 * 1024 * 1024
+      })
+
+      let output = ''
+      let errorOutput = ''
+
+      proc.stdout.on('data', (data) => {
+        output += data.toString()
+      })
+
+      proc.stderr.on('data', (data) => {
+        errorOutput += data.toString()
+      })
+
+      proc.on('close', (code) => {
+        if (code !== 0) {
+          console.error(`[pattern-banner] Failed with code ${code}: ${errorOutput}`)
+          reject(new Error(`rat-king banner failed: ${errorOutput}`))
+        } else {
+          resolve(output) // Returns SVG content
+        }
+      })
+
+      proc.on('error', (err) => {
+        console.error(`[pattern-banner] Process error:`, err)
+        reject(new Error(`Failed to start rat-king: ${err.message}`))
+      })
+    } catch (err) {
+      console.error(`[pattern-banner] Unexpected error:`, err)
+      reject(new Error(`Unexpected error: ${err instanceof Error ? err.message : 'Unknown error'}`))
+    }
+  })
+})
+
 // Send menu command to renderer
 function sendMenuCommand(command: string) {
   if (win) {

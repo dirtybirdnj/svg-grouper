@@ -1,0 +1,346 @@
+/* Unified Layer List Styles */
+
+.unified-layer-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* No background by default - inherit from parent */
+}
+
+/* Only apply default background when used standalone */
+.unified-layer-list.with-background {
+  background: var(--bg-secondary, #1a1a2e);
+  border-radius: 6px;
+}
+
+.unified-layer-list.empty {
+  padding: 16px;
+}
+
+/* Controls */
+.layer-list-controls {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-color, #333);
+}
+
+.layer-list-btn {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: var(--bg-tertiary, #252540);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.layer-list-btn:hover:not(:disabled) {
+  background: var(--bg-hover, #333);
+  color: var(--text-primary, #fff);
+}
+
+.layer-list-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Item list */
+.layer-list-items {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Individual item - minimal base styles */
+.layer-list-item {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  outline: none;
+}
+
+/* Focus visible for keyboard navigation */
+.layer-list-item:focus-visible {
+  outline: 2px solid var(--primary-color, #4285f4);
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+/* Default styles only when no custom itemClassName is provided */
+.unified-layer-list .layer-list-item:not([class*="accumulated"]):not([class*="shape-item"]) {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.05));
+  transition: background 0.1s ease;
+}
+
+.unified-layer-list .layer-list-item:not([class*="accumulated"]):not([class*="shape-item"]):hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+}
+
+.unified-layer-list .layer-list-item:not([class*="accumulated"]):not([class*="shape-item"]).selected {
+  background: var(--selection-bg, rgba(66, 133, 244, 0.25));
+}
+
+.unified-layer-list .layer-list-item:not([class*="accumulated"]):not([class*="shape-item"]).selected:hover {
+  background: var(--selection-bg-hover, rgba(66, 133, 244, 0.35));
+}
+
+/* Drag states - only for items without custom styling */
+.unified-layer-list .layer-list-item:not([class*="accumulated"]):not([class*="shape-item"]).dragging {
+  opacity: 0.5;
+  background: var(--bg-tertiary, #252540);
+}
+
+.layer-list-item.drag-over {
+  background: var(--drag-over-bg, rgba(66, 133, 244, 0.1));
+}
+
+.layer-list-item.drop-before::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--primary-color, #4285f4);
+}
+
+.layer-list-item.drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--primary-color, #4285f4);
+}
+
+.layer-list-item.drop-inside {
+  outline: 2px solid var(--primary-color, #4285f4);
+  outline-offset: -2px;
+}
+
+/* Item content */
+.layer-item-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Expand button */
+.expand-btn {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  font-size: 10px;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.expand-btn:hover {
+  color: var(--text-primary, #fff);
+}
+
+.expand-btn.expanded {
+  transform: rotate(90deg);
+}
+
+/* Visibility button */
+.visibility-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
+.visibility-btn:hover {
+  opacity: 1;
+}
+
+.visibility-btn.hidden {
+  opacity: 0.3;
+}
+
+/* Color swatch */
+.item-color-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+/* Item name */
+.item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-primary, #e0e0e0);
+}
+
+/* Badges */
+.item-badges {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Actions */
+.item-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.layer-list-item:hover .item-actions {
+  opacity: 1;
+}
+
+/* Empty state */
+.layer-list-empty {
+  text-align: center;
+  color: var(--text-secondary, #888);
+  font-size: 13px;
+  padding: 24px 16px;
+}
+
+/* Tree mode specific */
+.unified-layer-list.tree-mode .layer-list-item {
+  position: relative;
+}
+
+.unified-layer-list.tree-mode .layer-list-item.is-group > .layer-item-content > .item-name {
+  font-weight: 500;
+}
+
+/* Flat mode specific */
+.unified-layer-list.flat-mode .layer-list-item {
+  position: relative;
+}
+
+/* Badge components (reusable) */
+.count-badge {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: var(--bg-tertiary, #333);
+  border-radius: 10px;
+  color: var(--text-secondary, #aaa);
+}
+
+.count-badge.highlight {
+  background: var(--primary-color, #4285f4);
+  color: white;
+}
+
+.status-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.status-badge.pending {
+  background: var(--warning-color, #ffc107);
+}
+
+.status-badge.processing {
+  background: var(--info-color, #4285f4);
+  animation: pulse 1s infinite;
+}
+
+.status-badge.complete {
+  background: var(--success-color, #4caf50);
+}
+
+.status-badge.error {
+  background: var(--error-color, #f44336);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Touch badge (for merge tab) */
+.touch-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  font-size: 11px;
+  background: var(--warning-color, #ffc107);
+  color: #000;
+  border-radius: 10px;
+}
+
+/* Compound badge */
+.compound-badge {
+  padding: 2px 6px;
+  font-size: 11px;
+  background: var(--info-color, rgba(66, 133, 244, 0.3));
+  color: var(--info-color-text, #82b1ff);
+  border-radius: 10px;
+}
+
+/* Checkbox style (for merge tab) */
+.item-checkbox {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color, #555);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--primary-color, #4285f4);
+}
+
+.layer-list-item.selected .item-checkbox {
+  background: var(--primary-color, #4285f4);
+  border-color: var(--primary-color, #4285f4);
+  color: white;
+}
+
+/* Scrollbar styling */
+.layer-list-items::-webkit-scrollbar {
+  width: 6px;
+}
+
+.layer-list-items::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.layer-list-items::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb, rgba(255, 255, 255, 0.2));
+  border-radius: 3px;
+}
+
+.layer-list-items::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, rgba(255, 255, 255, 0.3));
+}

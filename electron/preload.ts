@@ -61,4 +61,8 @@ contextBridge.exposeInMainWorld('electron', {
   fillPattern: (args: { svg: string; pattern: string; spacing: number; angle: number }): Promise<string> => {
     return ipcRenderer.invoke('fill-pattern', args)
   },
+  // Pattern banner preview using rat-king banner command
+  patternBanner: (args: { pattern: string; spacing: number; seed: number; width?: number; height?: number; cells?: number }): Promise<string> => {
+    return ipcRenderer.invoke('pattern-banner', args)
+  },
 })
