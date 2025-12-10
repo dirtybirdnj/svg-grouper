@@ -5,12 +5,14 @@ import { Point, getAllPolygonsFromElement, PolygonWithHoles } from '../../utils/
 import { OPTIMIZATION, UI } from '../../constants'
 import { usePanZoom } from '../../hooks'
 import { StatSection, StatRow } from '../shared'
+import { countSubpaths, analyzePathD, separateSubpaths, PathDiagnostics } from '../../utils/pathAnalysis'
+import polygonClipping, { Polygon as ClipPolygon } from 'polygon-clipping'
 import './MergeTab.css'
 
 // Debug logging - set to false for production
 const DEBUG_MERGE = false
 
-type MergeOperation = 'union' | 'intersect' | 'subtract'
+type MergeOperation = 'union' | 'intersect' | 'subtract' | 'xor'
 
 interface PolygonData {
   nodeId: string
@@ -20,6 +22,8 @@ interface PolygonData {
   vertices: Point[]
   polygonWithHoles: PolygonWithHoles  // Full polygon data including holes
   element: Element  // Original element for rendering
+  subpathCount: number  // Number of subpaths in original element
+  pathD: string  // Original path d attribute
 }
 
 // Edge key for finding duplicates
@@ -321,6 +325,77 @@ function polygonWithHolesToPathD(outer: Point[], holes: Point[][]): string {
   return d
 }
 
+// Convert our PolygonWithHoles to polygon-clipping format (Polygon = Ring[])
+function polygonWithHolesToClip(poly: PolygonWithHoles): ClipPolygon {
+  const outer: [number, number][] = poly.outer.map(p => [p.x, p.y])
+  const holes: [number, number][][] = poly.holes.map(hole => hole.map(p => [p.x, p.y]))
+  return [outer, ...holes]
+}
+
+// Convert polygon-clipping MultiPolygon result back to our format
+// MultiPolygon = Polygon[] = Ring[][]
+function clipResultToPolygonWithHoles(result: ClipPolygon[]): PolygonWithHoles[] {
+  return result.map(poly => {
+    const outer: Point[] = poly[0].map(([x, y]) => ({ x, y }))
+    const holes: Point[][] = poly.slice(1).map(ring => ring.map(([x, y]) => ({ x, y })))
+    return { outer, holes }
+  })
+}
+
+// Boolean operations using polygon-clipping library
+interface BooleanResult {
+  polygons: PolygonWithHoles[]
+  operationType: MergeOperation
+}
+
+function performBooleanOperation(
+  polygons: PolygonData[],
+  operation: MergeOperation
+): BooleanResult | null {
+  if (polygons.length < 2) return null
+
+  try {
+    // Convert first polygon - wrap in array to make it a MultiPolygon
+    let result: ClipPolygon[] = [polygonWithHolesToClip(polygons[0].polygonWithHoles)]
+
+    // Apply operation with each subsequent polygon
+    for (let i = 1; i < polygons.length; i++) {
+      const clipPoly: ClipPolygon[] = [polygonWithHolesToClip(polygons[i].polygonWithHoles)]
+
+      switch (operation) {
+        case 'union':
+          result = polygonClipping.union(result, clipPoly)
+          break
+        case 'intersect':
+          result = polygonClipping.intersection(result, clipPoly)
+          break
+        case 'subtract':
+          result = polygonClipping.difference(result, clipPoly)
+          break
+        case 'xor':
+          result = polygonClipping.xor(result, clipPoly)
+          break
+      }
+    }
+
+    // Convert result back to our format
+    const resultPolygons = clipResultToPolygonWithHoles(result)
+
+    return {
+      polygons: resultPolygons,
+      operationType: operation
+    }
+  } catch (error) {
+    console.error('[Merge] Boolean operation failed:', error)
+    return null
+  }
+}
+
+// Convert multiple PolygonWithHoles to a single compound path d
+function multiPolygonToPathD(polygons: PolygonWithHoles[]): string {
+  return polygons.map(poly => polygonWithHolesToPathD(poly.outer, poly.holes)).join(' ')
+}
+
 export default function MergeTab() {
   const {
     selectedNodeIds,
@@ -337,6 +412,7 @@ export default function MergeTab() {
 
   const [operation, setOperation] = useState<MergeOperation>('union')
   const [previewResult, setPreviewResult] = useState<UnionResult | null>(null)
+  const [booleanResult, setBooleanResult] = useState<BooleanResult | null>(null)
   const [touchingPairs, setTouchingPairs] = useState<Set<string>>(new Set())
   const [tolerance, setTolerance] = useState(0.1)
 
@@ -344,6 +420,10 @@ export default function MergeTab() {
   const [availableShapes, setAvailableShapes] = useState<PolygonData[]>([])
   // Which shapes are selected for merging
   const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set())
+  // Path diagnostics for selected shape
+  const [selectedDiagnostics, setSelectedDiagnostics] = useState<PathDiagnostics | null>(null)
+  // Show diagnostics panel
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
 
   // Use shared pan/zoom hook with global state
   const { isPanning, containerRef: canvasRef, handlers: panZoomHandlers } = usePanZoom({
@@ -399,6 +479,8 @@ export default function MergeTab() {
       if (polygons.length === 0) return
 
       const fill = element.getAttribute('fill') || '#666'
+      const pathD = element.getAttribute('d') || ''
+      const subpathCount = countSubpaths(pathD)
 
       // Create a separate shape for EACH disconnected polygon region
       // This allows compound paths with multiple parts to be merged independently
@@ -419,6 +501,8 @@ export default function MergeTab() {
           vertices: polygonWithHoles.outer,  // Main boundary for union
           polygonWithHoles,  // Full data for reference
           element,  // Original element for rendering (same for all parts)
+          subpathCount,  // Number of subpaths in original
+          pathD,  // Original path d attribute
         })
       })
 
@@ -517,50 +601,6 @@ export default function MergeTab() {
     return edges
   }, [availableShapes, tolerance])
 
-  // Check if all selected shapes are connected (form a single connected component)
-  const selectionIsConnected = useMemo(() => {
-    if (selectedForMerge.size < 2) return true
-
-    DEBUG_MERGE && console.log('[Merge] Checking connectivity for selected shapes:', Array.from(selectedForMerge))
-    DEBUG_MERGE && console.log('[Merge] All touching pairs:', Array.from(touchingPairs))
-
-    // Build adjacency list for selected shapes only
-    const adjacency = new Map<string, Set<string>>()
-    selectedForMerge.forEach(id => adjacency.set(id, new Set()))
-
-    let foundConnections = 0
-    touchingPairs.forEach(pairKey => {
-      const [id1, id2] = pairKey.split('|')
-      if (selectedForMerge.has(id1) && selectedForMerge.has(id2)) {
-        adjacency.get(id1)!.add(id2)
-        adjacency.get(id2)!.add(id1)
-        foundConnections++
-        DEBUG_MERGE && console.log(`[Merge] Found connection: ${id1} <-> ${id2}`)
-      }
-    })
-    DEBUG_MERGE && console.log(`[Merge] Found ${foundConnections} connections between selected shapes`)
-
-    // BFS to check connectivity
-    const visited = new Set<string>()
-    const queue = [Array.from(selectedForMerge)[0]]
-    visited.add(queue[0])
-
-    while (queue.length > 0) {
-      const current = queue.shift()!
-      adjacency.get(current)?.forEach(neighbor => {
-        if (!visited.has(neighbor)) {
-          visited.add(neighbor)
-          queue.push(neighbor)
-        }
-      })
-    }
-
-    const isConnected = visited.size === selectedForMerge.size
-    DEBUG_MERGE && console.log(`[Merge] Connectivity check: visited ${visited.size}/${selectedForMerge.size}, connected=${isConnected}`)
-
-    return isConnected
-  }, [selectedForMerge, touchingPairs])
-
   // Find the next shape that has touching neighbors (for "Next" button)
   const findNextMergeableShape = useCallback(() => {
     // Find first shape in list that is mergeable and not currently selected
@@ -576,23 +616,43 @@ export default function MergeTab() {
 
   // Compute preview when selection changes
   useEffect(() => {
-    if (selectedPolygons.length >= 2 && operation === 'union') {
-      DEBUG_MERGE && console.log('[Merge] Computing union for', selectedPolygons.length, 'polygons')
-      DEBUG_MERGE && console.log('[Merge] Tolerance:', tolerance)
-      selectedPolygons.forEach((p, i) => {
-        DEBUG_MERGE && console.log(`[Merge] Polygon ${i}: ${p.name}, ${p.vertices.length} vertices, ${p.polygonWithHoles.holes.length} holes`)
-        if (p.vertices.length > 0) {
-          DEBUG_MERGE && console.log(`[Merge]   First vertex: (${p.vertices[0].x.toFixed(2)}, ${p.vertices[0].y.toFixed(2)})`)
-          DEBUG_MERGE && console.log(`[Merge]   Last vertex: (${p.vertices[p.vertices.length-1].x.toFixed(2)}, ${p.vertices[p.vertices.length-1].y.toFixed(2)})`)
-        }
-      })
-      const merged = unionPolygons(selectedPolygons, tolerance)
-      DEBUG_MERGE && console.log('[Merge] Result:', merged ? `${merged.outer.length} vertices, ${merged.holes.length} holes` : 'null (no shared edges found)')
-      setPreviewResult(merged)
+    if (selectedPolygons.length >= 2) {
+      DEBUG_MERGE && console.log('[Merge] Computing', operation, 'for', selectedPolygons.length, 'polygons')
+
+      // Use polygon-clipping library for all boolean operations
+      const result = performBooleanOperation(selectedPolygons, operation)
+      setBooleanResult(result)
+
+      // Also compute shared edges for visualization (union only)
+      if (operation === 'union') {
+        const merged = unionPolygons(selectedPolygons, tolerance)
+        setPreviewResult(merged)
+      } else {
+        setPreviewResult(null)
+      }
+
+      DEBUG_MERGE && console.log('[Merge] Boolean result:', result ? `${result.polygons.length} polygon(s)` : 'null')
     } else {
       setPreviewResult(null)
+      setBooleanResult(null)
     }
   }, [selectedPolygons, operation, tolerance])
+
+  // Update diagnostics when single shape is selected
+  useEffect(() => {
+    if (selectedForMerge.size === 1) {
+      const selectedId = Array.from(selectedForMerge)[0]
+      const shape = availableShapes.find(s => s.nodeId === selectedId)
+      if (shape && shape.pathD) {
+        const diagnostics = analyzePathD(shape.pathD)
+        setSelectedDiagnostics(diagnostics)
+      } else {
+        setSelectedDiagnostics(null)
+      }
+    } else {
+      setSelectedDiagnostics(null)
+    }
+  }, [selectedForMerge, availableShapes])
 
   // Toggle shape selection
   const toggleShapeSelection = useCallback((nodeId: string) => {
@@ -606,6 +666,101 @@ export default function MergeTab() {
       return next
     })
   }, [])
+
+  // Explode a compound path into separate shapes
+  const handleExplode = useCallback(() => {
+    if (selectedForMerge.size !== 1) return
+
+    const selectedId = Array.from(selectedForMerge)[0]
+    const shape = availableShapes.find(s => s.nodeId === selectedId)
+    if (!shape || shape.subpathCount <= 1) {
+      setStatusMessage('warning:Selected shape is not a compound path')
+      return
+    }
+
+    // Separate the subpaths
+    const subpaths = separateSubpaths(shape.pathD)
+    DEBUG_MERGE && console.log('[Explode] Separating', shape.name, 'into', subpaths.length, 'subpaths')
+
+    const newShapes: PolygonData[] = []
+    const newNodes: SVGNode[] = []
+    const fill = shape.element.getAttribute('fill') || '#666'
+    const stroke = shape.element.getAttribute('stroke') || 'none'
+    const strokeWidth = shape.element.getAttribute('stroke-width') || '1'
+
+    subpaths.forEach((subpathD, idx) => {
+      // Create new path element for this subpath
+      const newPath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      const newId = `explode-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`
+      newPath.setAttribute('id', newId)
+      newPath.setAttribute('d', subpathD)
+      newPath.setAttribute('fill', fill)
+      newPath.setAttribute('fill-rule', 'evenodd')
+      newPath.setAttribute('stroke', stroke)
+      newPath.setAttribute('stroke-width', strokeWidth)
+
+      // Extract polygon data from the new path
+      const polygons = getAllPolygonsFromElement(newPath)
+      if (polygons.length === 0 || polygons[0].outer.length < 3) return
+
+      const polygonWithHoles = polygons[0]
+      const baseName = shape.name.replace(/ \(part \d+\)$/, '') // Remove existing part suffix
+
+      newShapes.push({
+        nodeId: newId,
+        originalNodeId: newId,
+        name: `${baseName} (${idx + 1}/${subpaths.length})`,
+        color: fill,
+        vertices: polygonWithHoles.outer,
+        polygonWithHoles,
+        element: newPath,
+        subpathCount: 1,
+        pathD: subpathD
+      })
+
+      newNodes.push({
+        id: newId,
+        type: 'path',
+        name: `${baseName} (${idx + 1}/${subpaths.length})`,
+        element: newPath,
+        children: [],
+        isGroup: false
+      })
+    })
+
+    if (newShapes.length === 0) {
+      setStatusMessage('error:Could not separate subpaths')
+      return
+    }
+
+    // Remove original shape from layerNodes
+    const idsToRemove = new Set([shape.originalNodeId])
+    const removeNodesByIds = (nodes: SVGNode[], idsToRemove: Set<string>): SVGNode[] => {
+      const result: SVGNode[] = []
+      for (const node of nodes) {
+        if (idsToRemove.has(node.id)) continue
+        const filteredChildren = removeNodesByIds(node.children, idsToRemove)
+        result.push({ ...node, children: filteredChildren })
+      }
+      return result
+    }
+
+    let updatedNodes = removeNodesByIds(layerNodes, idsToRemove)
+    updatedNodes = [...updatedNodes, ...newNodes]
+
+    setLayerNodes(updatedNodes)
+    rebuildSvgFromLayers(updatedNodes)
+
+    // Update available shapes
+    setAvailableShapes(prev => {
+      const filtered = prev.filter(s => s.nodeId !== selectedId && s.originalNodeId !== shape.originalNodeId)
+      return [...filtered, ...newShapes]
+    })
+
+    // Clear selection
+    setSelectedForMerge(new Set())
+    setStatusMessage(`Exploded compound path into ${newShapes.length} separate shapes`)
+  }, [selectedForMerge, availableShapes, layerNodes, setLayerNodes, rebuildSvgFromLayers, setStatusMessage])
 
   // Bounding box of all available shapes
   const boundingBox = useMemo(() => {
@@ -634,16 +789,16 @@ export default function MergeTab() {
   // Apply the merge
   const handleApplyMerge = useCallback(() => {
     DEBUG_MERGE && console.log('[Merge] handleApplyMerge called')
-    DEBUG_MERGE && console.log('[Merge] previewResult:', previewResult)
+    DEBUG_MERGE && console.log('[Merge] booleanResult:', booleanResult)
     DEBUG_MERGE && console.log('[Merge] selectedPolygons:', selectedPolygons.length)
 
-    if (!previewResult || selectedPolygons.length < 2) {
+    if (!booleanResult || selectedPolygons.length < 2) {
       setStatusMessage('error:Select at least 2 shapes to merge')
       return
     }
 
-    // Create compound path with outer boundary and holes
-    const pathD = polygonWithHolesToPathD(previewResult.outer, previewResult.holes)
+    // Create compound path from boolean result
+    const pathD = multiPolygonToPathD(booleanResult.polygons)
     DEBUG_MERGE && console.log('[Merge] Generated path d:', pathD.substring(0, 100) + '...')
     const firstPoly = selectedPolygons[0]
 
@@ -655,7 +810,7 @@ export default function MergeTab() {
 
     // Create new path element in memory (will be added to DOM by rebuildSvgFromLayers)
     const newPath = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-    const newId = `merged-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const newId = `${operation}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     newPath.setAttribute('id', newId)
     newPath.setAttribute('d', pathD)
     newPath.setAttribute('fill', fill)
@@ -664,12 +819,16 @@ export default function MergeTab() {
     newPath.setAttribute('stroke-width', strokeWidth)
     DEBUG_MERGE && console.log('[Merge] Created new path element with id:', newId)
 
+    // Calculate total holes
+    const totalHoles = booleanResult.polygons.reduce((sum, p) => sum + p.holes.length, 0)
+    const holesMsg = totalHoles > 0 ? ` with ${totalHoles} holes` : ''
+    const opLabel = operation.charAt(0).toUpperCase() + operation.slice(1)
+
     // Create new node
-    const holesMsg = previewResult.holes.length > 0 ? ` with ${previewResult.holes.length} holes` : ''
     const newNode: SVGNode = {
       id: newId,
       type: 'path',
-      name: `Merged (${selectedPolygons.length} shapes${holesMsg})`,
+      name: `${opLabel} (${selectedPolygons.length} shapes${holesMsg})`,
       element: newPath,
       children: [],
       isGroup: false
@@ -707,14 +866,18 @@ export default function MergeTab() {
     rebuildSvgFromLayers(updatedNodes)
 
     // Update available shapes to reflect the merge (remove merged, add new)
+    // Use the first polygon from booleanResult for the main vertices
+    const firstResultPoly = booleanResult.polygons[0] || { outer: [], holes: [] }
     const newShape: PolygonData = {
       nodeId: newId,
       originalNodeId: newId,  // New merged shape has same nodeId and originalNodeId
       name: newNode.name,
       color: fill,
-      vertices: previewResult.outer,
-      polygonWithHoles: { outer: previewResult.outer, holes: previewResult.holes },
-      element: newPath
+      vertices: firstResultPoly.outer,
+      polygonWithHoles: firstResultPoly,
+      element: newPath,
+      subpathCount: booleanResult.polygons.length + totalHoles,
+      pathD: pathD
     }
     // Filter out shapes whose originalNodeId matches any of the removed originals
     // This handles both single shapes and split compound path parts
@@ -743,13 +906,15 @@ export default function MergeTab() {
     const originalVertices = selectedPolygons.reduce((sum, p) => sum + p.vertices.length, 0)
     const originalHoles = selectedPolygons.reduce((sum, p) => sum + p.polygonWithHoles.holes.length, 0)
     const originalEdges = originalVertices
-    const mergedVertices = previewResult?.outer.length || 0
-    const mergedHoles = previewResult?.holes.length || 0
-    const sharedEdges = previewResult?.sharedEdges.length || 0
+
+    // Calculate merged stats from booleanResult
+    const mergedVertices = booleanResult?.polygons.reduce((sum, p) => sum + p.outer.length, 0) || 0
+    const mergedHoles = booleanResult?.polygons.reduce((sum, p) => sum + p.holes.length, 0) || 0
+    const sharedEdges = previewResult?.sharedEdges.length || 0  // Only available for union
     const removedEdges = originalEdges - mergedVertices
 
     return { originalVertices, originalHoles, originalEdges, mergedVertices, mergedHoles, sharedEdges, removedEdges }
-  }, [selectedPolygons, previewResult])
+  }, [selectedPolygons, booleanResult, previewResult])
 
   // Empty state - no shapes loaded
   if (availableShapes.length === 0) {
@@ -814,10 +979,12 @@ export default function MergeTab() {
                 }).length
                 const hasHoles = poly.polygonWithHoles.holes.length > 0
 
+                const isCompound = poly.subpathCount > 1
+
                 return (
                   <div
                     key={poly.nodeId}
-                    className={`shape-item clickable ${isSelected ? 'selected' : ''} ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''}`}
+                    className={`shape-item clickable ${isSelected ? 'selected' : ''} ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''} ${isCompound ? 'compound' : ''}`}
                     onClick={() => toggleShapeSelection(poly.nodeId)}
                     title={touchCount > 0 ? `Touches ${touchCount} other shape${touchCount > 1 ? 's' : ''}` : 'Not adjacent to other shapes'}
                   >
@@ -829,6 +996,7 @@ export default function MergeTab() {
                       style={{ backgroundColor: poly.color }}
                     />
                     <span className="shape-name">{poly.name}</span>
+                    {isCompound && <span className="shape-compound-badge" title={`Compound path: ${poly.subpathCount} subpaths`}>◈{poly.subpathCount}</span>}
                     {hasHoles && <span className="shape-holes" title={`${poly.polygonWithHoles.holes.length} holes`}>◯</span>}
                     {touchCount > 0 && <span className="shape-touch-badge" title={`Touches ${touchCount}`}>⟷{touchCount}</span>}
                     <span className="shape-vertices">{poly.vertices.length} pts</span>
@@ -849,18 +1017,25 @@ export default function MergeTab() {
                 ⊕ Union
               </button>
               <button
-                className="operation-btn disabled"
-                disabled
-                title="Coming soon"
+                className={`operation-btn ${operation === 'intersect' ? 'active' : ''}`}
+                onClick={() => setOperation('intersect')}
+                title="Keep only overlapping areas"
               >
                 ⊗ Intersect
               </button>
               <button
-                className="operation-btn disabled"
-                disabled
-                title="Coming soon"
+                className={`operation-btn ${operation === 'subtract' ? 'active' : ''}`}
+                onClick={() => setOperation('subtract')}
+                title="Subtract second shape from first"
               >
                 ⊖ Subtract
+              </button>
+              <button
+                className={`operation-btn ${operation === 'xor' ? 'active' : ''}`}
+                onClick={() => setOperation('xor')}
+                title="Keep non-overlapping areas (exclude)"
+              >
+                ⊘ Exclude
               </button>
             </div>
           </div>
@@ -881,15 +1056,74 @@ export default function MergeTab() {
             <p className="hint">How close edges must be to be considered shared</p>
           </div>
 
-          {selectedPolygons.length >= 2 && (
-            <StatSection title="Statistics" className="merge-section">
-              <StatRow label="Original vertices" value={stats.originalVertices} />
-              <StatRow label="Merged vertices" value={stats.mergedVertices} />
-              {stats.originalHoles > 0 && (
-                <StatRow label="Holes preserved" value={stats.mergedHoles} />
+          {/* Path Diagnostics Panel - shows when single shape selected */}
+          {selectedDiagnostics && selectedForMerge.size === 1 && (
+            <div className="merge-section diagnostics-panel">
+              <h3>
+                Path Diagnostics
+                <button
+                  className="mini-btn"
+                  onClick={() => setShowDiagnostics(!showDiagnostics)}
+                >
+                  {showDiagnostics ? '▼' : '▶'}
+                </button>
+              </h3>
+              {showDiagnostics && (
+                <div className="diagnostics-content">
+                  <div className="diag-row">
+                    <span className="diag-label">Subpaths:</span>
+                    <span className={`diag-value ${selectedDiagnostics.hasCompoundPath ? 'warning' : ''}`}>
+                      {selectedDiagnostics.subpathCount}
+                      {selectedDiagnostics.hasCompoundPath && ' (compound)'}
+                    </span>
+                  </div>
+                  <div className="diag-row">
+                    <span className="diag-label">Total points:</span>
+                    <span className="diag-value">{selectedDiagnostics.totalPointCount}</span>
+                  </div>
+                  <div className="diag-row">
+                    <span className="diag-label">Winding:</span>
+                    <span className={`diag-value ${selectedDiagnostics.hasMixedWinding ? 'warning' : ''}`}>
+                      {selectedDiagnostics.hasMixedWinding ? 'Mixed (may have holes)' : selectedDiagnostics.subpaths[0]?.windingDirection || 'N/A'}
+                    </span>
+                  </div>
+                  {selectedDiagnostics.hasUnclosedPaths && (
+                    <div className="diag-row warning">
+                      <span className="diag-label">⚠</span>
+                      <span className="diag-value">Has unclosed paths</span>
+                    </div>
+                  )}
+                  {selectedDiagnostics.issues.length > 0 && (
+                    <div className="diag-issues">
+                      {selectedDiagnostics.issues.slice(0, 3).map((issue, idx) => (
+                        <div key={idx} className={`diag-issue ${issue.severity}`}>
+                          {issue.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {selectedDiagnostics.hasCompoundPath && (
+                    <button
+                      className="explode-btn"
+                      onClick={handleExplode}
+                      title="Separate compound path into individual shapes"
+                    >
+                      💥 Explode into {selectedDiagnostics.subpathCount} shapes
+                    </button>
+                  )}
+                </div>
               )}
-              <StatRow label="Shared edges" value={stats.sharedEdges} highlight />
-              <StatRow label="Edges removed" value={stats.removedEdges} highlight />
+            </div>
+          )}
+
+          {selectedPolygons.length >= 2 && booleanResult && (
+            <StatSection title="Result Preview" className="merge-section">
+              <StatRow label="Input shapes" value={selectedPolygons.length} />
+              <StatRow label="Output shapes" value={booleanResult.polygons.length} />
+              <StatRow label="Operation" value={operation} />
+              {operation === 'union' && stats.sharedEdges > 0 && (
+                <StatRow label="Shared edges" value={stats.sharedEdges} highlight />
+              )}
             </StatSection>
           )}
 
@@ -897,18 +1131,16 @@ export default function MergeTab() {
             <button
               className="apply-btn"
               onClick={() => {
-                DEBUG_MERGE && console.log('[Merge] Button clicked! previewResult:', !!previewResult, 'selectedPolygons:', selectedPolygons.length, 'connected:', selectionIsConnected)
+                DEBUG_MERGE && console.log('[Merge] Button clicked! booleanResult:', !!booleanResult, 'selectedPolygons:', selectedPolygons.length)
                 handleApplyMerge()
               }}
-              disabled={!previewResult || selectedPolygons.length < 2 || !selectionIsConnected}
+              disabled={!booleanResult || selectedPolygons.length < 2}
             >
               {selectedPolygons.length < 2
                 ? `Select ${2 - selectedPolygons.length} more shape${selectedPolygons.length === 1 ? '' : 's'}`
-                : !selectionIsConnected
-                  ? 'Selected shapes not all connected'
-                  : previewResult
-                    ? `Merge ${selectedPolygons.length} Shapes`
-                    : 'No shared edges found'
+                : booleanResult
+                  ? `Apply ${operation.charAt(0).toUpperCase() + operation.slice(1)} (${selectedPolygons.length} shapes)`
+                  : 'Computing...'
               }
             </button>
             <button className="cancel-btn" onClick={handleCancel}>

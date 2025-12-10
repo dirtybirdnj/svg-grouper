@@ -61,6 +61,22 @@ npm run package:linux  # Linux
 - **React 19** - UI framework
 - **TypeScript** - Type safety
 - **Vite** - Fast builds and HMR
+- **rat-king** - Rust-based fill pattern engine (~200x faster than JS)
+
+### rat-king Integration
+
+All fill pattern generation is powered by [rat-king](https://github.com/dirtybirdnj/rat-king), a Rust CLI tool. This provides:
+- 17+ fill patterns (lines, crosshatch, spiral, honeycomb, hilbert, etc.)
+- Proper hole detection for compound paths (letters, donuts)
+- Line chaining optimization for efficient plotter output
+- ~200x performance improvement over JavaScript implementation
+
+To install rat-king:
+```bash
+cd ~/Code/rat-king/crates
+cargo build --release
+cp target/release/rat-king ~/.cargo/bin/
+```
 
 ## Usage
 

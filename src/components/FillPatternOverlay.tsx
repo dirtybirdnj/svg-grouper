@@ -3,16 +3,44 @@ import { useAppContext } from '../context/AppContext'
 import './ToolsOverlay.css'
 
 const AVAILABLE_PATTERNS = [
+  // Basic patterns
   { value: 'lines', label: 'Lines' },
   { value: 'crosshatch', label: 'Crosshatch' },
-  { value: 'zigzag', label: 'Zigzag' },
-  { value: 'wiggle', label: 'Wiggle' },
+  { value: 'diagonal', label: 'Diagonal' },
+  { value: 'stripe', label: 'Stripe' },
+  { value: 'grid', label: 'Grid' },
+  { value: 'brick', label: 'Brick' },
+  { value: 'herringbone', label: 'Herringbone' },
+  // Spiral patterns
   { value: 'spiral', label: 'Spiral' },
   { value: 'fermat', label: 'Fermat Spiral' },
-  { value: 'concentric', label: 'Concentric' },
+  { value: 'crossspiral', label: 'Cross Spiral' },
   { value: 'radial', label: 'Radial' },
+  // Geometric patterns
   { value: 'honeycomb', label: 'Honeycomb' },
+  { value: 'truchet', label: 'Truchet' },
+  { value: 'sierpinski', label: 'Sierpinski' },
+  { value: 'pentagon14', label: 'Pentagon 14' },
+  { value: 'pentagon15', label: 'Pentagon 15' },
+  { value: 'tessellation', label: 'Tessellation' },
+  // Curve patterns
+  { value: 'hilbert', label: 'Hilbert Curve' },
+  { value: 'lissajous', label: 'Lissajous' },
+  { value: 'rose', label: 'Rose Curve' },
+  { value: 'guilloche', label: 'Guilloche' },
+  { value: 'phyllotaxis', label: 'Phyllotaxis' },
+  // Texture patterns
+  { value: 'stipple', label: 'Stipple' },
+  { value: 'scribble', label: 'Scribble' },
 ]
+// Excluded patterns (performance issues):
+// - wiggle: 65s on complex SVGs
+// - zigzag: 26s on complex SVGs
+// - peano: 13s on complex SVGs
+// - concentric: 5M+ lines output
+// - gyroid: 6.5s + 2.4M lines
+// - harmonograph: 3.3M lines output
+// See /Users/mgilbert/Code/rat-king/harness-results.json for details
 
 interface FillPatternOverlayProps {
   onAccept: () => void

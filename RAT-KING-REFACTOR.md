@@ -218,20 +218,21 @@ ipcMain.handle('run-rat-king-harness', async (event, params) => {
 })
 ```
 
-### Phase 5: Deprecate JavaScript Fill Patterns (Long Term)
+### Phase 5: Deprecate JavaScript Fill Patterns ✅ COMPLETE (Dec 2024)
 
 **Goal**: Remove redundant JS pattern implementations
 
-**Files to deprecate**:
-- `src/utils/fillPatterns.ts` - 2000+ lines of JS pattern code
-- `electron/fillWorker.ts` - Worker thread fallback
+**Files deprecated**:
+- ~~`src/utils/fillPatterns.ts`~~ - Gutted from 2,185 → 593 lines (types only)
+- ~~`electron/fillWorker.ts`~~ - DELETED
 
-**Migration path**:
-1. Keep JS patterns as fallback for development without rat-king
-2. Add `RAT_KING_REQUIRED=true` environment flag for production
-3. Remove JS fallback in next major version
+**What was removed**:
+- `fillWorker.ts` (406 lines) - deleted entirely
+- `generateFillsLocally()` from FillTab.tsx (~250 lines)
+- All pattern generator functions from `fillPatterns.ts` (~1,600 lines)
+- Dead clipping functions from `geometry.ts` (~600 lines)
 
-**Benefit**: Reduce bundle size by ~100KB, single source of truth for patterns
+**Total: ~2,660 lines of duplicate JS code removed**
 
 ### Phase 6: UI Improvements (Optional)
 
@@ -295,12 +296,14 @@ Each phase is independent and can be reverted:
 
 ## Success Metrics
 
-- [ ] All 30 rat-king patterns available in UI
-- [ ] Binary path works on fresh install
+- [ ] All 30 rat-king patterns available in UI (currently 17)
+- [x] Binary path works on fresh install (findRatKingBinary searches multiple paths)
 - [ ] Sketchy effect accessible from FillTab
 - [ ] PatternTest uses rat-king harness command
-- [ ] No regression in pattern generation performance
-- [ ] Bundle size reduced (after Phase 5)
+- [x] No regression in pattern generation performance (~200x faster!)
+- [x] Bundle size reduced - **2,660 lines removed** (Phase 5 complete)
+- [x] Hole detection works correctly (P0 - winding direction)
+- [x] Line chaining optimization (P1 - chains output)
 
 ## Notes
 
@@ -308,3 +311,10 @@ Each phase is independent and can be reverted:
 - Custom tile patterns are JS-only and should remain as fallback
 - `concentric` pattern is hidden in UI but should be re-enabled with rat-king
 - rat-king's `--grouped` flag is essential for per-shape color preservation
+
+## Completed (Dec 2024)
+
+- **Phase 5 (Deprecate JS Patterns)**: DONE - All JS fallback removed
+- **P0 (Hole Detection)**: DONE - rat-king uses winding direction analysis
+- **P1 (Line Chaining)**: DONE - rat-king returns pre-chained polylines
+- **JSON Interface**: Updated to support `chains` and `chain_stats` output

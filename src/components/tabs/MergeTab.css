@@ -664,3 +664,126 @@
   margin: 0;
   font-size: 0.9rem;
 }
+
+/* Compound path badge */
+.shape-compound-badge {
+  font-size: 0.6rem;
+  color: #8e44ad;
+  background: #f3e5f5;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+  font-weight: 500;
+}
+
+.shape-item.compound {
+  background: #faf5fc;
+  border-color: #e1bee7;
+}
+
+.shape-item.compound:hover {
+  background: #f3e5f5;
+  border-color: #ce93d8;
+}
+
+/* Path Diagnostics Panel */
+.diagnostics-panel {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 0.75rem;
+}
+
+.diagnostics-panel h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.diagnostics-content {
+  font-size: 0.8rem;
+}
+
+.diag-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid #eee;
+}
+
+.diag-row:last-child {
+  border-bottom: none;
+}
+
+.diag-label {
+  color: #666;
+}
+
+.diag-value {
+  color: #333;
+  font-weight: 500;
+}
+
+.diag-value.warning {
+  color: #f39c12;
+}
+
+.diag-row.warning {
+  background: #fff3e0;
+  margin: 0.25rem -0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 3px;
+}
+
+.diag-issues {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #eee;
+}
+
+.diag-issue {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 0.25rem;
+  border-radius: 3px;
+}
+
+.diag-issue.info {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.diag-issue.warning {
+  background: #fff3e0;
+  color: #e65100;
+}
+
+.diag-issue.error {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* Explode button */
+.explode-btn {
+  width: 100%;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #8e44ad;
+  border-radius: 4px;
+  background: linear-gradient(to bottom, #9b59b6, #8e44ad);
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.explode-btn:hover {
+  background: linear-gradient(to bottom, #a569bd, #9b59b6);
+  border-color: #7d3c98;
+}
+
+.explode-btn:active {
+  transform: scale(0.98);
+}

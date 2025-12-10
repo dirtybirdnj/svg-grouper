@@ -578,7 +578,10 @@ function AppContent() {
               newMarkup = `<g id="fill-pattern-${nodeId}" stroke="${strokeColor}" fill="none">${fillContent}</g>`
             }
 
-            // Update the node with the new customMarkup
+            // Count fill lines for optimization tracking
+            const lineCount = (fillContent.match(/<(path|line|polyline)/g) || []).length
+
+            // Update the node with the new customMarkup and optimization state
             const updateNode = (nodes: SVGNode[]): SVGNode[] => {
               return nodes.map(n => {
                 if (n.id === nodeId) {
@@ -586,6 +589,14 @@ function AppContent() {
                     ...n,
                     customMarkup: newMarkup,
                     fillColor: strokeColor,
+                    optimizationState: {
+                      ...n.optimizationState,
+                      fillApplied: {
+                        pattern: fillPatternType,
+                        lineCount,
+                        timestamp: Date.now(),
+                      },
+                    },
                   }
                 }
                 if (n.children.length > 0) {
@@ -786,7 +797,7 @@ function AppContent() {
       lines,
       boundingBox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
       source: 'sort',
-      onApply: (orderedLines: OrderLine[]) => {
+      onApply: (orderedLines: OrderLine[], improvement: number) => {
         // Rebuild the selected node's content with optimized line order
         // Generate new path data as a compound path with all lines in order
         const pathD = orderedLines.map(line =>
@@ -803,11 +814,18 @@ function AppContent() {
         const updateNodeInTree = (nodes: SVGNode[]): SVGNode[] => {
           return nodes.map(node => {
             if (node.id === selectedId) {
-              // Replace with optimized version
+              // Replace with optimized version and set optimization state
               return {
                 ...node,
                 customMarkup: optimizedMarkup,
                 children: [], // Clear children since we've merged into single path
+                optimizationState: {
+                  ...node.optimizationState,
+                  orderOptimized: {
+                    improvement,
+                    timestamp: Date.now(),
+                  },
+                },
               }
             }
             if (node.children.length > 0) {
@@ -820,7 +838,7 @@ function AppContent() {
         const updatedNodes = updateNodeInTree(layerNodes)
         setLayerNodes(updatedNodes)
         rebuildSvgFromLayers(updatedNodes)
-        setStatusMessage(`Optimized ${orderedLines.length} lines`)
+        setStatusMessage(`Optimized ${orderedLines.length} lines (${improvement.toFixed(1)}% travel saved)`)
       },
     })
     setActiveTab('order')

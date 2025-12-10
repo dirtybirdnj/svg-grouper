@@ -1,0 +1,173 @@
+.scale-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #e0e0e0;
+}
+
+.scale-controls.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.scale-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scale-header {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 0.5px;
+}
+
+.scale-divider {
+  height: 1px;
+  background: #e0e0e0;
+  margin: 4px 0;
+}
+
+.scale-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset-buttons {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.preset-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preset-btn:hover {
+  border-color: #4a90e2;
+  background: #f0f7ff;
+}
+
+.preset-btn.active {
+  background: #4a90e2;
+  color: white;
+  border-color: #4a90e2;
+}
+
+.scale-input,
+.dimension-input {
+  width: 60px;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  text-align: right;
+}
+
+.scale-input:focus,
+.dimension-input:focus {
+  outline: none;
+  border-color: #4a90e2;
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
+}
+
+.input-suffix {
+  font-size: 12px;
+  color: #888;
+  min-width: 20px;
+}
+
+.input-suffix.unit-toggle {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: all 0.15s ease;
+}
+
+.input-suffix.unit-toggle:hover {
+  background: #e8f4ff;
+  color: #4a90e2;
+}
+
+.apply-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #4a90e2;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.apply-btn:hover:not(:disabled) {
+  background: #357abd;
+}
+
+.apply-btn:disabled {
+  background: #ccc;
+  cursor: not-allowed;
+}
+
+.apply-btn.full-width {
+  width: 100%;
+  padding: 8px;
+}
+
+.current-size {
+  font-size: 12px;
+  color: #666;
+  font-family: monospace;
+}
+
+.dimension-inputs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dimension-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dimension-row label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  width: 14px;
+}
+
+.aspect-lock {
+  padding: 4px 8px;
+  font-size: 14px;
+  border: 1px solid #ddd;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.aspect-lock:hover {
+  background: #f0f0f0;
+}
+
+.aspect-lock.locked {
+  background: #e8f4ff;
+  border-color: #4a90e2;
+}

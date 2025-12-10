@@ -1,8 +1,22 @@
-# Rat-King: vpype Plugin for Pen Plotter Workflows
+# ⚠️ OBSOLETE - Original Python Plan
+
+> **This document is obsolete.** rat-king was implemented in Rust, not Python.
+> See these docs for current status:
+> - `NEXT_SESSION.md` - Current integration status
+> - `RAT-KING-REFACTOR.md` - Remaining features to implement
+> - `RAT-KING-OPTIMIZATIONS.md` - Performance optimizations
+
+---
+
+# Rat-King: vpype Plugin for Pen Plotter Workflows (ARCHIVED)
 
 ## Overview
 
-**Rat-King** will be a vpype plugin that extracts the line fill generation algorithms from svg-grouper into a reusable CLI tool. This enables:
+**Rat-King** ~~will be~~ **was** a vpype plugin plan that has been superseded by a Rust implementation. The original goal was to extract fill generation algorithms into Python, but we instead built rat-king in Rust for ~200x better performance.
+
+**Current rat-king**: https://github.com/dirtybirdnj/rat-king (Rust CLI)
+
+~~**Rat-King** will be a vpype plugin that extracts the line fill generation algorithms from svg-grouper into a reusable CLI tool. This enables:~~
 
 1. **CLI usage**: Direct command-line access to fill patterns
 2. **vpype integration**: Chain with other vpype commands (crop, optimize, etc.)

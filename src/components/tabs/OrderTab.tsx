@@ -469,11 +469,11 @@ export default function OrderTab() {
 
   const handleApply = useCallback(() => {
     if (orderData?.onApply) {
-      orderData.onApply(optimizedLines)
+      orderData.onApply(optimizedLines, stats.improvement)
     }
     setOrderData(null)
     setActiveTab('sort')
-  }, [orderData, optimizedLines, setOrderData, setActiveTab])
+  }, [orderData, optimizedLines, stats.improvement, setOrderData, setActiveTab])
 
   // Start animation from current progress
   const startAnimation = useCallback((fromProgress: number = 0) => {

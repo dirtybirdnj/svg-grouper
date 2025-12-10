@@ -4,6 +4,8 @@ import FileUpload from '../FileUpload'
 import SVGCanvas from '../SVGCanvas'
 import LayerTree from '../LayerTree'
 import LoadingOverlay from '../LoadingOverlay'
+import { Rulers, RulerUnit } from '../shared/Rulers'
+import { ScaleControls } from '../shared/ScaleControls'
 import { SVGNode } from '../../types/svg'
 import { parseSVGFlatProgressively } from '../../utils/svgParser'
 import { normalizeColor } from '../../utils/colorExtractor'
@@ -11,6 +13,7 @@ import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../ut
 import { linesToCompoundPath, HatchLine, Rect } from '../../utils/geometry'
 import { cropSVGInBrowser, getCropDimensions } from '../../utils/cropSVG'
 import { analyzeSVGDimensions } from '../../utils/svgDimensions'
+import { scaleArtwork } from '../../utils/svgTransform'
 import {
   findNodeById,
   updateNodeChildren,
@@ -92,6 +95,16 @@ export default function SortTab() {
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const [isIsolated, setIsIsolated] = useState(false)
   const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
+
+  // Ruler and scaling state
+  const [showRulers, setShowRulers] = useState(false)
+  const [rulerUnit, setRulerUnit] = useState<RulerUnit>(() => {
+    // Load from localStorage
+    const saved = localStorage.getItem('svg-grouper-ruler-unit')
+    return (saved === 'in' || saved === 'mm') ? saved : 'in'
+  })
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 })
+  const [cursorPosition, setCursorPosition] = useState<{ x: number; y: number } | null>(null)
 
   // Use extracted arrange tools hook
   const {
@@ -562,6 +575,72 @@ export default function SortTab() {
       element.style.outlineOffset = originalOutlineOffset
     }
   }, [highlightedPathId])
+
+  // Persist ruler unit to localStorage
+  useEffect(() => {
+    localStorage.setItem('svg-grouper-ruler-unit', rulerUnit)
+  }, [rulerUnit])
+
+  // Measure canvas dimensions on resize
+  useEffect(() => {
+    const container = canvasContainerRef.current
+    if (!container) return
+
+    const updateDimensions = () => {
+      setCanvasDimensions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      })
+    }
+
+    updateDimensions()
+
+    const resizeObserver = new ResizeObserver(updateDimensions)
+    resizeObserver.observe(container)
+
+    return () => resizeObserver.disconnect()
+  }, [])
+
+  // Handle scale application
+  const handleScaleApply = useCallback((factor: number) => {
+    const svgElement = document.querySelector('.svg-canvas svg') as SVGSVGElement
+    if (!svgElement) return
+
+    // Apply scale transform
+    scaleArtwork(svgElement, factor)
+
+    // Update dimensions
+    const viewBox = svgElement.viewBox.baseVal
+    if (viewBox.width > 0) {
+      setSvgDimensions({
+        width: viewBox.width,
+        height: viewBox.height,
+      })
+    }
+
+    // Sync the modified SVG content
+    syncSvgContent()
+    setStatusMessage(`Scaled artwork by ${(factor * 100).toFixed(0)}%`)
+  }, [setSvgDimensions, syncSvgContent, setStatusMessage])
+
+  // Handle mouse move for cursor position in rulers
+  const handleCanvasMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!svgDimensions || !canvasContainerRef.current) return
+
+    const rect = canvasContainerRef.current.getBoundingClientRect()
+    const centerX = rect.width / 2
+    const centerY = rect.height / 2
+
+    // Convert screen position to SVG coordinates
+    const svgX = (e.clientX - rect.left - centerX - offset.x) / scale + svgDimensions.width / 2
+    const svgY = (e.clientY - rect.top - centerY - offset.y) / scale + svgDimensions.height / 2
+
+    setCursorPosition({ x: svgX, y: svgY })
+  }, [svgDimensions, scale, offset])
+
+  const handleCanvasMouseLeave = useCallback(() => {
+    setCursorPosition(null)
+  }, [])
 
   // Handlers for status bar path info interaction
   const handlePathInfoMouseEnter = useCallback(() => {
@@ -2669,6 +2748,30 @@ export default function SortTab() {
             />
           )}
         </div>
+
+        {/* Scale controls at bottom of sidebar */}
+        {svgContent && (
+          <div className="sidebar-footer">
+            <div className="sidebar-footer-header">
+              <span>Transform</span>
+              <button
+                className={`ruler-toggle ${showRulers ? 'active' : ''}`}
+                onClick={() => setShowRulers(!showRulers)}
+                title={showRulers ? 'Hide rulers' : 'Show rulers'}
+              >
+                📏
+              </button>
+            </div>
+            <ScaleControls
+              svgDimensions={svgDimensions}
+              unit={rulerUnit}
+              onScale={handleScaleApply}
+              onUnitChange={setRulerUnit}
+              disabled={isProcessing}
+            />
+          </div>
+        )}
+
         <div
           className="sidebar-resize-handle"
           onMouseDown={handleResizeMouseDown}
@@ -2840,7 +2943,26 @@ export default function SortTab() {
             )}
           </div>
         )}
-        <div ref={canvasContainerRef} className="canvas-container">
+        <div
+          ref={canvasContainerRef}
+          className={`canvas-container ${showRulers && svgContent ? 'with-rulers' : ''}`}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseLeave={handleCanvasMouseLeave}
+        >
+          {/* Rulers */}
+          {showRulers && svgContent && svgDimensions && (
+            <Rulers
+              canvasWidth={canvasDimensions.width}
+              canvasHeight={canvasDimensions.height}
+              scale={scale}
+              offset={offset}
+              svgDimensions={svgDimensions}
+              unit={rulerUnit}
+              onUnitChange={setRulerUnit}
+              cursorPosition={cursorPosition}
+            />
+          )}
+
           {!svgContent ? (
             <FileUpload
               onFileLoad={handleFileLoad}

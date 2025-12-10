@@ -8,40 +8,14 @@ import {
   Point,
   HatchLine,
   PolygonWithHoles,
-  Rect,
   SubpathMode,
   getAllPolygonsFromElement,
-  generateGlobalHatchLines,
-  clipLinesToPolygon,
-  clipLinesToPolygonsEvenOdd,
-  clipLinesToRect,
-  clipPolygonWithHolesToRect,
   linesToCompoundPath,
   parsePathIntoSubpaths,
 } from '../../utils/geometry'
 import {
   FillPatternType,
   TileShapeType,
-  generateConcentricLines,
-  generateHoneycombLines,
-  generateWiggleLines,
-  generateSpiralLines,
-  generateGlobalSpiralLines,
-  clipSpiralToPolygon,
-  generateGyroidLines,
-  generateCrosshatchLines,
-  generateZigzagLines,
-  generateRadialLines,
-  generateCrossSpiralLines,
-  generateHilbertLines,
-  generateGlobalHilbertLines,
-  clipHilbertToPolygon,
-  generateFermatLines,
-  generateGlobalFermatLines,
-  clipFermatToPolygon,
-  generateWaveLines,
-  generateScribbleLines,
-  generateCustomTileLines,
   TILE_SHAPES,
   optimizeLineOrderMultiPass,
 } from '../../utils/fillPatterns'
@@ -215,286 +189,8 @@ function simplifyLines(lines: HatchLine[], tolerance: number): HatchLine[] {
   return simplifiedLines
 }
 
-// The following functions were imported from '../../utils/geometry' and '../../utils/fillPatterns':
-// - getPolygonPoints
-// - parsePathIntoSubpaths (via getPolygonPoints internally)
-// - calcPolygonArea (via geometry.ts)
-// - identifyOuterAndHoles (via geometry.ts)
-// - pointInPolygon (via geometry.ts)
-// - lineSegmentIntersection (via geometry.ts)
-// - linePolygonIntersections (via geometry.ts)
-// - generateGlobalHatchLines
-// - clipLinesToPolygon
-// - clipSegmentAroundHoles (via geometry.ts)
-// - polygonSignedArea (via geometry.ts)
-// - offsetPolygonInward (via geometry.ts)
-// - offsetPolygon (via geometry.ts)
-// - generateConcentricLines
-// - generateHoneycombLines
-// - generateWiggleLine (via fillPatterns.ts)
-// - generateWiggleLines
-// - generateSpiralLines
-// - generateGlobalSpiralLines
-// - clipSpiralToPolygon
-// - generateGyroidLines
-// - distance (via fillPatterns.ts)
-// - optimizeLinesWithinShape (via fillPatterns.ts)
-// - calculateShapeCentroid (via fillPatterns.ts)
-// - getShapeTopLeft (via fillPatterns.ts)
-// - optimizeLineOrderMultiPass
-
-// == ALL DUPLICATED FUNCTIONS REMOVED - USING IMPORTS FROM UTILS ==
-
-// Local fallback for fill generation (when not running in Electron)
-async function generateFillsLocally(
-  pathInputs: Array<{ id: string; color: string; polygons: PolygonWithHoles[]; rawSubpaths?: Point[][] }>,
-  pathsToProcess: FillPathInfo[],
-  boundingBox: Rect,
-  fillPattern: FillPatternType,
-  lineSpacing: number,
-  angle: number,
-  crossHatch: boolean,
-  inset: number,
-  wiggleAmplitude: number,
-  wiggleFrequency: number,
-  spiralOverDiameter: number,
-  singleSpiral: boolean,
-  singleHilbert: boolean,
-  singleFermat: boolean,
-  customTileShape: TileShapeType,
-  customTileGap: number,
-  customTileScale: number,
-  customTileRotateOffset: number,
-  enableCrop: boolean,
-  cropInset: number,
-  useEvenOdd: boolean,
-  abortController: { aborted: boolean },
-  setProgress: (progress: number) => void
-): Promise<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]> {
-  // Calculate crop rectangle if enabled
-  let cropRect: Rect | null = null
-  if (enableCrop && cropInset > 0) {
-    const insetX = boundingBox.width * (cropInset / 100)
-    const insetY = boundingBox.height * (cropInset / 100)
-    cropRect = {
-      x: boundingBox.x + insetX,
-      y: boundingBox.y + insetY,
-      width: boundingBox.width - insetX * 2,
-      height: boundingBox.height - insetY * 2
-    }
-  }
-
-  // Generate global patterns
-  const globalLines = generateGlobalHatchLines(boundingBox, lineSpacing, angle)
-  const globalCrossLines = crossHatch ? generateGlobalHatchLines(boundingBox, lineSpacing, angle + 90) : []
-
-  let globalSpiralLines: HatchLine[] = []
-  if (fillPattern === 'spiral' && singleSpiral) {
-    const centerX = boundingBox.x + boundingBox.width / 2
-    const centerY = boundingBox.y + boundingBox.height / 2
-    const maxRadius = Math.sqrt(Math.pow(boundingBox.width / 2, 2) + Math.pow(boundingBox.height / 2, 2)) * spiralOverDiameter
-    globalSpiralLines = generateGlobalSpiralLines(centerX, centerY, maxRadius, lineSpacing, angle)
-  }
-
-  let globalHilbertLines: HatchLine[] = []
-  if (fillPattern === 'hilbert' && singleHilbert) {
-    globalHilbertLines = generateGlobalHilbertLines(boundingBox, lineSpacing)
-  }
-
-  let globalFermatLines: HatchLine[] = []
-  if (fillPattern === 'fermat' && singleFermat) {
-    globalFermatLines = generateGlobalFermatLines(boundingBox, lineSpacing, angle, spiralOverDiameter)
-  }
-
-  const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
-  const totalPaths = pathInputs.length
-
-  for (let i = 0; i < pathInputs.length; i++) {
-    if (abortController.aborted) break
-
-    setProgress(Math.round((i / totalPaths) * 100))
-    const pathInput = pathInputs[i]
-    const originalPath = pathsToProcess.find(p => p.id === pathInput.id)
-    if (!originalPath) continue
-
-    let allPolygons = pathInput.polygons
-    if (cropRect) {
-      allPolygons = allPolygons.map(p => clipPolygonWithHolesToRect(p, cropRect!)).filter(p => p.outer.length >= 3)
-    }
-
-    let allLines: HatchLine[] = []
-    let firstValidPolygon: Point[] | null = null
-
-    // Handle evenodd fill mode for compound paths
-    // This uses clipLinesToPolygonsEvenOdd to clip against ALL subpaths at once
-    // (areas inside an odd number of boundaries are filled)
-    if (useEvenOdd && pathInput.rawSubpaths && pathInput.rawSubpaths.length > 1) {
-      const subpaths = pathInput.rawSubpaths
-      firstValidPolygon = subpaths[0] // Use first subpath as representative polygon
-
-      // Patterns that support evenodd: lines, crosshatch, spiral (global patterns)
-      if (fillPattern === 'lines') {
-        allLines = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
-        if (crossHatch) {
-          allLines = [...allLines, ...clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)]
-        }
-      } else if (fillPattern === 'crosshatch') {
-        // Crosshatch generates two line sets at 90 degrees
-        const lines1 = clipLinesToPolygonsEvenOdd(globalLines, subpaths, inset)
-        const lines2 = clipLinesToPolygonsEvenOdd(globalCrossLines, subpaths, inset)
-        allLines = [...lines1, ...lines2]
-      } else if (fillPattern === 'spiral') {
-        // Spiral with evenodd - clip the global spiral using evenodd rule
-        allLines = clipLinesToPolygonsEvenOdd(globalSpiralLines, subpaths, inset)
-      } else {
-        // For other patterns, process each subpath independently
-        // These patterns don't benefit from evenodd clipping
-        for (const subpath of subpaths) {
-          if (subpath.length < 3) continue
-          const polygonData: PolygonWithHoles = { outer: subpath, holes: [] }
-          let lines: HatchLine[] = []
-
-          switch (fillPattern) {
-            case 'concentric':
-              lines = generateConcentricLines(polygonData, lineSpacing, false)
-              break
-            case 'wiggle':
-              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-              break
-            case 'honeycomb':
-              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-              break
-            case 'gyroid':
-              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-              break
-            case 'zigzag':
-              lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
-              break
-            case 'radial':
-              lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
-              break
-            case 'crossspiral':
-              lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-              break
-            case 'hilbert':
-              lines = singleHilbert
-                ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
-                : generateHilbertLines(polygonData, lineSpacing, inset)
-              break
-            case 'fermat':
-              lines = singleFermat
-                ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
-                : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-              break
-            case 'wave':
-              lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-              break
-            case 'scribble':
-              lines = generateScribbleLines(polygonData, lineSpacing, inset)
-              break
-            case 'custom':
-              lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
-              break
-            default:
-              break
-          }
-          allLines = allLines.concat(lines)
-        }
-      }
-    } else {
-      // Standard per-polygon processing
-      for (const polygonData of allPolygons) {
-        if (polygonData.outer.length < 3) continue
-        if (!firstValidPolygon) firstValidPolygon = polygonData.outer
-
-        let lines: HatchLine[] = []
-
-        try {
-          switch (fillPattern) {
-            case 'concentric':
-              lines = generateConcentricLines(polygonData, lineSpacing, false)
-              break
-            case 'wiggle':
-              lines = generateWiggleLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-              console.log(`[FillTab] wiggle: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
-              break
-            case 'spiral':
-              lines = singleSpiral
-                ? clipSpiralToPolygon(globalSpiralLines, polygonData, inset)
-                : generateSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-              break
-            case 'honeycomb':
-              lines = generateHoneycombLines(polygonData, lineSpacing, inset, angle)
-              console.log(`[FillTab] honeycomb: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
-              break
-            case 'gyroid':
-              lines = generateGyroidLines(polygonData, lineSpacing, inset, angle)
-              console.log(`[FillTab] gyroid: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
-              break
-            case 'crosshatch':
-              lines = generateCrosshatchLines(polygonData, boundingBox, lineSpacing, angle, inset)
-              console.log(`[FillTab] crosshatch: generated ${lines.length} lines, polygon has ${polygonData.outer.length} vertices`)
-              break
-          case 'zigzag':
-            lines = generateZigzagLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, inset)
-            break
-          case 'radial':
-            lines = generateRadialLines(polygonData, lineSpacing, inset, angle)
-            break
-          case 'crossspiral':
-            lines = generateCrossSpiralLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-            break
-          case 'hilbert':
-            lines = singleHilbert
-              ? clipHilbertToPolygon(globalHilbertLines, polygonData, inset)
-              : generateHilbertLines(polygonData, lineSpacing, inset)
-            break
-          case 'fermat':
-            lines = singleFermat
-              ? clipFermatToPolygon(globalFermatLines, polygonData, inset)
-              : generateFermatLines(polygonData, lineSpacing, inset, angle, spiralOverDiameter)
-            break
-          case 'wave':
-            lines = generateWaveLines(polygonData, boundingBox, lineSpacing, angle, wiggleAmplitude, wiggleFrequency, inset)
-            break
-          case 'scribble':
-            lines = generateScribbleLines(polygonData, lineSpacing, inset)
-            break
-          case 'custom':
-            lines = generateCustomTileLines(polygonData, lineSpacing, TILE_SHAPES[customTileShape], inset, angle, false, customTileGap, customTileScale, customTileRotateOffset)
-            break
-          case 'lines':
-          default:
-            lines = clipLinesToPolygon(globalLines, polygonData, inset)
-            if (crossHatch) {
-              lines = [...lines, ...clipLinesToPolygon(globalCrossLines, polygonData, inset)]
-            }
-            break
-          }
-        } catch (patternError) {
-          console.error(`[FillTab] Error generating ${fillPattern} pattern:`, patternError)
-        }
-
-        allLines = allLines.concat(lines)
-      }
-    }
-
-    if (cropRect && allLines.length > 0) {
-      allLines = clipLinesToRect(allLines, cropRect)
-    }
-
-    if (allLines.length > 0 && firstValidPolygon) {
-      results.push({ pathInfo: originalPath, lines: allLines, polygon: firstValidPolygon })
-    }
-
-    // Yield to browser
-    if (i % 5 === 0) {
-      await new Promise(resolve => setTimeout(resolve, 0))
-    }
-  }
-
-  return results
-}
+// NOTE: All pattern generation handled by rat-king (Rust) via IPC
+// See RAT-KING-OPTIMIZATIONS.md for migration details
 
 // Weave helper functions
 interface Intersection {
@@ -1276,36 +972,9 @@ export default function FillTab() {
             setHatchedPaths([])
           }
         } else {
-          // Fallback: Run fill generation locally (for web browser or missing IPC)
-          const results = await generateFillsLocally(
-            pathInputs,
-            pathsToProcess,
-            boundingBox,
-            fillPattern,
-            lineSpacing,
-            angle,
-            crossHatch,
-            inset,
-            wiggleAmplitude,
-            wiggleFrequency,
-            spiralOverDiameter,
-            singleSpiral,
-            singleHilbert,
-            singleFermat,
-            customTileShape,
-            customTileGap,
-            customTileScale,
-            customTileRotateOffset,
-            enableCrop,
-            cropInset,
-            useEvenOdd,
-            abortController,
-            setFillProgress
-          )
-
-          if (!abortController.aborted) {
-            setHatchedPaths(results)
-          }
+          // Electron API not available - rat-king is required
+          console.error('Fill generation requires Electron/rat-king - not available in browser')
+          setHatchedPaths([])
         }
       } catch (err) {
         console.error('Fill generation error:', err)
@@ -2124,8 +1793,9 @@ export default function FillTab() {
         lines: orderLines,
         boundingBox,
         source: 'fill',
-        onApply: () => {
+        onApply: (_orderedLines, _improvement) => {
           // When apply is clicked in Order tab, apply the fill
+          // Note: improvement is tracked by handleApplyFill which sets optimizationState.fillApplied
           handleApplyFill()
         },
       })
