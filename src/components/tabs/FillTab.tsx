@@ -471,7 +471,6 @@ function weaveLayerLines(
 export default function FillTab() {
   const {
     svgContent,
-    setSvgContent,
     layerNodes,
     setLayerNodes,
     fillTargetNodeIds,
@@ -1138,40 +1137,8 @@ export default function FillTab() {
     setShowHatchPreview(!showHatchPreview)
   }, [showHatchPreview])
 
-  // rat-king fill handler - uses Rust-based fill generation
-  const [ratKingLoading, setRatKingLoading] = useState(false)
-  const handleRatKingFill = useCallback(async () => {
-    if (!svgContent || !window.electron?.generateFillsRatKing) {
-      setStatusMessage('rat-king not available')
-      return
-    }
-
-    setRatKingLoading(true)
-    setIsProcessing(true)
-    setStatusMessage('Running rat-king...')
-
-    try {
-      const result = await window.electron.generateFillsRatKing(
-        svgContent,
-        fillPattern,
-        lineSpacing,
-        angle
-      )
-
-      if (result.success && result.svg) {
-        setSvgContent(result.svg)
-        setStatusMessage('rat-king fill complete')
-      } else {
-        setStatusMessage('rat-king failed')
-      }
-    } catch (err) {
-      console.error('rat-king error:', err)
-      setStatusMessage(`rat-king error: ${err}`)
-    } finally {
-      setRatKingLoading(false)
-      setIsProcessing(false)
-    }
-  }, [svgContent, fillPattern, lineSpacing, angle, setSvgContent, setIsProcessing, setStatusMessage])
+  // NOTE: All fill generation now uses rat-king via the generate-fills IPC handler
+  // The preview and apply flow both use rat-king automatically
 
   const handleApplyFill = useCallback(() => {
     if (targetNodes.length === 0 || (simplifiedHatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
@@ -2031,20 +1998,9 @@ export default function FillTab() {
             className="apply-btn-primary"
             disabled={fillPaths.length === 0 || (accumulatedLayers.length === 0 && !showHatchPreview)}
             onClick={handleApplyFill}
-            title="Apply all fill layers to the SVG (Enter)"
+            title="Apply all fill layers to the SVG (Enter) - uses rat-king"
           >
             Apply Fill
-          </button>
-
-          {/* rat-king button - fast Rust-based fill */}
-          <button
-            className="apply-btn-primary"
-            style={{ marginTop: '8px', background: '#8b5cf6' }}
-            disabled={!svgContent || ratKingLoading}
-            onClick={handleRatKingFill}
-            title="Fill using rat-king (Rust) - 200x faster"
-          >
-            {ratKingLoading ? 'Running...' : 'rat-king Fill'}
           </button>
 
           <div className="fill-section">
