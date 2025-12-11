@@ -1,5 +1,13 @@
 # Next Session: Fill Tab Fixes
 
+## IMPORTANT: rat-king stdout support is now available!
+
+The rat-king binary has been updated to support `-o -` for stdout output.
+**First task:** Update `electron/main.ts` pattern-banner handler to use stdout instead of temp files.
+The current temp file approach in main.ts is causing ENOENT errors - switch to the stdout pattern shown below in issue #3.
+
+---
+
 ## Issues to Fix
 
 ### 1. Fill Offset from Strokes (High Priority)

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, dialog, MenuItemConstructorOptions }
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
+import os from 'node:os'
 import { registerFillGeneratorIPC, findRatKingBinary } from './fillGenerator'
 
 process.env.DIST = path.join(__dirname, '../dist')
@@ -395,12 +396,15 @@ ipcMain.handle('pattern-banner', async (_event, args: {
 }) => {
   return new Promise<string>((resolve, reject) => {
     try {
-      const { pattern, spacing, seed, width = 4, height = 0.5, cells = 20 } = args
+      const { pattern, spacing, seed, width = 4, height = 0.5, cells = 1 } = args
 
       if (!pattern || typeof pattern !== 'string') {
         reject(new Error('Invalid pattern name'))
         return
       }
+
+      // Create temp file for output (banner command doesn't support stdout)
+      const tmpOutput = path.join(os.tmpdir(), `rat-king-banner-${Date.now()}-${Math.random().toString(36).slice(2)}.svg`)
 
       const ratKingBin = findRatKingBinary()
       const cliArgs = [
@@ -411,6 +415,7 @@ ipcMain.handle('pattern-banner', async (_event, args: {
         '-n', cells.toString(),
         '-s', spacing.toString(),
         '--seed', seed.toString(),
+        '-o', tmpOutput,
       ]
 
       console.log(`[pattern-banner] Running: ${ratKingBin} ${cliArgs.join(' ')}`)
@@ -419,12 +424,7 @@ ipcMain.handle('pattern-banner', async (_event, args: {
         maxBuffer: 10 * 1024 * 1024
       })
 
-      let output = ''
       let errorOutput = ''
-
-      proc.stdout.on('data', (data) => {
-        output += data.toString()
-      })
 
       proc.stderr.on('data', (data) => {
         errorOutput += data.toString()
@@ -432,14 +432,26 @@ ipcMain.handle('pattern-banner', async (_event, args: {
 
       proc.on('close', (code) => {
         if (code !== 0) {
+          // Clean up temp file on error
+          try { fs.unlinkSync(tmpOutput) } catch { /* ignore */ }
           console.error(`[pattern-banner] Failed with code ${code}: ${errorOutput}`)
           reject(new Error(`rat-king banner failed: ${errorOutput}`))
         } else {
-          resolve(output) // Returns SVG content
+          // Read the output file
+          try {
+            const svgContent = fs.readFileSync(tmpOutput, 'utf-8')
+            fs.unlinkSync(tmpOutput)  // Clean up
+            resolve(svgContent)
+          } catch (readErr) {
+            console.error(`[pattern-banner] Failed to read output:`, readErr)
+            reject(new Error(`Failed to read banner output: ${readErr instanceof Error ? readErr.message : 'Unknown error'}`))
+          }
         }
       })
 
       proc.on('error', (err) => {
+        // Clean up temp file on error
+        try { fs.unlinkSync(tmpOutput) } catch { /* ignore */ }
         console.error(`[pattern-banner] Process error:`, err)
         reject(new Error(`Failed to start rat-king: ${err.message}`))
       })
