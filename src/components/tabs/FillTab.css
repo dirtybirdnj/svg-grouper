@@ -673,6 +673,14 @@
   cursor: pointer;
 }
 
+.fill-control.checkbox .control-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: #888;
+  margin-top: 0.25rem;
+  margin-left: 1.5rem;
+}
+
 .fill-sidebar .sidebar-content {
   flex: 1;
   overflow-y: auto;
@@ -1532,6 +1540,75 @@
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+/* Warning banner for shape merging */
+.fill-warning-banner {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+
+.fill-warning-banner .warning-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.fill-warning-banner .warning-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.fill-warning-banner .warning-content strong {
+  display: block;
+  font-size: 0.85rem;
+  color: #856404;
+  margin-bottom: 0.25rem;
+}
+
+.fill-warning-banner .warning-content p {
+  font-size: 0.75rem;
+  color: #856404;
+  margin: 0 0 0.5rem 0;
+  line-height: 1.4;
+}
+
+.fill-warning-banner .warning-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.fill-warning-banner .warning-btn {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.fill-warning-banner .warning-btn.primary {
+  background: #ffc107;
+  border: 1px solid #e0a800;
+  color: #212529;
+}
+
+.fill-warning-banner .warning-btn.primary:hover {
+  background: #e0a800;
+}
+
+.fill-warning-banner .warning-btn.secondary {
+  background: white;
+  border: 1px solid #ffc107;
+  color: #856404;
+}
+
+.fill-warning-banner .warning-btn.secondary:hover {
+  background: #fff8e1;
 }
 
 /* Empty layers message */

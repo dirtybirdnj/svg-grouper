@@ -403,9 +403,6 @@ ipcMain.handle('pattern-banner', async (_event, args: {
         return
       }
 
-      // Create temp file for output (banner command doesn't support stdout)
-      const tmpOutput = path.join(os.tmpdir(), `rat-king-banner-${Date.now()}-${Math.random().toString(36).slice(2)}.svg`)
-
       const ratKingBin = findRatKingBinary()
       const cliArgs = [
         'banner',
@@ -415,43 +412,34 @@ ipcMain.handle('pattern-banner', async (_event, args: {
         '-n', cells.toString(),
         '-s', spacing.toString(),
         '--seed', seed.toString(),
-        '-o', tmpOutput,
+        '-o', '-',  // stdout mode
       ]
 
       console.log(`[pattern-banner] Running: ${ratKingBin} ${cliArgs.join(' ')}`)
 
-      const proc = spawn(ratKingBin, cliArgs, {
-        maxBuffer: 10 * 1024 * 1024
+      const proc = spawn(ratKingBin, cliArgs)
+
+      let stdout = ''
+      let stderr = ''
+
+      proc.stdout.on('data', (data) => {
+        stdout += data.toString()
       })
 
-      let errorOutput = ''
-
       proc.stderr.on('data', (data) => {
-        errorOutput += data.toString()
+        stderr += data.toString()
       })
 
       proc.on('close', (code) => {
         if (code !== 0) {
-          // Clean up temp file on error
-          try { fs.unlinkSync(tmpOutput) } catch { /* ignore */ }
-          console.error(`[pattern-banner] Failed with code ${code}: ${errorOutput}`)
-          reject(new Error(`rat-king banner failed: ${errorOutput}`))
+          console.error(`[pattern-banner] Failed with code ${code}: ${stderr}`)
+          reject(new Error(`rat-king banner failed: ${stderr}`))
         } else {
-          // Read the output file
-          try {
-            const svgContent = fs.readFileSync(tmpOutput, 'utf-8')
-            fs.unlinkSync(tmpOutput)  // Clean up
-            resolve(svgContent)
-          } catch (readErr) {
-            console.error(`[pattern-banner] Failed to read output:`, readErr)
-            reject(new Error(`Failed to read banner output: ${readErr instanceof Error ? readErr.message : 'Unknown error'}`))
-          }
+          resolve(stdout)
         }
       })
 
       proc.on('error', (err) => {
-        // Clean up temp file on error
-        try { fs.unlinkSync(tmpOutput) } catch { /* ignore */ }
         console.error(`[pattern-banner] Process error:`, err)
         reject(new Error(`Failed to start rat-king: ${err.message}`))
       })

@@ -1,124 +1,86 @@
-# Next Session: Fill Tab Fixes
+# Next Session: UI Consistency & Fill Improvements
 
-## IMPORTANT: rat-king stdout support is now available!
+## Completed This Session
 
-The rat-king binary has been updated to support `-o -` for stdout output.
-**First task:** Update `electron/main.ts` pattern-banner handler to use stdout instead of temp files.
-The current temp file approach in main.ts is causing ENOENT errors - switch to the stdout pattern shown below in issue #3.
+- **Banner ENOENT fix** - Switched `pattern-banner` handler to stdout mode (`-o -`)
+- **Transform baking** - Rewrote `normalize_svg.py` to fully bake all transforms into coordinates
+- **Merge before fill** - Added checkbox option to union all shapes before filling (for text/logos)
+- **Smart warning banner** - Shows warning when >3 shapes detected, with "Go to Merge Tab" and "Enable Merge" buttons
 
 ---
 
-## Issues to Fix
+## Remaining Issues
 
-### 1. Fill Offset from Strokes (High Priority)
+### 1. Unify Merge Tab Layer List (High Priority)
 
-**Symptom:** Pattern fills are consistently offset from shape outlines - fills don't align with strokes.
+**Symptom:** The Merge tab layer list looks different from the Sort tab. Need to adopt the Sort tab's `LayerTree` style.
 
-**Root Cause:** `getAllPolygonsFromElement` in `src/utils/geometry.ts:557` extracts raw coordinate attributes WITHOUT applying SVG transforms. When an element has a `transform` attribute (translate, rotate, scale, matrix), the polygon coordinates are in local space but the stroke outline is displayed with transforms applied.
+**Current State:**
+- Sort tab uses `LayerTree` component (full-featured with icons, drag-drop, color swatches)
+- Merge tab uses `UnifiedLayerList` with custom `renderShapeItem`
+- Fill tab also uses `UnifiedLayerList`
 
-**Diagnosis Steps:**
-1. Check if input SVGs have transforms on shape elements
-2. Log the extracted polygon bounds vs the displayed element bounds
+**User Requirement:** The Merge tab workflow should be:
+1. User loads the polygon set and any issues that will cause fill problems are **visually indicated**
+2. User merges polygons until all shapes are "islands" capable of rendering properly
+3. UI gives a **green light / positive confirmation** that shapes are ready for fill
 
-**Fix Options:**
-
-**Option A: Apply transforms during polygon extraction** (Recommended)
-- Modify `getAllPolygonsFromElement` to detect and apply the element's CTM (current transform matrix)
-- Use `element.getCTM()` or `element.getScreenCTM()` to get the cumulative transform
-- Transform each extracted point by the matrix before returning
-
-**Option B: Flatten transforms in SVG before processing**
-- Add a preprocessing step that bakes all transforms into coordinates
-- Use the existing `normalizeSVG` IPC handler to flatten transforms
-- This is cleaner but requires modifying the input SVG
+**Implementation Plan:**
+1. Update `MergeTab.tsx` to highlight shapes that may cause fill artifacts:
+   - Shapes that are very close but not touching (gap detection)
+   - Multiple small shapes with same color (likely text/logo)
+2. Add visual indicators:
+   - Red/orange highlight for shapes with potential issues
+   - Green checkmark or highlight when shapes are properly isolated
+3. Consider adopting `LayerTree` component or making `UnifiedLayerList` more consistent
 
 **Files to Modify:**
-- `src/utils/geometry.ts` - `getAllPolygonsFromElement` function
-- Possibly `electron/fillGenerator.ts` - `buildSvgFromPolygons` if transforms need to be preserved
+- `src/components/tabs/MergeTab.tsx` - add issue detection and visual feedback
+- `src/components/tabs/MergeTab.css` - styling for indicators
 
 ---
 
-### 2. Pattern Preview Swatch (Medium Priority)
+### 2. Pattern Preview Swatch Tuning (Medium Priority)
 
 **Symptom:** Layer list swatches sometimes show multiple polygons instead of one clean shape.
 
-**User Requirement:** Show pattern applied to a simple rectangle, with better default settings for visibility.
-
-**Current Code:** `src/components/tabs/FillTab.tsx:1776` - `getLayerPreview` returns cached banner SVG.
-
 **Fix:**
 1. Ensure banner requests always use a clean rectangular test shape
-2. Tune default banner settings for swatch visibility:
-   - Appropriate `width` and `height` for the swatch size
-   - `spacing` that shows the pattern clearly at swatch scale
-   - `cells: 1` to ensure single shape output
-3. Check if the returned SVG has multiple `<path>` or `<polygon>` elements and merge if needed
+2. Tune default banner settings for swatch visibility
+3. Check if the returned SVG has multiple paths and merge if needed
 
 **Files to Modify:**
-- `src/components/tabs/FillTab.tsx` - banner request parameters in `useEffect` around line 1750
-- Possibly the banner cache key generation
+- `src/components/tabs/FillTab.tsx` - banner request parameters around line 1750
 
 ---
 
-### 3. Banner ENOENT Error (High Priority)
+## SVG Transforms Reference
 
-**Symptom:** Console error: `Failed to read banner output: ENOENT: no such file or directory`
-
-**Root Cause:** Race condition - code tries to read temp file before rat-king finishes writing it. The `close` event fires but the file isn't flushed yet.
-
-**Good News:** User confirmed rat-king now supports stdout mode (`-o -`).
-
-**Fix:** Switch from temp files to stdout in the `pattern-banner` IPC handler.
-
-**Current Code:** `electron/main.ts:388-463`
-```javascript
-// Current approach - temp file (broken)
-const tmpOutput = path.join(os.tmpdir(), `rat-king-banner-...`)
-cliArgs = [..., '-o', tmpOutput]
-// Later: fs.readFileSync(tmpOutput) - fails with ENOENT
+### Matrix Format
+```
+| a  c  e |
+| b  d  f |
+| 0  0  1 |
 ```
 
-**New Code Pattern:**
-```javascript
-const cliArgs = [
-  'banner',
-  '--only', pattern,
-  '-w', width.toString(),
-  '--height', height.toString(),
-  '-n', cells.toString(),
-  '-s', spacing.toString(),
-  '--seed', seed.toString(),
-  '-o', '-',  // stdout mode
-]
-
-let stdout = ''
-proc.stdout.on('data', (data) => {
-  stdout += data.toString()
-})
-
-proc.on('close', (code) => {
-  if (code === 0) {
-    resolve(stdout)  // SVG content directly from stdout
-  } else {
-    reject(...)
-  }
-})
+### Point Transformation
+```
+x' = a*x + c*y + e
+y' = b*x + d*y + f
 ```
 
-**Files to Modify:**
-- `electron/main.ts` - `pattern-banner` IPC handler (lines 388-463)
+### Transform Functions → Matrices
+| Transform | Matrix |
+|-----------|--------|
+| `translate(tx, ty)` | `[1, 0, 0, 1, tx, ty]` |
+| `scale(sx, sy)` | `[sx, 0, 0, sy, 0, 0]` |
+| `rotate(θ)` | `[cos(θ), sin(θ), -sin(θ), cos(θ), 0, 0]` |
+| `skewX(θ)` | `[1, 0, tan(θ), 1, 0, 0]` |
+| `skewY(θ)` | `[1, tan(θ), 0, 1, 0, 0]` |
 
----
-
-## Implementation Order
-
-1. **Banner ENOENT fix** - Quick win, unblocks testing of swatch improvements
-2. **Swatch default settings** - Tune after banner works correctly
-3. **Fill offset fix** - Requires more investigation, bigger change
-
-## Verification
-
-After fixes, verify with the "DAILY" SVG shown in the screenshot:
-- [ ] Fill lines align with stroke outlines
-- [ ] Layer list shows clean pattern swatches
-- [ ] No console errors for banner generation
+### Key Behaviors
+- Transforms compose via matrix multiplication
+- Order matters: `translate rotate ≠ rotate translate`
+- Nested group transforms multiply: `CTM = child × parent × grandparent`
+- Stroke-width scales with transform (unless `vector-effect: non-scaling-stroke`)
+- `viewBox` with non-zero origin creates implicit translate

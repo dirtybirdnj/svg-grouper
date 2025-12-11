@@ -21,8 +21,44 @@ import {
 } from '../../utils/fillPatterns'
 import { UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../shared'
 import simplify from 'simplify-js'
+import polygonClipping, { Polygon as ClipPolygon } from 'polygon-clipping'
 import patternStats from '../../patternStats.json'
 import './FillTab.css'
+
+// Helper functions for polygon union (from MergeTab)
+function polygonWithHolesToClip(poly: PolygonWithHoles): ClipPolygon {
+  const outer: [number, number][] = poly.outer.map(p => [p.x, p.y])
+  const holes: [number, number][][] = poly.holes.map(hole => hole.map(p => [p.x, p.y]))
+  return [outer, ...holes]
+}
+
+function clipResultToPolygonWithHoles(result: ClipPolygon[]): PolygonWithHoles[] {
+  return result.map(poly => {
+    const outer: Point[] = poly[0].map(([x, y]) => ({ x, y }))
+    const holes: Point[][] = poly.slice(1).map(ring => ring.map(([x, y]) => ({ x, y })))
+    return { outer, holes }
+  })
+}
+
+// Union multiple polygons into one compound shape
+function unionPolygonsForFill(polygons: PolygonWithHoles[]): PolygonWithHoles[] {
+  if (polygons.length === 0) return []
+  if (polygons.length === 1) return polygons
+
+  try {
+    let result: ClipPolygon[] = [polygonWithHolesToClip(polygons[0])]
+
+    for (let i = 1; i < polygons.length; i++) {
+      const clipPoly: ClipPolygon[] = [polygonWithHolesToClip(polygons[i])]
+      result = polygonClipping.union(result, clipPoly)
+    }
+
+    return clipResultToPolygonWithHoles(result)
+  } catch (error) {
+    console.error('[FillTab] Polygon union failed:', error)
+    return polygons // Return original if union fails
+  }
+}
 
 // Filter out DNF patterns
 const DNF_PATTERNS = new Set(
@@ -514,6 +550,9 @@ export default function FillTab() {
   // areas inside an odd number of polygon boundaries. No UI toggle needed.
   const useEvenOdd = true
 
+  // Merge shapes before fill - useful for text/logos where shapes should be unioned
+  const [mergeBeforeFill, setMergeBeforeFill] = useState(false)
+
   // Crop support for fill patterns
   const [enableCrop, setEnableCrop] = useState(false)
   const [cropInset, setCropInset] = useState(0) // Percentage of bounding box to crop from edges (0-50%)
@@ -919,11 +958,35 @@ export default function FillTab() {
           }
         }
 
+        // If mergeBeforeFill is enabled, union all polygons into one compound shape
+        let finalPathInputs = pathInputs
+        if (mergeBeforeFill && pathInputs.length > 1) {
+          // Collect all polygons from all paths
+          const allPolygons: PolygonWithHoles[] = []
+          for (const input of pathInputs) {
+            allPolygons.push(...input.polygons)
+          }
+
+          // Union them all together
+          const mergedPolygons = unionPolygonsForFill(allPolygons)
+
+          // Create a single merged path input using the first path's id/color
+          const firstPath = pathInputs[0]
+          finalPathInputs = [{
+            id: 'merged-fill',
+            color: firstPath.color,
+            polygons: mergedPolygons,
+            rawSubpaths: undefined // Raw subpaths don't apply after merge
+          }]
+
+          console.log(`[FillTab] Merged ${allPolygons.length} polygons into ${mergedPolygons.length} compound shapes`)
+        }
+
         // Step 2: Check if electron API is available (running in Electron)
         if (window.electron?.generateFills) {
           // Use backend IPC for fill generation
           const result = await window.electron.generateFills({
-            paths: pathInputs,
+            paths: finalPathInputs,
             boundingBox,
             fillPattern,
             lineSpacing,
@@ -2073,6 +2136,31 @@ export default function FillTab() {
             Apply Fill
           </button>
 
+          {/* Warning when multiple shapes may need merging */}
+          {fillPaths.length > 3 && !mergeBeforeFill && (
+            <div className="fill-warning-banner">
+              <div className="warning-icon">⚠️</div>
+              <div className="warning-content">
+                <strong>{fillPaths.length} separate shapes</strong>
+                <p>Fill may appear in gaps between shapes. For text or logos, merge shapes first or enable "Merge before fill".</p>
+                <div className="warning-actions">
+                  <button
+                    className="warning-btn primary"
+                    onClick={() => setActiveTab('merge')}
+                  >
+                    Go to Merge Tab
+                  </button>
+                  <button
+                    className="warning-btn secondary"
+                    onClick={() => setMergeBeforeFill(true)}
+                  >
+                    Enable Merge
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="fill-section">
             <h3>Pattern Type</h3>
             <div className="pattern-selector">
@@ -2533,6 +2621,18 @@ export default function FillTab() {
                 />
                 Retain strokes (edge outlines)
               </label>
+            </div>
+
+            <div className="fill-control checkbox">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={mergeBeforeFill}
+                  onChange={(e) => setMergeBeforeFill(e.target.checked)}
+                />
+                Merge shapes before fill
+              </label>
+              <span className="control-hint">Union all shapes into one (for text/logos)</span>
             </div>
 
 {/* Evenodd fill rule is always enabled - it correctly handles compound paths
