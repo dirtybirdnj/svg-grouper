@@ -396,7 +396,7 @@ ipcMain.handle('pattern-banner', async (_event, args: {
 }) => {
   return new Promise<string>((resolve, reject) => {
     try {
-      const { pattern, spacing, seed, width = 4, height = 0.5, cells = 1 } = args
+      const { pattern, spacing, seed, width = 2, height = 0.5, cells = 1 } = args
 
       if (!pattern || typeof pattern !== 'string') {
         reject(new Error('Invalid pattern name'))
@@ -406,13 +406,14 @@ ipcMain.handle('pattern-banner', async (_event, args: {
       const ratKingBin = findRatKingBinary()
       const cliArgs = [
         'banner',
-        '--only', pattern,
+        '-p', pattern,  // single pattern mode
         '-w', width.toString(),
         '--height', height.toString(),
         '-n', cells.toString(),
         '-s', spacing.toString(),
         '--seed', seed.toString(),
         '-o', '-',  // stdout mode
+        '-q',  // quiet mode (no info messages)
       ]
 
       console.log(`[pattern-banner] Running: ${ratKingBin} ${cliArgs.join(' ')}`)

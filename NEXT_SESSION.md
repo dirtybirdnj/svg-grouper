@@ -1,6 +1,23 @@
-# Next Session: UI Consistency & Fill Improvements
+# Next Session: Fill Tab & Export Improvements
 
 ## Completed This Session
+
+- **Merge Tab Fill Readiness UI** - Added fill readiness indicators to help users identify shapes that need merging before fill:
+  - `FillReadinessBadge` component showing green/orange/red status for each shape
+  - Summary banner at top showing overall readiness with counts
+  - Shapes with shared edges marked as "issue" (need merging)
+  - Compound paths with many subpaths marked as "warning"
+  - Isolated shapes shown as "ready" (green checkmark)
+
+- **Pattern Preview Swatch Fix** - Updated `pattern-banner` handler to use rat-king's new `banner` command:
+  - Single cell (`-n 1`) for clean preview
+  - Narrow rectangle (2" x 0.5") for consistent display
+  - Quiet mode (`-q`) to suppress info messages
+  - Uses `-p pattern` for single-pattern mode
+
+---
+
+## Previous Session Completed
 
 - **Banner ENOENT fix** - Switched `pattern-banner` handler to stdout mode (`-o -`)
 - **Transform baking** - Rewrote `normalize_svg.py` to fully bake all transforms into coordinates
@@ -9,48 +26,30 @@
 
 ---
 
-## Remaining Issues
+## Remaining Issues / Future Work
 
-### 1. Unify Merge Tab Layer List (High Priority)
+### 1. Gap Detection Between Shapes (Enhancement)
 
-**Symptom:** The Merge tab layer list looks different from the Sort tab. Need to adopt the Sort tab's `LayerTree` style.
+**Description:** Currently the merge tab detects shared edges, but doesn't detect shapes that are very close but not quite touching (small gaps that cause fill artifacts).
 
-**Current State:**
-- Sort tab uses `LayerTree` component (full-featured with icons, drag-drop, color swatches)
-- Merge tab uses `UnifiedLayerList` with custom `renderShapeItem`
-- Fill tab also uses `UnifiedLayerList`
+**Implementation Ideas:**
+- Compute distance between nearest points of non-adjacent shapes
+- Flag shapes within threshold distance (e.g., < 0.5px) as potential issues
+- Suggest merging or checking alignment
 
-**User Requirement:** The Merge tab workflow should be:
-1. User loads the polygon set and any issues that will cause fill problems are **visually indicated**
-2. User merges polygons until all shapes are "islands" capable of rendering properly
-3. UI gives a **green light / positive confirmation** that shapes are ready for fill
+### 2. Pattern Preview in Layer List (Enhancement)
 
-**Implementation Plan:**
-1. Update `MergeTab.tsx` to highlight shapes that may cause fill artifacts:
-   - Shapes that are very close but not touching (gap detection)
-   - Multiple small shapes with same color (likely text/logo)
-2. Add visual indicators:
-   - Red/orange highlight for shapes with potential issues
-   - Green checkmark or highlight when shapes are properly isolated
-3. Consider adopting `LayerTree` component or making `UnifiedLayerList` more consistent
+**Current State:** Banner previews are fetched asynchronously and cached. Could improve by:
+- Pre-generating common pattern banners at app startup
+- Adding loading spinner while fetching
+- Better error handling when rat-king binary not found
 
-**Files to Modify:**
-- `src/components/tabs/MergeTab.tsx` - add issue detection and visual feedback
-- `src/components/tabs/MergeTab.css` - styling for indicators
+### 3. Export Tab UX Improvements
 
----
-
-### 2. Pattern Preview Swatch Tuning (Medium Priority)
-
-**Symptom:** Layer list swatches sometimes show multiple polygons instead of one clean shape.
-
-**Fix:**
-1. Ensure banner requests always use a clean rectangular test shape
-2. Tune default banner settings for swatch visibility
-3. Check if the returned SVG has multiple paths and merge if needed
-
-**Files to Modify:**
-- `src/components/tabs/FillTab.tsx` - banner request parameters around line 1750
+**Ideas:**
+- Show estimated export time based on line count
+- Progress indicator during export
+- Preview of output dimensions
 
 ---
 

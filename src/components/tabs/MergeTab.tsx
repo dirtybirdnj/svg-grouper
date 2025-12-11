@@ -4,7 +4,7 @@ import { SVGNode } from '../../types/svg'
 import { Point, getAllPolygonsFromElement, PolygonWithHoles } from '../../utils/geometry'
 import { OPTIMIZATION, UI } from '../../constants'
 import { usePanZoom } from '../../hooks'
-import { StatSection, StatRow, UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../shared'
+import { StatSection, StatRow, UnifiedLayerList, LayerListItemFull, ItemRenderState, FillReadinessBadge, FillReadinessStatus } from '../shared'
 import { countSubpaths, analyzePathD, separateSubpaths, PathDiagnostics } from '../../utils/pathAnalysis'
 import polygonClipping, { Polygon as ClipPolygon } from 'polygon-clipping'
 import './MergeTab.css'
@@ -34,6 +34,8 @@ type MergeShapeListItem = LayerListItemFull & {
   touchCount: number
   hasHoles: boolean
   isCompound: boolean
+  fillReadiness: FillReadinessStatus
+  fillReadinessMessage: string
 }
 
 // Edge key for finding duplicates
@@ -700,6 +702,20 @@ export default function MergeTab() {
       const hasHoles = poly.polygonWithHoles.holes.length > 0
       const isCompound = poly.subpathCount > 1
 
+      // Determine fill readiness status
+      let fillReadiness: FillReadinessStatus = 'ready'
+      let fillReadinessMessage = 'Shape is isolated - ready for fill'
+
+      if (isMergeable) {
+        // Shape has shared edges with others - needs merging
+        fillReadiness = 'issue'
+        fillReadinessMessage = `Has ${touchCount} shared edge${touchCount > 1 ? 's' : ''} - merge to avoid fill artifacts`
+      } else if (isCompound && poly.subpathCount > 2) {
+        // Compound path with many subpaths - likely text or complex logo
+        fillReadiness = 'warning'
+        fillReadinessMessage = `Compound path with ${poly.subpathCount} parts - consider exploding first`
+      }
+
       return {
         id: poly.nodeId,
         name: poly.name,
@@ -711,9 +727,31 @@ export default function MergeTab() {
         touchCount,
         hasHoles,
         isCompound,
+        fillReadiness,
+        fillReadinessMessage,
       }
     })
   }, [availableShapes, selectedForMerge, touchingPairs, mergeableShapes])
+
+  // Overall fill readiness summary
+  const fillReadinessSummary = useMemo(() => {
+    const issueCount = shapeListItems.filter(s => s.fillReadiness === 'issue').length
+    const warningCount = shapeListItems.filter(s => s.fillReadiness === 'warning').length
+    const readyCount = shapeListItems.filter(s => s.fillReadiness === 'ready').length
+
+    let overallStatus: FillReadinessStatus = 'ready'
+    let message = 'All shapes are ready for fill'
+
+    if (issueCount > 0) {
+      overallStatus = 'issue'
+      message = `${issueCount} shape${issueCount > 1 ? 's need' : ' needs'} merging before fill`
+    } else if (warningCount > 0) {
+      overallStatus = 'warning'
+      message = `${warningCount} shape${warningCount > 1 ? 's have' : ' has'} potential issues`
+    }
+
+    return { issueCount, warningCount, readyCount, overallStatus, message }
+  }, [shapeListItems])
 
   // Handle selection changes from UnifiedLayerList
   const handleShapeSelectionChange = useCallback((ids: Set<string>) => {
@@ -722,13 +760,14 @@ export default function MergeTab() {
 
   // Custom render function for shape items
   const renderShapeItem = useCallback((item: MergeShapeListItem, state: ItemRenderState) => {
-    const { isMergeable, touchesSelected, touchCount, hasHoles, isCompound, polygon } = item
+    const { isMergeable, touchesSelected, touchCount, hasHoles, isCompound, polygon, fillReadiness, fillReadinessMessage } = item
 
     return (
       <div
-        className={`shape-item-inner ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''} ${isCompound ? 'compound' : ''}`}
-        title={touchCount > 0 ? `Touches ${touchCount} other shape${touchCount > 1 ? 's' : ''}` : 'Not adjacent to other shapes'}
+        className={`shape-item-inner ${isMergeable ? 'mergeable' : ''} ${touchesSelected ? 'touches-selected' : ''} ${isCompound ? 'compound' : ''} fill-${fillReadiness}`}
+        title={fillReadinessMessage}
       >
+        <FillReadinessBadge status={fillReadiness} message={fillReadinessMessage} />
         <div className="shape-checkbox">
           {state.isSelected ? '✓' : ''}
         </div>
@@ -1020,20 +1059,39 @@ export default function MergeTab() {
         </div>
 
         <div className="sidebar-content">
+          {/* Fill readiness summary banner */}
+          <div className={`fill-readiness-banner ${fillReadinessSummary.overallStatus}`}>
+            <div className="banner-icon">
+              <FillReadinessBadge status={fillReadinessSummary.overallStatus} />
+            </div>
+            <div className="banner-content">
+              <div className="banner-title">
+                {fillReadinessSummary.overallStatus === 'ready' ? 'Ready for Fill' :
+                 fillReadinessSummary.overallStatus === 'warning' ? 'Review Recommended' : 'Action Required'}
+              </div>
+              <div className="banner-message">{fillReadinessSummary.message}</div>
+            </div>
+            <div className="banner-stats">
+              <span className="stat ready" title="Ready">{fillReadinessSummary.readyCount}</span>
+              <span className="stat warning" title="Warnings">{fillReadinessSummary.warningCount}</span>
+              <span className="stat issue" title="Issues">{fillReadinessSummary.issueCount}</span>
+            </div>
+          </div>
+
           {/* Shape selection section */}
           <div className="merge-section">
             <div className="section-header">
-              <h3>Connected Shapes: {mergeableShapes.size}</h3>
+              <h3>Shapes: {availableShapes.length}</h3>
               {mergeableShapes.size > 0 && (
                 <button className="mini-btn next-btn" onClick={findNextMergeableShape}>
-                  Next →
+                  Next Issue →
                 </button>
               )}
             </div>
             <p className="hint">
               {mergeableShapes.size > 0
-                ? 'Red shapes have shared edges and can be merged.'
-                : 'No shapes with shared edges found.'}
+                ? `${mergeableShapes.size} shape${mergeableShapes.size > 1 ? 's have' : ' has'} shared edges - merge to avoid fill artifacts.`
+                : 'All shapes are isolated islands.'}
             </p>
             <UnifiedLayerList
               items={shapeListItems}

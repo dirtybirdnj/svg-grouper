@@ -29,4 +29,6 @@ export {
   FillStatusBadge,
   PointCountBadge,
   CheckboxIndicator,
+  FillReadinessBadge,
 } from './UnifiedLayerList'
+export type { FillReadinessStatus } from './UnifiedLayerList'

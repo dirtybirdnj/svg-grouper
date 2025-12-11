@@ -1825,9 +1825,9 @@ export default function FillTab() {
           pattern,
           spacing,
           seed,
-          width: 4,
-          height: 0.5,
-          cells: 20,
+          width: 2,      // narrow rectangle (2 inches)
+          height: 0.5,   // short height (0.5 inch)
+          cells: 1,      // single cell for clean preview
         })
         setBannerCache(prev => new Map(prev).set(key, svg))
       } catch (err) {

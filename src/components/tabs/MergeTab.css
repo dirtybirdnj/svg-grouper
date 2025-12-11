@@ -789,3 +789,162 @@
 .explode-btn:active {
   transform: scale(0.98);
 }
+
+/* Fill Readiness Banner */
+.fill-readiness-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border-radius: 6px;
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+}
+
+.fill-readiness-banner.ready {
+  background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%);
+  border-color: #a5d6a7;
+}
+
+.fill-readiness-banner.warning {
+  background: linear-gradient(135deg, #fff3e0 0%, #fff8e1 100%);
+  border-color: #ffcc80;
+}
+
+.fill-readiness-banner.issue {
+  background: linear-gradient(135deg, #ffebee 0%, #fce4ec 100%);
+  border-color: #ef9a9a;
+}
+
+.fill-readiness-banner .banner-icon {
+  flex-shrink: 0;
+}
+
+.fill-readiness-banner .banner-icon .fill-readiness-badge {
+  width: 24px;
+  height: 24px;
+  font-size: 14px;
+}
+
+.fill-readiness-banner .banner-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.fill-readiness-banner .banner-title {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #333;
+}
+
+.fill-readiness-banner.ready .banner-title {
+  color: #2e7d32;
+}
+
+.fill-readiness-banner.warning .banner-title {
+  color: #e65100;
+}
+
+.fill-readiness-banner.issue .banner-title {
+  color: #c62828;
+}
+
+.fill-readiness-banner .banner-message {
+  font-size: 0.75rem;
+  color: #666;
+  margin-top: 2px;
+}
+
+.fill-readiness-banner .banner-stats {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.fill-readiness-banner .banner-stats .stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.fill-readiness-banner .banner-stats .stat.ready {
+  background: #4caf50;
+  color: white;
+}
+
+.fill-readiness-banner .banner-stats .stat.warning {
+  background: #ff9800;
+  color: #000;
+}
+
+.fill-readiness-banner .banner-stats .stat.issue {
+  background: #f44336;
+  color: white;
+}
+
+/* Hide zero stats */
+.fill-readiness-banner .banner-stats .stat:empty,
+.fill-readiness-banner .banner-stats .stat:contains('0') {
+  display: none;
+}
+
+/* Shape item fill status styling */
+.shape-item:has(.shape-item-inner.fill-ready) {
+  background: #f1f8e9;
+  border-color: #c5e1a5;
+}
+
+.shape-item:has(.shape-item-inner.fill-ready):hover {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+}
+
+.shape-item:has(.shape-item-inner.fill-warning) {
+  background: #fff8e1;
+  border-color: #ffe082;
+}
+
+.shape-item:has(.shape-item-inner.fill-warning):hover {
+  background: #fff3e0;
+  border-color: #ffcc80;
+}
+
+.shape-item:has(.shape-item-inner.fill-issue) {
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+
+.shape-item:has(.shape-item-inner.fill-issue):hover {
+  background: #ffcdd2;
+  border-color: #e57373;
+}
+
+/* Override selected state to maintain visibility of status */
+.shape-item.selected:has(.shape-item-inner.fill-ready) {
+  background: #c8e6c9;
+  border-color: #4caf50;
+}
+
+.shape-item.selected:has(.shape-item-inner.fill-warning) {
+  background: #ffe0b2;
+  border-color: #ff9800;
+}
+
+.shape-item.selected:has(.shape-item-inner.fill-issue) {
+  background: #ffcdd2;
+  border-color: #f44336;
+}
+
+/* Fill readiness badge in list items - use the shared component styles */
+.shape-item-inner .fill-readiness-badge {
+  width: 16px;
+  height: 16px;
+  font-size: 9px;
+  flex-shrink: 0;
+}

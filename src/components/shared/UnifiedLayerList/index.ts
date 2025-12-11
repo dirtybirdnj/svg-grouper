@@ -32,4 +32,6 @@ export {
   PointCountBadge,
   VertexCountBadge,
   CheckboxIndicator,
+  FillReadinessBadge,
 } from './badges'
+export type { FillReadinessStatus } from './badges'

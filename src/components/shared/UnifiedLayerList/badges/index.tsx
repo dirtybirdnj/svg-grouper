@@ -174,3 +174,34 @@ export function CheckboxIndicator({ checked }: CheckboxIndicatorProps) {
     </span>
   )
 }
+
+// Fill Readiness Badge (for merge tab - shows if shape is ready for filling)
+export type FillReadinessStatus = 'ready' | 'warning' | 'issue'
+
+interface FillReadinessBadgeProps {
+  status: FillReadinessStatus
+  message?: string
+}
+
+export function FillReadinessBadge({ status, message }: FillReadinessBadgeProps) {
+  const icons = {
+    ready: '✓',
+    warning: '⚠',
+    issue: '✗',
+  }
+
+  const defaultMessages = {
+    ready: 'Ready for fill',
+    warning: 'May cause fill issues',
+    issue: 'Needs attention before fill',
+  }
+
+  return (
+    <span
+      className={`fill-readiness-badge ${status}`}
+      title={message || defaultMessages[status]}
+    >
+      {icons[status]}
+    </span>
+  )
+}
