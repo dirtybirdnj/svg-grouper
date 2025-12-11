@@ -1,6 +1,74 @@
 # Next Session: Codebase Modularization
 
-## Completed This Session - Phase 3: Component Modularization
+## Completed This Session - Phase 4: Tab Modularization
+
+### Tab Modularization Summary
+All four major tabs modularized into directory modules with extracted types, utilities, and hooks:
+
+| Tab | Before | After | Reduction | Files Created |
+|-----|--------|-------|-----------|---------------|
+| FillTab | 2363 | 1546 | -34.5% | types.ts, useFillState.ts, useFillPaths.ts, useFillGeneration.ts, useFillLayers.ts |
+| ExportTab | 1487 | 1176 | -20.9% | types.ts, svgAnalysis.ts, paperSizes.ts, usePageLayout.ts |
+| MergeTab | 1377 | 986 | -28.4% | types.ts, polygonUtils.ts, pathConversion.ts, booleanOperations.ts |
+| OrderTab | 838 | 648 | -22.7% | types.ts, lineOptimization.ts |
+
+### FillTab Directory Structure
+```
+src/components/tabs/FillTab/
+├── types.ts                    # FillLayer, FillLayerListItem, ControlId
+├── hooks/
+│   ├── useFillState.ts         # ~40 consolidated state variables
+│   ├── useFillPaths.ts         # Target node & path extraction
+│   ├── useFillGeneration.ts    # IPC-based fill generation
+│   ├── useFillLayers.ts        # Layer CRUD operations
+│   └── index.ts
+├── FillTab.tsx
+├── FillTab.css
+└── index.ts
+```
+
+### ExportTab Directory Structure
+```
+src/components/tabs/ExportTab/
+├── types.ts            # PaperSize, ColorStats, SVGStatistics, PageLayout
+├── svgAnalysis.ts      # analyzeSVG, analyzeOptimizationState, formatBytes
+├── paperSizes.ts       # localStorage load/save utilities
+├── usePageLayout.ts    # Page dimension calculations
+├── ExportTab.tsx
+├── ExportTab.css
+└── index.ts
+```
+
+### MergeTab Directory Structure
+```
+src/components/tabs/MergeTab/
+├── types.ts              # PolygonData, MergeShapeListItem, UnionResult, BooleanResult
+├── polygonUtils.ts       # edgeKey, findTouchingShapes, unionPolygons
+├── pathConversion.ts     # pointsToPathD, polygonWithHolesToPathD, multiPolygonToPathD
+├── booleanOperations.ts  # performBooleanOperation, polygon-clipping wrappers
+├── MergeTab.tsx
+├── MergeTab.css
+└── index.ts
+```
+
+### OrderTab Directory Structure
+```
+src/components/tabs/OrderTab/
+├── types.ts             # OrderedLine, LayerInfo, OrderLayerListItem
+├── lineOptimization.ts  # optimizeLinesByColor, optimizeLinesNearestNeighbor, optimizeLinesChunked
+├── OrderTab.tsx
+├── OrderTab.css
+└── index.ts
+```
+
+### Shared Patterns Identified
+- **usePanZoom hook** - Used by FillTab, MergeTab, OrderTab with externalState pattern
+- **UnifiedLayerList** - Shared layer list component with configurable rendering
+- **StatSection/StatRow** - Consistent statistics display components
+
+---
+
+## Previously Completed - Phase 3: Component Modularization
 
 ### LayerTree.tsx Split (691 → 6 files)
 | File | Purpose |
@@ -80,7 +148,7 @@ Converted static tab imports to React.lazy() with dynamic imports:
 
 Tab chunk sizes:
 - SortTab: 92 KB
-- FillTab: 45 KB
+- FillTab: 50 KB
 - ExportTab: 40 KB
 - MergeTab: 23 KB
 - PatternTest: 17 KB
@@ -151,28 +219,22 @@ src/utils/
 
 ---
 
-## Remaining Phases
+## Remaining Work
 
-### Goals
-1. **Reduce context for AI agents** - Smaller, focused files allow agents to work with less context
-2. **Improve code organization** - Single responsibility principle for each module
-3. **Enable parallel development** - Multiple agents can work on different modules simultaneously
-4. **Better maintainability** - Easier to understand, test, and modify individual modules
+### Large Files That Could Still Be Modularized
+| File | Lines | Notes |
+|------|-------|-------|
+| `App.tsx` | 1023 | Main orchestration - could extract more hooks |
+| `SortTab.tsx` | ~1200 | Already has 5 hooks, but still large |
+| `SVGCanvas.tsx` | 320 | Reasonable size |
+| `ImportDialog.tsx` | 437 | Moderate |
+| `UnifiedLayerList.tsx` | 340 | Reasonable |
 
-### Large Tabs Still Pending
-| File | Lines | Status |
-|------|-------|--------|
-| `SortTab.tsx` | 1006 | **DONE** - Modularized from 2562 lines |
-| `FillTab.tsx` | 2363 | Has fillUtils.ts, weaveAlgorithm.ts extracted |
-| `ExportTab.tsx` | 1487 | Could extract export handlers |
-| `MergeTab.tsx` | 1377 | Could extract merge logic |
-| `OrderTab.tsx` | 838 | Moderate size |
-| `App.tsx` | 1023 | Main orchestration |
-
-### Shared Components (could modularize further)
-- `SVGCanvas.tsx` - 320 lines, reasonable size
-- `ImportDialog.tsx` - 437 lines, moderate
-- `UnifiedLayerList.tsx` - 340 lines, reasonable
+### Potential Future Improvements
+1. Extract more shared UI patterns into components
+2. Further split SortTab.tsx hooks
+3. Create unified color handling utilities
+4. Add more comprehensive type exports
 
 ---
 
