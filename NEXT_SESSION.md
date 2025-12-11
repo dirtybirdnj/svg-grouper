@@ -25,7 +25,16 @@
 | `PatternTest.tsx` | Main component orchestrating all features |
 | `index.ts` | Barrel exports |
 
-**Total: ~1,900 lines → 15 focused files**
+### SortTab.tsx Hooks Extracted (5 hooks)
+| Hook | Purpose |
+|------|---------|
+| `useNodeOperations` | visibility, isolation, delete, reorder |
+| `useColorOperations` | color change, group by color |
+| `useGroupOperations` | group/ungroup, flip order |
+| `usePathHighlight` | path highlighting and point markers |
+| `useFlattenOperations` | flatten all with color grouping |
+
+**Total: ~1,900 lines → 15 files + 5 hooks (~950 lines)**
 
 ---
 
@@ -136,22 +145,19 @@ src/utils/
 3. **Enable parallel development** - Multiple agents can work on different modules simultaneously
 4. **Better maintainability** - Easier to understand, test, and modify individual modules
 
-### Phase 3: Shared Components (~500 lines each)
-- `SVGCanvas.tsx` - Canvas rendering, zoom, pan
-- `LayerTree.tsx` - Tree view component
-- `ImportDialog.tsx` - File import UI
-- `UnifiedLayerList.tsx` - Layer management
+### Large Tabs Still Pending
+| File | Lines | Status |
+|------|-------|--------|
+| `FillTab.tsx` | 2363 | Has fillUtils.ts, weaveAlgorithm.ts extracted |
+| `ExportTab.tsx` | 1487 | Could extract export handlers |
+| `MergeTab.tsx` | 1377 | Could extract merge logic |
+| `OrderTab.tsx` | 838 | Moderate size |
+| `App.tsx` | 1023 | Main orchestration |
 
-### Phase 4: Medium Components
-- `PatternTest.tsx` - Pattern testing UI
-- `OrderTab.tsx` - Ordering tab
-
-### Phase 5: Large Tabs (Future)
-- `MergeTab.tsx` - Color merging
-- `ExportTab.tsx` - Export functionality
-- `FillTab.tsx` - Fill pattern application
-- `SortTab.tsx` - Sorting and layer management
-- `App.tsx` - Main application (~1000 lines)
+### Shared Components (could modularize further)
+- `SVGCanvas.tsx` - 320 lines, reasonable size
+- `ImportDialog.tsx` - 437 lines, moderate
+- `UnifiedLayerList.tsx` - 340 lines, reasonable
 
 ---
 
