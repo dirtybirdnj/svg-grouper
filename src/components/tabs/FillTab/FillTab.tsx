@@ -1,32 +1,21 @@
-import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
+import { useMemo, useCallback, useEffect } from 'react'
 import { useAppContext } from '../../../context/AppContext'
 import { SVGNode } from '../../../types/svg'
-import { findNodeById } from '../../../utils/nodeUtils'
 import { UI } from '../../../constants'
 import { usePanZoom } from '../../../hooks'
+import { linesToCompoundPath } from '../../../utils/geometry'
 import {
-  Point,
-  HatchLine,
-  PolygonWithHoles,
-  SubpathMode,
-  getAllPolygonsFromElement,
-  linesToCompoundPath,
-  parsePathIntoSubpaths,
-} from '../../../utils/geometry'
-import {
-  FillPatternType,
-  TileShapeType,
   TILE_SHAPES,
   optimizeLineOrderMultiPass,
 } from '../../../utils/fillPatterns'
-import { UnifiedLayerList, LayerListItemFull, ItemRenderState } from '../../shared'
+import { UnifiedLayerList, ItemRenderState } from '../../shared'
 import patternStats from '../../../patternStats.json'
 import './FillTab.css'
 
-// Import extracted utilities
-import { simplifyLines, unionPolygonsForFill, FillPathInfo } from './fillUtils'
-import { weaveLayerLines, WeavePattern } from './weaveAlgorithm'
-
+// Import types and hooks
+import { FillLayer, FillLayerListItem } from './types'
+import { useFillState, useFillPaths, useFillGeneration, useFillLayers } from './hooks'
+import { weaveLayerLines } from './weaveAlgorithm'
 
 // Filter out DNF patterns
 const DNF_PATTERNS = new Set(
@@ -34,9 +23,6 @@ const DNF_PATTERNS = new Set(
     .filter(([_, stats]) => stats.status === 'dnf')
     .map(([name]) => name)
 )
-
-// NOTE: FillPathInfo, simplifyLines, weaveLayerLines extracted to separate modules
-// See ./fillUtils.ts and ./weaveAlgorithm.ts
 
 export default function FillTab() {
   const {
@@ -59,101 +45,57 @@ export default function FillTab() {
     setStatusMessage,
   } = useAppContext()
 
-  const [lineSpacing, setLineSpacing] = useState(15)
-  const [angle, setAngle] = useState(45)
-  const [crossHatch, setCrossHatch] = useState(false)
-  const [inset, setInset] = useState(0)
-  const [retainStrokes, setRetainStrokes] = useState(true)
-  const [penWidth, setPenWidth] = useState(0.5) // in mm, converted to px for display
-  const [showHatchPreview, setShowHatchPreview] = useState(false)
-  const [fillPattern, setFillPattern] = useState<FillPatternType>('lines')
-  const [wiggleAmplitude, setWiggleAmplitude] = useState(5)
-  const [wiggleFrequency, setWiggleFrequency] = useState(2)
-  const [spiralOverDiameter, setSpiralOverDiameter] = useState(2.0) // Multiplier for spiral radius
-  const [singleSpiral, setSingleSpiral] = useState(false) // Use one giant spiral for all shapes
-  const [singleHilbert, setSingleHilbert] = useState(true) // Use one Hilbert curve for all shapes (default true)
-  const [singleFermat, setSingleFermat] = useState(true) // Use one Fermat spiral for all shapes (default true)
-  const [simplifyTolerance, setSimplifyTolerance] = useState(0) // 0 = no simplification
-  const [customTileShape, setCustomTileShape] = useState<TileShapeType>('triangle') // Selected tile shape for custom pattern
-  const [customTileGap, setCustomTileGap] = useState(0) // Gap between tiles (px)
-  const [customTileScale, setCustomTileScale] = useState(1.0) // Scale factor for tile size
-  const [customTileRotateOffset, setCustomTileRotateOffset] = useState(0) // Rotation offset per tile (degrees)
-  const [subpathMode, _setSubpathMode] = useState<SubpathMode>('default') // How to handle nested shapes
-  // Evenodd fill rule is always enabled - correctly handles compound paths by filling
-  // areas inside an odd number of polygon boundaries. No UI toggle needed.
-  const useEvenOdd = true
+  // Use consolidated state hook
+  const state = useFillState()
 
-  // Merge shapes before fill - useful for text/logos where shapes should be unioned
-  const [mergeBeforeFill, setMergeBeforeFill] = useState(false)
-
-  // Crop support for fill patterns
-  const [enableCrop, setEnableCrop] = useState(false)
-  const [cropInset, setCropInset] = useState(0) // Percentage of bounding box to crop from edges (0-50%)
-  const [draftCropInset, setDraftCropInset] = useState(0)
-
-  // Accumulated fill layers - each layer has lines with a color and settings for re-population
-  interface FillLayer {
-    id: string  // Unique ID for drag-and-drop
-    lines: HatchLine[]
-    color: string  // Display/output color (can be overridden by user)
-    originalColor: string  // Original color from source paths (used for matching)
-    pathId: string
-    // Settings stored for re-population
-    angle: number
-    lineSpacing: number
-    pattern: FillPatternType
-    inset: number
-    lineCount: number  // For display
-    penWidth: number   // Pen width in mm - used for weave gap calculation
-    visible: boolean   // Layer visibility toggle
-  }
-
-  // Extended type for UnifiedLayerList that includes FillLayer fields
-  type FillLayerListItem = LayerListItemFull & {
-    fillLayer: FillLayer  // Reference to original layer
-  }
-
-  const [accumulatedLayers, setAccumulatedLayers] = useState<FillLayer[]>([])
-  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
-  // Note: draggedLayerId removed - drag state is now managed by UnifiedLayerList
-  const [layerColor, setLayerColor] = useState<string>('') // Empty = use shape's original color
-  // Cache for pattern banner previews (keyed by "pattern|spacing")
-  const [bannerCache, setBannerCache] = useState<Map<string, string>>(new Map())
-  const [highlightedPathId, _setHighlightedPathId] = useState<string | null>(null)
-  const [newLayerAngle, setNewLayerAngle] = useState(45) // Angle increment when adding a new layer
-  const [selectedLayerIds, setSelectedLayerIds] = useState<Set<string>>(new Set()) // Multi-select for accumulated layers (for weaving)
-
-  // Weave settings (WeavePattern type imported from ./weaveAlgorithm)
-  const [weavePattern, setWeavePattern] = useState<WeavePattern>('trueWeave')
-  const [weaveGapMargin, setWeaveGapMargin] = useState(0.5) // Extra gap in px beyond pen width
-
-  // Draft states for sliders and color picker - show value during drag, commit on release
-  const [draftLineSpacing, setDraftLineSpacing] = useState(15)
-  const [draftAngle, setDraftAngle] = useState(45)
-  const [draftInset, setDraftInset] = useState(0)
-  const [draftWiggleAmplitude, setDraftWiggleAmplitude] = useState(5)
-  const [draftWiggleFrequency, setDraftWiggleFrequency] = useState(2)
-  const [draftPenWidth, setDraftPenWidth] = useState(0.5)
-  const [draftSimplifyTolerance, setDraftSimplifyTolerance] = useState(0)
-  const [draftLayerColor, setDraftLayerColor] = useState<string>('')
-
-  // Sync all draft states when actual values change programmatically (e.g., auto-rotate angle)
-  // Consolidated into single useEffect to reduce hook overhead
-  useEffect(() => {
-    setDraftLineSpacing(lineSpacing)
-    setDraftAngle(angle)
-    setDraftInset(inset)
-    setDraftWiggleAmplitude(wiggleAmplitude)
-    setDraftWiggleFrequency(wiggleFrequency)
-    setDraftPenWidth(penWidth)
-    setDraftSimplifyTolerance(simplifyTolerance)
-    setDraftCropInset(cropInset)
-    setDraftLayerColor(layerColor)
-  }, [lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth, simplifyTolerance, cropInset, layerColor])
-
-  // Selected control for keyboard nudge
-  type ControlId = 'lineSpacing' | 'angle' | 'inset' | 'wiggleAmplitude' | 'wiggleFrequency' | 'penWidth' | null
-  const [selectedControl, setSelectedControl] = useState<ControlId>(null)
+  // Destructure commonly used state values
+  const {
+    lineSpacing, setLineSpacing,
+    angle, setAngle,
+    crossHatch,
+    inset, setInset,
+    retainStrokes,
+    penWidth,
+    showHatchPreview, setShowHatchPreview,
+    fillPattern, setFillPattern,
+    wiggleAmplitude,
+    wiggleFrequency,
+    spiralOverDiameter, setSpiralOverDiameter,
+    singleSpiral, setSingleSpiral,
+    singleHilbert, setSingleHilbert,
+    singleFermat, setSingleFermat,
+    simplifyTolerance, setSimplifyTolerance,
+    customTileShape, setCustomTileShape,
+    customTileGap, setCustomTileGap,
+    customTileScale, setCustomTileScale,
+    customTileRotateOffset, setCustomTileRotateOffset,
+    subpathMode,
+    useEvenOdd,
+    mergeBeforeFill, setMergeBeforeFill,
+    enableCrop, setEnableCrop,
+    cropInset, setCropInset,
+    draftCropInset, setDraftCropInset,
+    accumulatedLayers, setAccumulatedLayers,
+    selectedLayerId, setSelectedLayerId,
+    layerColor, setLayerColor,
+    bannerCache, setBannerCache,
+    highlightedPathId,
+    newLayerAngle, setNewLayerAngle,
+    selectedLayerIds, setSelectedLayerIds,
+    weavePattern, setWeavePattern,
+    weaveGapMargin, setWeaveGapMargin,
+    draftLineSpacing, setDraftLineSpacing,
+    draftAngle, setDraftAngle,
+    draftInset, setDraftInset,
+    draftWiggleAmplitude, setDraftWiggleAmplitude,
+    draftWiggleFrequency, setDraftWiggleFrequency,
+    draftPenWidth, setDraftPenWidth,
+    draftSimplifyTolerance, setDraftSimplifyTolerance,
+    draftLayerColor, setDraftLayerColor,
+    selectedControl, setSelectedControl,
+    setCrossHatch, setRetainStrokes, setPenWidth,
+    setWiggleAmplitude, setWiggleFrequency,
+  } = state
 
   // Handle arrow key nudging for selected control
   useEffect(() => {
@@ -198,428 +140,158 @@ export default function FillTab() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedControl, lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth])
+  }, [selectedControl, lineSpacing, angle, inset, wiggleAmplitude, wiggleFrequency, penWidth, setLineSpacing, setAngle, setInset, setWiggleAmplitude, setWiggleFrequency, setPenWidth])
 
-  // Use shared pan/zoom hook with global state
+  // Use shared pan/zoom hook
   const { isPanning: isDragging, containerRef: previewRef, handlers: panZoomHandlers } = usePanZoom({
     externalState: { scale, setScale, offset, setOffset }
   })
 
-  // Find the target nodes (supports multiple selection)
-  // Falls back to selectedNodeIds from Sort tab when fillTargetNodeIds is empty
-  const targetNodes = useMemo(() => {
-    // Use fillTargetNodeIds if set, otherwise fall back to selected nodes from Sort tab
-    const nodeIds = fillTargetNodeIds.length > 0
-      ? fillTargetNodeIds
-      : Array.from(selectedNodeIds)
+  // Use fill paths hook
+  const {
+    targetNodes,
+    targetNode,
+    fillPaths,
+    activeFillPaths,
+    preservedFillData,
+    setPreservedFillData,
+    boundingBox,
+  } = useFillPaths({
+    layerNodes,
+    fillTargetNodeIds,
+    selectedNodeIds,
+  })
 
-    if (nodeIds.length === 0) return []
+  // Use fill generation hook
+  const {
+    simplifiedHatchedPaths,
+    fillProgress,
+  } = useFillGeneration({
+    showHatchPreview,
+    activeFillPaths,
+    preservedFillData,
+    boundingBox,
+    fillPattern,
+    lineSpacing,
+    angle,
+    crossHatch,
+    inset,
+    wiggleAmplitude,
+    wiggleFrequency,
+    spiralOverDiameter,
+    singleSpiral,
+    singleHilbert,
+    singleFermat,
+    customTileShape,
+    customTileGap,
+    customTileScale,
+    customTileRotateOffset,
+    subpathMode,
+    enableCrop,
+    cropInset,
+    useEvenOdd,
+    mergeBeforeFill,
+    simplifyTolerance,
+    setIsProcessing,
+  })
 
-    const found: SVGNode[] = []
-    for (const id of nodeIds) {
-      const node = findNodeById(layerNodes, id)
-      if (node) found.push(node)
-    }
-    return found
-  }, [layerNodes, fillTargetNodeIds, selectedNodeIds])
+  // Use fill layers hook
+  const {
+    handleAddLayer,
+    handleClearLayers,
+    handleDeleteLayer,
+    handleToggleLayerVisibility,
+    layerListItems,
+    handleLayerSelectionChange,
+    handleLayerReorder,
+  } = useFillLayers({
+    accumulatedLayers,
+    setAccumulatedLayers,
+    selectedLayerIds,
+    setSelectedLayerIds,
+    selectedLayerId,
+    setSelectedLayerId,
+    layerColor,
+    setLayerColor,
+    angle,
+    setAngle,
+    lineSpacing,
+    setLineSpacing,
+    fillPattern,
+    setFillPattern,
+    inset,
+    setInset,
+    penWidth,
+    newLayerAngle,
+    simplifiedHatchedPaths,
+    showHatchPreview,
+    setShowHatchPreview,
+    fillPathsLength: fillPaths.length,
+  })
 
-  // For backward compatibility and display purposes
-  const targetNode = targetNodes.length > 0 ? targetNodes[0] : null
-
-  // Extract all fill paths from all target nodes (including nested children)
-  const fillPaths = useMemo(() => {
-    if (targetNodes.length === 0) return []
-
-    const paths: FillPathInfo[] = []
-
-    const getElementFill = (element: Element): string | null => {
-      const fill = element.getAttribute('fill')
-      const style = element.getAttribute('style')
-
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none' && fillMatch[1] !== 'transparent') {
-          return fillMatch[1].trim()
-        }
-      }
-
-      if (fill && fill !== 'none' && fill !== 'transparent') {
-        return fill
-      }
-
-      return null
-    }
-
-    const extractFillPaths = (node: SVGNode) => {
-      // Skip nodes that already have customMarkup (already filled)
-      if (node.customMarkup) return
-
-      const element = node.element
-      const fill = getElementFill(element)
-
-      // Only include actual shape elements with fills (not groups)
-      if (fill && !node.isGroup) {
-        const tagName = element.tagName.toLowerCase()
-        let pathData = ''
-
-        // Get path data based on element type
-        if (tagName === 'path') {
-          pathData = element.getAttribute('d') || ''
-        } else if (tagName === 'rect') {
-          const x = element.getAttribute('x') || '0'
-          const y = element.getAttribute('y') || '0'
-          const w = element.getAttribute('width') || '0'
-          const h = element.getAttribute('height') || '0'
-          pathData = `rect(${x}, ${y}, ${w}, ${h})`
-        } else if (tagName === 'circle') {
-          const cx = element.getAttribute('cx') || '0'
-          const cy = element.getAttribute('cy') || '0'
-          const r = element.getAttribute('r') || '0'
-          pathData = `circle(${cx}, ${cy}, r=${r})`
-        } else if (tagName === 'ellipse') {
-          const cx = element.getAttribute('cx') || '0'
-          const cy = element.getAttribute('cy') || '0'
-          const rx = element.getAttribute('rx') || '0'
-          const ry = element.getAttribute('ry') || '0'
-          pathData = `ellipse(${cx}, ${cy}, ${rx}, ${ry})`
-        } else if (tagName === 'polygon') {
-          pathData = element.getAttribute('points') || ''
-        }
-
-        paths.push({
-          id: node.id,
-          type: tagName,
-          color: fill,
-          pathData,
-          element,
-        })
-      }
-
-      // Recursively process children
-      for (const child of node.children) {
-        extractFillPaths(child)
-      }
-    }
-
-    // Extract from all target nodes
-    for (const node of targetNodes) {
-      extractFillPaths(node)
-    }
-    return paths
-  }, [targetNodes])
-
-  // Preserve original fill paths for "Apply & Fill Again" - stores polygon boundaries for layering
-  // Declared here so boundingBox can use it
-  const [preservedFillData, setPreservedFillData] = useState<{ pathInfo: FillPathInfo; polygon: PolygonWithHoles }[] | null>(null)
-
-  // Clear preserved data when target changes (user selected different layers)
+  // Handle weave request
   useEffect(() => {
-    setPreservedFillData(null)
-  }, [fillTargetNodeIds])
+    if (weaveRequested) {
+      setWeaveRequested(false)
 
-  // Calculate bounding box of all fill paths using polygon points (works on disconnected elements)
-  const boundingBox = useMemo(() => {
-    // Use preserved polygon data if available, otherwise compute from fillPaths
-    if (preservedFillData && preservedFillData.length > 0) {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-      preservedFillData.forEach(({ polygon }) => {
-        for (const p of polygon.outer) {
-          minX = Math.min(minX, p.x)
-          minY = Math.min(minY, p.y)
-          maxX = Math.max(maxX, p.x)
-          maxY = Math.max(maxY, p.y)
-        }
-        for (const hole of polygon.holes) {
-          for (const p of hole) {
-            minX = Math.min(minX, p.x)
-            minY = Math.min(minY, p.y)
-            maxX = Math.max(maxX, p.x)
-            maxY = Math.max(maxY, p.y)
-          }
-        }
-      })
-      if (minX !== Infinity) {
-        return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
+      if (selectedLayerIds.size !== 2) {
+        const msg = `Weave requires exactly 2 layers selected (you have ${selectedLayerIds.size}). Use Shift/Cmd+click to multi-select.`
+        setStatusMessage(msg)
+        return
       }
-    }
 
-    if (fillPaths.length === 0) return null
+      const layerIds = Array.from(selectedLayerIds)
+      const layer1 = accumulatedLayers.find(l => l.id === layerIds[0])
+      const layer2 = accumulatedLayers.find(l => l.id === layerIds[1])
 
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-
-    fillPaths.forEach(path => {
-      // Use getAllPolygonsFromElement to handle compound paths with disconnected regions
-      const allPolygons = getAllPolygonsFromElement(path.element)
-      for (const polygonData of allPolygons) {
-        for (const p of polygonData.outer) {
-          minX = Math.min(minX, p.x)
-          minY = Math.min(minY, p.y)
-          maxX = Math.max(maxX, p.x)
-          maxY = Math.max(maxY, p.y)
-        }
-        // Also check hole boundaries for complete bounding box
-        for (const hole of polygonData.holes) {
-          for (const p of hole) {
-            minX = Math.min(minX, p.x)
-            minY = Math.min(minY, p.y)
-            maxX = Math.max(maxX, p.x)
-            maxY = Math.max(maxY, p.y)
-          }
-        }
+      if (!layer1 || !layer2) {
+        setStatusMessage('Could not find selected layers')
+        return
       }
-    })
 
-    if (minX === Infinity) return null
-
-    return {
-      x: minX,
-      y: minY,
-      width: maxX - minX,
-      height: maxY - minY,
-    }
-  }, [fillPaths, preservedFillData])
-
-  // Generate hatch lines for each path - using async processing to keep UI responsive
-  const [hatchedPaths, setHatchedPaths] = useState<{ pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[]>([])
-  const [, setIsGeneratingHatch] = useState(false)
-  const [fillProgress, setFillProgress] = useState(0)
-  const hatchAbortRef = useRef<{ aborted: boolean }>({ aborted: false })
-
-  // Use preserved data if available (after Apply & Fill Again), otherwise use computed fillPaths
-  // IMPORTANT: Must be memoized to prevent creating new array reference on every render
-  // which would trigger the expensive useEffect that depends on this
-  const activeFillPaths = useMemo(() => {
-    return preservedFillData
-      ? preservedFillData.map(d => d.pathInfo)
-      : fillPaths
-  }, [preservedFillData, fillPaths])
-
-  // Listen for progress updates from backend
-  useEffect(() => {
-    if (!window.electron?.onFillProgress) return
-
-    const handleProgress = (data: { progress: number; status: string }) => {
-      setFillProgress(data.progress)
-    }
-
-    window.electron.onFillProgress(handleProgress)
-
-    return () => {
-      window.electron?.offFillProgress?.()
-    }
-  }, [])
-
-  // Generate fills using backend IPC for better performance
-  useEffect(() => {
-    // Abort any in-progress generation
-    hatchAbortRef.current.aborted = true
-
-    // Use activeFillPaths which falls back to preserved data if available
-    const pathsToProcess = activeFillPaths
-    if (!showHatchPreview || pathsToProcess.length === 0 || !boundingBox) {
-      setHatchedPaths([])
-      return
-    }
-
-    // Create new abort controller for this generation
-    const abortController = { aborted: false }
-    hatchAbortRef.current = abortController
-
-    // Debounce fill generation to improve UI responsiveness
-    const DEBOUNCE_MS = 50
-    const debounceTimer = setTimeout(async () => {
-      if (abortController.aborted) return
-
-      setIsGeneratingHatch(true)
+      setStatusMessage(`Weaving ${layer1.lineCount} + ${layer2.lineCount} lines...`)
       setIsProcessing(true)
-      setFillProgress(0)
 
-      try {
-        // Step 1: Extract polygon data from DOM elements (fast, runs on frontend)
-        const pathInputs: Array<{
-          id: string
-          color: string
-          polygons: PolygonWithHoles[]
-          rawSubpaths?: Point[][]
-        }> = []
+      const startTime = performance.now()
+      const result = weaveLayerLines(
+        layer1.lines,
+        layer2.lines,
+        layer1.penWidth,
+        layer2.penWidth,
+        weavePattern,
+        weaveGapMargin
+      )
+      const elapsed = performance.now() - startTime
 
-        // Build lookup map for preserved data (O(1) lookup instead of O(n) find)
-        const preservedDataMap = new Map<string, PolygonWithHoles>()
-        if (preservedFillData) {
-          for (const p of preservedFillData) {
-            if (p.polygon) {
-              preservedDataMap.set(p.pathInfo.id, p.polygon as PolygonWithHoles)
-            }
-          }
-        }
-
-        // Extract polygons with yielding to prevent blocking
-        const BATCH_SIZE = 20 // Process 20 paths before yielding
-        for (let i = 0; i < pathsToProcess.length; i++) {
-          if (abortController.aborted) return
-
-          const path = pathsToProcess[i]
-          let polygons: PolygonWithHoles[]
-          let rawSubpaths: Point[][] | undefined
-
-          // Use O(1) Map lookup instead of O(n) find
-          const preserved = preservedDataMap.get(path.id)
-          if (preserved && subpathMode === 'default') {
-            // Only use preserved data in default mode (since preserved may have hole detection)
-            polygons = [preserved]
-          } else {
-            polygons = getAllPolygonsFromElement(path.element, subpathMode)
-          }
-
-          // For evenodd mode, also extract raw subpaths from path elements
-          if (useEvenOdd && path.type === 'path') {
-            const d = path.element.getAttribute('d') || ''
-            rawSubpaths = parsePathIntoSubpaths(d)
-          }
-
-          pathInputs.push({
-            id: path.id,
-            color: path.color,
-            polygons,
-            rawSubpaths
-          })
-
-          // Yield to browser periodically to keep UI responsive
-          if (i > 0 && i % BATCH_SIZE === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0))
-          }
-        }
-
-        // If mergeBeforeFill is enabled, union all polygons into one compound shape
-        let finalPathInputs = pathInputs
-        if (mergeBeforeFill && pathInputs.length > 1) {
-          // Collect all polygons from all paths
-          const allPolygons: PolygonWithHoles[] = []
-          for (const input of pathInputs) {
-            allPolygons.push(...input.polygons)
-          }
-
-          // Union them all together
-          const mergedPolygons = unionPolygonsForFill(allPolygons)
-
-          // Create a single merged path input using the first path's id/color
-          const firstPath = pathInputs[0]
-          finalPathInputs = [{
-            id: 'merged-fill',
-            color: firstPath.color,
-            polygons: mergedPolygons,
-            rawSubpaths: undefined // Raw subpaths don't apply after merge
-          }]
-
-          console.log(`[FillTab] Merged ${allPolygons.length} polygons into ${mergedPolygons.length} compound shapes`)
-        }
-
-        // Step 2: Check if electron API is available (running in Electron)
-        if (window.electron?.generateFills) {
-          // Use backend IPC for fill generation
-          const result = await window.electron.generateFills({
-            paths: finalPathInputs,
-            boundingBox,
-            fillPattern,
-            lineSpacing,
-            angle,
-            crossHatch,
-            inset,
-            wiggleAmplitude,
-            wiggleFrequency,
-            spiralOverDiameter,
-            singleSpiral,
-            singleHilbert,
-            singleFermat,
-            customTileShape,
-            customTileGap,
-            customTileScale,
-            customTileRotateOffset,
-            enableCrop,
-            cropInset,
-            useEvenOdd
-          })
-
-          if (abortController.aborted) return
-
-          if (result.success) {
-            // Map backend results back to frontend format
-            // Use Map for O(1) lookup instead of O(n) find in loop
-            const pathsMap = new Map<string, FillPathInfo>()
-            for (const p of pathsToProcess) {
-              pathsMap.set(p.id, p)
-            }
-
-            const results: { pathInfo: FillPathInfo; lines: HatchLine[]; polygon: Point[] }[] = []
-
-            for (const pathResult of result.paths) {
-              const originalPath = pathsMap.get(pathResult.pathId)
-              if (originalPath) {
-                results.push({
-                  pathInfo: originalPath,
-                  lines: pathResult.lines,
-                  polygon: pathResult.polygon
-                })
-              }
-            }
-
-            setHatchedPaths(results)
-
-            // Debug summary
-            const filledCount = results.length
-            const totalCount = pathsToProcess.length
-            const unfilledCount = totalCount - filledCount
-            if (unfilledCount > 0) {
-            }
-          } else {
-            console.error('Fill generation failed:', result.error)
-            setHatchedPaths([])
-          }
-        } else {
-          // Electron API not available - rat-king is required
-          console.error('Fill generation requires Electron/rat-king - not available in browser')
-          setHatchedPaths([])
-        }
-      } catch (err) {
-        console.error('Fill generation error:', err)
-        setHatchedPaths([])
-      } finally {
-        if (!abortController.aborted) {
-          setFillProgress(100)
-          setIsGeneratingHatch(false)
-          setIsProcessing(false)
-        }
+      const newLayer1: FillLayer = {
+        ...layer1,
+        id: `${layer1.id}-woven`,
+        lines: result.layer1,
+        lineCount: result.layer1.length,
       }
-    }, DEBOUNCE_MS)
 
-    // Cleanup on unmount or dependency change
-    return () => {
-      clearTimeout(debounceTimer)
-      abortController.aborted = true
+      const newLayer2: FillLayer = {
+        ...layer2,
+        id: `${layer2.id}-woven`,
+        lines: result.layer2,
+        lineCount: result.layer2.length,
+      }
+
+      setAccumulatedLayers(prev => {
+        return prev.map(layer => {
+          if (layer.id === layer1.id) return newLayer1
+          if (layer.id === layer2.id) return newLayer2
+          return layer
+        })
+      })
+
+      setSelectedLayerIds(new Set())
       setIsProcessing(false)
+      setStatusMessage(`Weave complete in ${elapsed.toFixed(0)}ms. ${result.layer1.length + result.layer2.length} line segments created.`)
     }
-  }, [showHatchPreview, activeFillPaths, preservedFillData, boundingBox, lineSpacing, angle, crossHatch, inset, fillPattern, wiggleAmplitude, wiggleFrequency, spiralOverDiameter, singleSpiral, singleHilbert, singleFermat, customTileShape, customTileGap, customTileScale, customTileRotateOffset, subpathMode, enableCrop, cropInset, useEvenOdd, setIsProcessing])
+  }, [weaveRequested, setWeaveRequested, selectedLayerIds, accumulatedLayers, setStatusMessage, setIsProcessing, weavePattern, weaveGapMargin, setAccumulatedLayers, setSelectedLayerIds])
 
-  // Apply simplification to hatched paths when tolerance > 0
-  const simplifiedHatchedPaths = useMemo(() => {
-    if (simplifyTolerance <= 0 || hatchedPaths.length === 0) {
-      return hatchedPaths
-    }
-
-    return hatchedPaths.map(({ pathInfo, lines, polygon }) => ({
-      pathInfo,
-      polygon,
-      lines: simplifyLines(lines, simplifyTolerance)
-    }))
-  }, [hatchedPaths, simplifyTolerance])
-
-  // Note: pathLineCountMap was removed - it was created for displaying line count
-  // badges in the path list but the fill-paths-full sidebar was removed.
-
-  // Note: Line ordering optimization is deferred to handleApplyFill/handleNavigateToOrder
-  // for better UI responsiveness during preview generation
-
-  // Calculate fill statistics for display (uses simplified paths)
+  // Calculate fill statistics
   const fillStats = useMemo(() => {
     if (!showHatchPreview || simplifiedHatchedPaths.length === 0) {
       return null
@@ -628,14 +300,11 @@ export default function FillTab() {
     let totalLines = 0
     let totalPoints = 0
 
-    // Count lines from current preview (simplified)
     simplifiedHatchedPaths.forEach(({ lines }) => {
       totalLines += lines.length
-      // Each line has 2 points (start and end)
       totalPoints += lines.length * 2
     })
 
-    // Add accumulated layers
     accumulatedLayers.forEach(layer => {
       totalLines += layer.lines.length
       totalPoints += layer.lines.length * 2
@@ -648,7 +317,7 @@ export default function FillTab() {
     }
   }, [showHatchPreview, simplifiedHatchedPaths, accumulatedLayers])
 
-  // Convert mm to SVG units (assuming 96 DPI, 1mm = 3.7795px)
+  // Convert mm to SVG units
   const penWidthPx = penWidth * 3.7795
 
   // Generate preview SVG content
@@ -663,15 +332,13 @@ export default function FillTab() {
     const pathElements: string[] = []
 
     if (showHatchPreview) {
-      // Draw accumulated layers (as compound paths for efficiency)
-      // These ARE the fill preview - each layer represents committed fills
-      // Only render visible layers
+      // Draw accumulated layers
       accumulatedLayers.filter(layer => layer.visible).forEach(layer => {
         const pathD = linesToCompoundPath(layer.lines, 2)
         pathElements.push(`<g class="accumulated-layer"><path d="${pathD}" fill="${layer.color}" stroke="${layer.color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/></g>`)
       })
 
-      // Add outline strokes if retaining strokes
+      // Add outline strokes if retaining
       if (retainStrokes) {
         fillPaths.forEach((path) => {
           const outlineEl = path.element.cloneNode(true) as Element
@@ -683,7 +350,7 @@ export default function FillTab() {
         })
       }
 
-      // Add highlight overlay for selected path
+      // Add highlight overlay
       fillPaths.forEach((path) => {
         const isHighlighted = path.id === highlightedPathId
         if (isHighlighted) {
@@ -696,7 +363,7 @@ export default function FillTab() {
         }
       })
     } else {
-      // Show original shapes with semi-transparent fill
+      // Show original shapes
       fillPaths.forEach((path) => {
         const el = path.element.cloneNode(true) as Element
         el.setAttribute('fill', path.color)
@@ -707,7 +374,7 @@ export default function FillTab() {
       })
     }
 
-    // Add crop rectangle indicator if crop is enabled
+    // Add crop rectangle indicator
     if (enableCrop && cropInset > 0) {
       const insetX = boundingBox.width * (cropInset / 100)
       const insetY = boundingBox.height * (cropInset / 100)
@@ -716,10 +383,7 @@ export default function FillTab() {
       const cropW = boundingBox.width - insetX * 2
       const cropH = boundingBox.height - insetY * 2
 
-      // Draw crop border rectangle
       pathElements.push(`<rect x="${cropX}" y="${cropY}" width="${cropW}" height="${cropH}" fill="none" stroke="#ff6600" stroke-width="2" stroke-dasharray="8,4" opacity="0.8"/>`)
-
-      // Dim the area outside the crop (using a mask effect with rects)
       pathElements.push(`<rect x="${boundingBox.x - padding}" y="${boundingBox.y - padding}" width="${boundingBox.width + padding * 2}" height="${insetY + padding}" fill="rgba(0,0,0,0.3)"/>`)
       pathElements.push(`<rect x="${boundingBox.x - padding}" y="${cropY + cropH}" width="${boundingBox.width + padding * 2}" height="${insetY + padding}" fill="rgba(0,0,0,0.3)"/>`)
       pathElements.push(`<rect x="${boundingBox.x - padding}" y="${cropY}" width="${insetX + padding}" height="${cropH}" fill="rgba(0,0,0,0.3)"/>`)
@@ -730,7 +394,6 @@ export default function FillTab() {
   }, [fillPaths, boundingBox, showHatchPreview, accumulatedLayers, retainStrokes, penWidthPx, highlightedPathId, enableCrop, cropInset])
 
   const handleBack = () => {
-    // Clean up all fill state when navigating away
     setAccumulatedLayers([])
     setPreservedFillData(null)
     setLayerColor('')
@@ -741,31 +404,19 @@ export default function FillTab() {
 
   const handlePreview = useCallback(() => {
     setShowHatchPreview(!showHatchPreview)
-  }, [showHatchPreview])
-
-  // NOTE: All fill generation now uses rat-king via the generate-fills IPC handler
-  // The preview and apply flow both use rat-king automatically
+  }, [showHatchPreview, setShowHatchPreview])
 
   const handleApplyFill = useCallback(() => {
     if (targetNodes.length === 0 || (simplifiedHatchedPaths.length === 0 && accumulatedLayers.length === 0)) return
 
-    // Show processing state while optimizing
     setIsProcessing(true)
 
-    // Use setTimeout to let UI update before running expensive optimization
     setTimeout(() => {
-      // Run optimization now (deferred from preview for responsiveness)
       const optimizedLines = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
-
-      // Create DOMParser once and reuse (expensive to create repeatedly)
       const parser = new DOMParser()
 
-      // Collect all lines: accumulated layers + current preview
-      // Group by color so different colors become separate layer nodes
       const allLinesByColor = new Map<string, { x1: number; y1: number; x2: number; y2: number }[]>()
 
-      // Add accumulated layers first (each layer now contains all lines for that layer)
-      // Only export visible layers - hidden layers are excluded from final output
       accumulatedLayers.filter(layer => layer.visible).forEach(layer => {
         const existing = allLinesByColor.get(layer.color) || []
         layer.lines.forEach(line => {
@@ -774,7 +425,6 @@ export default function FillTab() {
         allLinesByColor.set(layer.color, existing)
       })
 
-      // Add current optimized lines
       optimizedLines.forEach(line => {
         const color = layerColor || line.color
         const existing = allLinesByColor.get(color) || []
@@ -782,21 +432,15 @@ export default function FillTab() {
         allLinesByColor.set(color, existing)
       })
 
-      // Get unique colors used across all fills
       const uniqueColors = Array.from(allLinesByColor.keys())
-
-      // Create fill nodes - one per color
       const fillNodes: SVGNode[] = []
 
-      // For each color, create a single fill node with all lines
       uniqueColors.forEach((color, index) => {
         const lines = allLinesByColor.get(color)
         if (!lines || lines.length === 0) return
 
-        // Convert lines to a single compound path
         let pathD = linesToCompoundPath(lines, 2)
 
-        // If retainStrokes and only one color, append outline from original paths
         if (retainStrokes && uniqueColors.length === 1) {
           simplifiedHatchedPaths.forEach(({ pathInfo }) => {
             const originalD = pathInfo.element.getAttribute('d')
@@ -813,10 +457,8 @@ export default function FillTab() {
           ? `Fill ${color}`
           : `Fill`
 
-        // Create as a path element
         const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="${color}" stroke="${color}" stroke-width="${penWidthPx.toFixed(2)}" stroke-linecap="round"/>`
 
-        // Create element for the node
         const dummyDoc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
         const pathElement = dummyDoc.querySelector('path') as Element
 
@@ -834,42 +476,36 @@ export default function FillTab() {
         fillNodes.push(fillNode)
       })
 
-      // Map fill nodes to first target node
       const fillNodesByTargetId = new Map<string, SVGNode[]>()
       if (targetNodes.length > 0) {
         fillNodesByTargetId.set(targetNodes[0].id, fillNodes)
       }
 
-    // Get set of target node IDs for quick lookup
-    const targetIdSet = new Set(targetNodes.map(n => n.id))
+      const targetIdSet = new Set(targetNodes.map(n => n.id))
 
-    // Replace each target node with a group containing its fill children
-    const updateNodesWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.map(node => {
-        if (targetIdSet.has(node.id)) {
-          const newChildren = fillNodesByTargetId.get(node.id) || []
-          // Replace this node with a group containing all fill layers
-          // Mark as group so children display properly in layer tree
-          return {
-            ...node,
-            isGroup: newChildren.length > 0, // Mark as group if has children
-            type: newChildren.length > 0 ? 'g' : node.type,
-            children: newChildren,
-            customMarkup: undefined, // Remove any custom markup on parent, children have it
+      const updateNodesWithFillChildren = (nodes: SVGNode[]): SVGNode[] => {
+        return nodes.map(node => {
+          if (targetIdSet.has(node.id)) {
+            const newChildren = fillNodesByTargetId.get(node.id) || []
+            return {
+              ...node,
+              isGroup: newChildren.length > 0,
+              type: newChildren.length > 0 ? 'g' : node.type,
+              children: newChildren,
+              customMarkup: undefined,
+            }
           }
-        }
-        if (node.children.length > 0) {
-          return { ...node, children: updateNodesWithFillChildren(node.children) }
-        }
-        return node
-      })
-    }
+          if (node.children.length > 0) {
+            return { ...node, children: updateNodesWithFillChildren(node.children) }
+          }
+          return node
+        })
+      }
 
       const updatedNodes = updateNodesWithFillChildren(layerNodes)
       setLayerNodes(updatedNodes)
       rebuildSvgFromLayers(updatedNodes)
 
-      // Clear all state when done
       setPreservedFillData(null)
       setAccumulatedLayers([])
       setLayerColor('')
@@ -877,19 +513,17 @@ export default function FillTab() {
 
       setFillTargetNodeIds([])
       setActiveTab('sort')
-    }, 0) // End setTimeout
-  }, [targetNodes, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData, setIsProcessing])
+    }, 0)
+  }, [targetNodes, simplifiedHatchedPaths, accumulatedLayers, layerColor, retainStrokes, penWidthPx, layerNodes, setLayerNodes, setFillTargetNodeIds, setActiveTab, rebuildSvgFromLayers, setPreservedFillData, setIsProcessing, setAccumulatedLayers, setLayerColor])
 
-  // Enter key handler - triggers Apply Fill when preview is showing
+  // Enter key handler
   useEffect(() => {
     const handleEnterKey = (e: KeyboardEvent) => {
       if (e.key !== 'Enter') return
 
       const target = e.target as HTMLElement
-      // Don't trigger if user is in an input field
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
 
-      // Only trigger if preview is showing and we have paths
       if (showHatchPreview && fillPaths.length > 0) {
         e.preventDefault()
         handleApplyFill()
@@ -900,444 +534,10 @@ export default function FillTab() {
     return () => window.removeEventListener('keydown', handleEnterKey)
   }, [showHatchPreview, fillPaths.length, handleApplyFill])
 
-  // Maximum accumulated layers to prevent memory bloat
-  const MAX_ACCUMULATED_LAYERS = 100
-
-  // Track newly added layer that needs population when lines regenerate
-  const pendingLayerId = useRef<string | null>(null)
-
-  // Add a new layer with rotated angle
-  // If multiple colors exist in the selected paths, creates one layer per unique color
-  const handleAddLayer = useCallback(() => {
-    // Calculate the new angle for this layer
-    const newAngle = (angle + newLayerAngle) % 180
-
-    // Group paths by color to create separate layers for each unique color
-    const pathsByColor = new Map<string, typeof simplifiedHatchedPaths>()
-    for (const hatchedPath of simplifiedHatchedPaths) {
-      const color = hatchedPath.pathInfo.color || '#000000'
-      if (!pathsByColor.has(color)) {
-        pathsByColor.set(color, [])
-      }
-      pathsByColor.get(color)!.push(hatchedPath)
-    }
-
-    // If no paths, create a single default layer
-    if (pathsByColor.size === 0) {
-      pathsByColor.set('#000000', [])
-    }
-
-    const newLayers: FillLayer[] = []
-    const newLayerIds: string[] = []
-    const baseTimestamp = Date.now()
-
-    // Create one layer per unique color
-    let colorIndex = 0
-    for (const [color, colorPaths] of pathsByColor) {
-      const layerId = `layer-${baseTimestamp}-${colorIndex}-${Math.random().toString(36).substr(2, 9)}`
-      newLayerIds.push(layerId)
-
-      // Collect lines for this color
-      const colorLines: HatchLine[] = []
-      colorPaths.forEach(({ lines }) => {
-        colorLines.push(...lines)
-      })
-
-      const firstPath = colorPaths[0]?.pathInfo
-
-      const newLayer: FillLayer = {
-        id: layerId,
-        lines: colorLines,
-        color,
-        originalColor: color,  // Store original for path matching
-        pathId: firstPath?.id || '',
-        angle: newAngle,
-        lineSpacing,
-        pattern: fillPattern,
-        inset,
-        lineCount: colorLines.length,
-        penWidth,
-        visible: true,
-      }
-
-      newLayers.push(newLayer)
-      colorIndex++
-    }
-
-    // Add all new layers
-    setAccumulatedLayers(prev => {
-      const combined = [...prev, ...newLayers]
-      if (combined.length > MAX_ACCUMULATED_LAYERS) {
-        console.warn(`[FillTab] Accumulated layers exceeded ${MAX_ACCUMULATED_LAYERS}, trimming oldest layers`)
-        return combined.slice(-MAX_ACCUMULATED_LAYERS)
-      }
-      return combined
-    })
-
-    // Select the first new layer so it becomes editable
-    if (newLayerIds.length > 0) {
-      setSelectedLayerIds(new Set([newLayerIds[0]]))
-    }
-
-    // Track first layer ID for pending population (in case lines need regeneration)
-    pendingLayerId.current = newLayerIds[0] || null
-
-    // Set the angle to the new value (this will trigger line regeneration)
-    setAngle(newAngle)
-
-    // Reset layer color for the new layer
-    setLayerColor('')
-  }, [simplifiedHatchedPaths, angle, newLayerAngle, lineSpacing, fillPattern, inset, penWidth])
-
-  // Populate pending layer when lines regenerate after Add Layer
-  // This handles the case where lines need to be regenerated after angle change
-  useEffect(() => {
-    if (!pendingLayerId.current || simplifiedHatchedPaths.length === 0) return
-
-    const layerId = pendingLayerId.current
-
-    // Check if this layer exists in state yet
-    const layer = accumulatedLayers.find(l => l.id === layerId)
-    if (!layer) {
-      // Layer not yet added to state - wait for next update
-      return
-    }
-
-    if (layer.lines.length > 0) {
-      // Layer already has lines - we're done
-      pendingLayerId.current = null
-      return
-    }
-
-    // Collect lines from the regenerated preview, filtered by this layer's color
-    // Use originalColor for path matching (not color which may have been overridden)
-    const originalColor = layer.originalColor
-    const colorLines: HatchLine[] = []
-    simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
-      // Only include lines from paths matching this layer's original color
-      if (pathInfo.color === originalColor) {
-        colorLines.push(...lines)
-      }
-    })
-
-    if (colorLines.length > 0) {
-      // Update the pending layer with the new lines
-      setAccumulatedLayers(prev => prev.map(l => {
-        if (l.id === layerId) {
-          return { ...l, lines: colorLines, lineCount: colorLines.length }
-        }
-        return l
-      }))
-      pendingLayerId.current = null
-    }
-  }, [simplifiedHatchedPaths, accumulatedLayers])
-
-  // Clear all accumulated layers
-  const handleClearLayers = useCallback(() => {
-    setAccumulatedLayers([])
-    setLayerColor('')
-    setSelectedLayerId(null)
-  }, [])
-
-  // Auto-enable preview on first load to show default fill
-  useEffect(() => {
-    if (fillPaths.length > 0 && !showHatchPreview) {
-      setShowHatchPreview(true)
-    }
-  }, [fillPaths.length]) // Only run when fillPaths changes, not showHatchPreview
-
-  // Auto-add first layer when entering Fill tab with paths but no layers
-  // This ensures the user sees layers in the list, not just a preview
-  // Creates one layer per unique color if multiple colors exist
-  const hasAutoAddedFirstLayer = useRef(false)
-  const firstLayerId = useRef<string | null>(null)
-  useEffect(() => {
-    // Only auto-add once, when we have hatched paths and no accumulated layers
-    if (simplifiedHatchedPaths.length > 0 && accumulatedLayers.length === 0 && !hasAutoAddedFirstLayer.current) {
-      hasAutoAddedFirstLayer.current = true
-
-      // Group paths by color to create separate layers for each unique color
-      const pathsByColor = new Map<string, typeof simplifiedHatchedPaths>()
-      for (const hatchedPath of simplifiedHatchedPaths) {
-        const color = hatchedPath.pathInfo.color || '#000000'
-        if (!pathsByColor.has(color)) {
-          pathsByColor.set(color, [])
-        }
-        pathsByColor.get(color)!.push(hatchedPath)
-      }
-
-      const newLayers: FillLayer[] = []
-      const baseTimestamp = Date.now()
-      let colorIndex = 0
-
-      // Create one layer per unique color
-      for (const [color, colorPaths] of pathsByColor) {
-        const layerId = `layer-${baseTimestamp}-${colorIndex}-${Math.random().toString(36).substr(2, 9)}`
-
-        // Store first layer ID for reference
-        if (colorIndex === 0) {
-          firstLayerId.current = layerId
-        }
-
-        // Collect lines for this color
-        const colorLines: HatchLine[] = []
-        colorPaths.forEach(({ lines }) => {
-          colorLines.push(...lines)
-        })
-
-        const firstPath = colorPaths[0]?.pathInfo
-
-        const newLayer: FillLayer = {
-          id: layerId,
-          lines: colorLines,
-          color,
-          originalColor: color,  // Store original for path matching
-          pathId: firstPath?.id || '',
-          angle,
-          lineSpacing,
-          pattern: fillPattern,
-          inset,
-          lineCount: colorLines.length,
-          penWidth,
-          visible: true,
-        }
-
-        newLayers.push(newLayer)
-        colorIndex++
-      }
-
-      setAccumulatedLayers(newLayers)
-      // Select the first layer so it becomes editable
-      if (newLayers.length > 0) {
-        setSelectedLayerIds(new Set([newLayers[0].id]))
-      }
-      // Don't rotate angle - keep it the same so layer 1 reflects current settings
-    }
-  }, [simplifiedHatchedPaths.length, accumulatedLayers.length])
-
-  // Update selected layers when settings change
-  // This provides live preview as user adjusts settings
-  // When multiple layers are selected, applies the same pattern/settings to all of them
-  useEffect(() => {
-    // Don't update if a pending layer is being populated
-    if (pendingLayerId.current) return
-
-    // Need at least one layer selected and some paths
-    if (selectedLayerIds.size === 0 || simplifiedHatchedPaths.length === 0) return
-
-    const selectedIds = Array.from(selectedLayerIds)
-
-    // Update all selected layers with the current settings
-    setAccumulatedLayers(prev => {
-      let hasChanges = false
-
-      const updated = prev.map(layer => {
-        // Only update layers that are selected
-        if (!selectedIds.includes(layer.id)) return layer
-
-        // Determine the target color for this layer
-        // If user set a layerColor override, use that; otherwise keep the layer's current color
-        // Note: layerColor override only applies when single layer is selected
-        const targetColor = (selectedLayerIds.size === 1 && layerColor) ? layerColor : layer.color
-
-        // Collect lines from paths matching this layer's ORIGINAL color
-        // This ensures each color layer only gets lines from paths of that color
-        // even if the display color has been overridden
-        const colorLines: HatchLine[] = []
-        simplifiedHatchedPaths.forEach(({ pathInfo, lines }) => {
-          // Include lines if path matches the layer's original color (not the display color)
-          if (pathInfo.color === layer.originalColor) {
-            colorLines.push(...lines)
-          }
-        })
-
-        // Check if anything actually changed to avoid unnecessary updates
-        if (colorLines.length === layer.lineCount &&
-            layer.angle === angle &&
-            layer.lineSpacing === lineSpacing &&
-            layer.pattern === fillPattern &&
-            layer.inset === inset &&
-            layer.penWidth === penWidth &&
-            layer.color === targetColor) {
-          return layer
-        }
-
-        hasChanges = true
-        return {
-          ...layer,
-          lines: colorLines,
-          color: targetColor,
-          // originalColor is preserved via spread
-          angle,
-          lineSpacing,
-          pattern: fillPattern,
-          inset,
-          lineCount: colorLines.length,
-          penWidth,
-        }
-      })
-
-      return hasChanges ? updated : prev
-    })
-  }, [simplifiedHatchedPaths, layerColor, angle, lineSpacing, fillPattern, inset, penWidth, selectedLayerIds])
-
-  // Handle weave request from menu command or button
-  useEffect(() => {
-    if (weaveRequested) {
-      // Reset the request immediately
-      setWeaveRequested(false)
-
-      console.log('[Weave] Triggered. Selected layers:', selectedLayerIds.size, Array.from(selectedLayerIds))
-      console.log('[Weave] Accumulated layers:', accumulatedLayers.map(l => ({ id: l.id, lineCount: l.lineCount })))
-
-      // Check if we have exactly 2 layers selected
-      if (selectedLayerIds.size !== 2) {
-        const msg = `Weave requires exactly 2 layers selected (you have ${selectedLayerIds.size}). Use Shift/Cmd+click to multi-select.`
-        console.log('[Weave]', msg)
-        setStatusMessage(msg)
-        return
-      }
-
-      // Get the two selected layers
-      const layerIds = Array.from(selectedLayerIds)
-      const layer1 = accumulatedLayers.find(l => l.id === layerIds[0])
-      const layer2 = accumulatedLayers.find(l => l.id === layerIds[1])
-
-      console.log('[Weave] Layer 1:', layer1 ? { id: layer1.id, lines: layer1.lines.length } : 'NOT FOUND')
-      console.log('[Weave] Layer 2:', layer2 ? { id: layer2.id, lines: layer2.lines.length } : 'NOT FOUND')
-
-      if (!layer1 || !layer2) {
-        setStatusMessage('Could not find selected layers')
-        return
-      }
-
-      console.log(`[Weave] Processing ${layer1.lines.length} + ${layer2.lines.length} lines with pattern ${weavePattern}, gap ${weaveGapMargin}`)
-      setStatusMessage(`Weaving ${layer1.lineCount} + ${layer2.lineCount} lines...`)
-      setIsProcessing(true)
-
-      // Run weave algorithm
-      const startTime = performance.now()
-      const result = weaveLayerLines(
-        layer1.lines,
-        layer2.lines,
-        layer1.penWidth,
-        layer2.penWidth,
-        weavePattern,
-        weaveGapMargin
-      )
-      const elapsed = performance.now() - startTime
-      console.log(`[Weave] Result: layer1=${result.layer1.length} lines, layer2=${result.layer2.length} lines in ${elapsed.toFixed(0)}ms`)
-
-      // Create new layers with woven lines
-      const newLayer1: FillLayer = {
-        ...layer1,
-        id: `${layer1.id}-woven`,
-        lines: result.layer1,
-        lineCount: result.layer1.length,
-      }
-
-      const newLayer2: FillLayer = {
-        ...layer2,
-        id: `${layer2.id}-woven`,
-        lines: result.layer2,
-        lineCount: result.layer2.length,
-      }
-
-      // Replace the original layers with the woven versions
-      setAccumulatedLayers(prev => {
-        return prev.map(layer => {
-          if (layer.id === layer1.id) return newLayer1
-          if (layer.id === layer2.id) return newLayer2
-          return layer
-        })
-      })
-
-      // Clear selection
-      setSelectedLayerIds(new Set())
-      setIsProcessing(false)
-
-      setStatusMessage(`Weave complete in ${elapsed.toFixed(0)}ms. ${result.layer1.length + result.layer2.length} line segments created.`)
-    }
-  }, [weaveRequested, setWeaveRequested, selectedLayerIds, accumulatedLayers, setStatusMessage, setIsProcessing, weavePattern, weaveGapMargin])
-
-  // Note: Layer selection is now handled by UnifiedLayerList via handleLayerSelectionChange
-
-  // Delete a specific layer
-  const handleDeleteLayer = useCallback((layerId: string) => {
-    setAccumulatedLayers(prev => {
-      const remaining = prev.filter(l => l.id !== layerId)
-      // If exactly 1 layer remains after deletion, auto-select it
-      if (remaining.length === 1) {
-        setSelectedLayerIds(new Set([remaining[0].id]))
-      } else {
-        // Clear selection for deleted layer
-        setSelectedLayerIds(prevIds => {
-          const newIds = new Set(prevIds)
-          newIds.delete(layerId)
-          return newIds
-        })
-      }
-      return remaining
-    })
-    if (selectedLayerId === layerId) {
-      setSelectedLayerId(null)
-    }
-  }, [selectedLayerId])
-
-  // Toggle visibility for a specific layer
-  const handleToggleLayerVisibility = useCallback((layerId: string) => {
-    setAccumulatedLayers(prev => prev.map(l =>
-      l.id === layerId ? { ...l, visible: !l.visible } : l
-    ))
-  }, [])
-
-  // Note: Drag-drop is now handled by UnifiedLayerList via handleLayerReorder
-
-  // Convert FillLayer[] to FillLayerListItem[] for UnifiedLayerList
-  const layerListItems = useMemo<FillLayerListItem[]>(() => {
-    return accumulatedLayers.map((layer) => ({
-      id: layer.id,
-      name: layer.pattern,
-      color: layer.color,
-      fillLayer: layer,
-      // Additional metadata for badges
-      pointCount: layer.lineCount,
-      isVisible: layer.visible,
-    }))
-  }, [accumulatedLayers])
-
-  // Handler for UnifiedLayerList selection changes
-  const handleLayerSelectionChange = useCallback((ids: Set<string>) => {
-    setSelectedLayerIds(ids)
-    // If single selection, also load settings
-    if (ids.size === 1) {
-      const layerId = Array.from(ids)[0]
-      const layer = accumulatedLayers.find(l => l.id === layerId)
-      if (layer) {
-        setAngle(layer.angle)
-        setLineSpacing(layer.lineSpacing)
-        setFillPattern(layer.pattern)
-        setInset(layer.inset)
-        setLayerColor(layer.color)
-      }
-    }
-  }, [accumulatedLayers])
-
-  // Handler for UnifiedLayerList reorder (flat mode)
-  const handleLayerReorder = useCallback((fromIndex: number, toIndex: number) => {
-    setAccumulatedLayers(prev => {
-      const newLayers = [...prev]
-      const [dragged] = newLayers.splice(fromIndex, 1)
-      newLayers.splice(toIndex, 0, dragged)
-      return newLayers
-    })
-  }, [])
-
-  // Fetch pattern banners for layers that don't have cached previews
+  // Fetch pattern banners
   useEffect(() => {
     if (!window.electron?.patternBanner) return
 
-    // Get unique pattern+spacing combinations that need banners
     const needed = new Map<string, { pattern: string; spacing: number }>()
     accumulatedLayers.forEach(layer => {
       const key = `${layer.pattern}|${layer.lineSpacing}`
@@ -1348,37 +548,34 @@ export default function FillTab() {
 
     if (needed.size === 0) return
 
-    // Fetch each banner
     needed.forEach(async ({ pattern, spacing }, key) => {
       try {
-        // Use pattern name hash as seed for consistency
         const seed = pattern.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
         const svg = await window.electron!.patternBanner({
           pattern,
           spacing,
           seed,
-          width: 2,      // narrow rectangle (2 inches)
-          height: 0.5,   // short height (0.5 inch)
-          cells: 1,      // single cell for clean preview
+          width: 2,
+          height: 0.5,
+          cells: 1,
         })
         setBannerCache(prev => new Map(prev).set(key, svg))
       } catch (err) {
         console.warn(`[FillTab] Failed to generate banner for ${pattern}:`, err)
       }
     })
-  }, [accumulatedLayers, bannerCache])
+  }, [accumulatedLayers, bannerCache, setBannerCache])
 
-  // Get cached banner preview for a layer, or fall back to color swatch
+  // Get cached banner preview for a layer
   const getLayerPreview = useCallback((layer: FillLayer): string | null => {
     const key = `${layer.pattern}|${layer.lineSpacing}`
     return bannerCache.get(key) || null
   }, [bannerCache])
 
   // Render function for layer list items
-  const renderLayerItem = useCallback((item: FillLayerListItem, state: ItemRenderState) => {
+  const renderLayerItem = useCallback((item: FillLayerListItem, itemState: ItemRenderState) => {
     const layer = item.fillLayer
     const bannerSvg = getLayerPreview(layer)
-    // Apply layer color to banner SVG by replacing stroke colors
     const coloredBanner = bannerSvg
       ? bannerSvg.replace(/stroke="[^"]*"/g, `stroke="${layer.color}"`)
       : null
@@ -1387,28 +584,28 @@ export default function FillTab() {
       <div className="accumulated-layer-item-content">
         <span className="layer-drag-handle">⋮⋮</span>
         <button
-          className={`layer-visibility-btn ${state.isVisible ? 'visible' : 'hidden'}`}
+          className={`layer-visibility-btn ${itemState.isVisible ? 'visible' : 'hidden'}`}
           onClick={(e) => {
             e.stopPropagation()
             handleToggleLayerVisibility(layer.id)
           }}
-          title={state.isVisible ? 'Hide layer' : 'Show layer'}
+          title={itemState.isVisible ? 'Hide layer' : 'Show layer'}
         >
-          {state.isVisible ? '👁' : '👁‍🗨'}
+          {itemState.isVisible ? '👁' : '👁‍🗨'}
         </button>
         {coloredBanner ? (
           <span
             className="layer-preview"
-            style={{ opacity: state.isVisible ? 1 : 0.4 }}
+            style={{ opacity: itemState.isVisible ? 1 : 0.4 }}
             dangerouslySetInnerHTML={{ __html: coloredBanner }}
           />
         ) : (
           <span
             className="layer-color-swatch"
-            style={{ backgroundColor: layer.color, opacity: state.isVisible ? 1 : 0.4 }}
+            style={{ backgroundColor: layer.color, opacity: itemState.isVisible ? 1 : 0.4 }}
           />
         )}
-        <span className="layer-info" style={{ opacity: state.isVisible ? 1 : 0.5 }}>
+        <span className="layer-info" style={{ opacity: itemState.isVisible ? 1 : 0.5 }}>
           <span className="layer-pattern">{layer.pattern}</span>
           <span className="layer-details">{layer.angle}° • {layer.penWidth}mm • {layer.lineCount.toLocaleString()}</span>
         </span>
@@ -1429,20 +626,16 @@ export default function FillTab() {
         </button>
       </div>
     )
-  }, [handleDeleteLayer, handleToggleLayerVisibility, getLayerPreview])
+  }, [handleDeleteLayer, handleToggleLayerVisibility, getLayerPreview, setSelectedLayerIds])
 
   const handleNavigateToOrder = useCallback(() => {
     if (!boundingBox || simplifiedHatchedPaths.length === 0) return
 
-    // Show processing state while optimizing
     setIsProcessing(true)
 
-    // Use setTimeout to let UI update before running expensive optimization
     setTimeout(() => {
-      // Run optimization now (deferred from preview for responsiveness)
       const optimizedLines = optimizeLineOrderMultiPass(simplifiedHatchedPaths)
 
-      // Convert optimized lines to OrderLine format
       const orderLines = optimizedLines.map(line => ({
         x1: line.x1,
         y1: line.y1,
@@ -1452,14 +645,11 @@ export default function FillTab() {
         pathId: line.pathId,
       }))
 
-      // Set order data and navigate to Order tab
       setOrderData({
         lines: orderLines,
         boundingBox,
         source: 'fill',
-        onApply: (_orderedLines, _improvement) => {
-          // When apply is clicked in Order tab, apply the fill
-          // Note: improvement is tracked by handleApplyFill which sets optimizationState.fillApplied
+        onApply: () => {
           handleApplyFill()
         },
       })
@@ -1467,8 +657,6 @@ export default function FillTab() {
       setActiveTab('order')
     }, 0)
   }, [boundingBox, simplifiedHatchedPaths, setOrderData, setActiveTab, handleApplyFill, setIsProcessing])
-
-  // Pan/zoom is now handled by usePanZoom hook
 
   if (!svgContent) {
     return (
@@ -1531,7 +719,7 @@ export default function FillTab() {
             </div>
           </div>
 
-          {/* Accumulated layers list - always show */}
+          {/* Accumulated layers list */}
           <div className="accumulated-layers-list">
             <div className="accumulated-layers-header">
               <span>{accumulatedLayers.length} layer{accumulatedLayers.length !== 1 ? 's' : ''}</span>
@@ -1806,7 +994,7 @@ export default function FillTab() {
             </div>
           </div>
 
-          {/* Fill Color controls - moved from left sidebar */}
+          {/* Fill Color controls */}
           <div className="fill-section">
             <h3>Fill Color</h3>
             <div className="fill-control">
@@ -2053,7 +1241,7 @@ export default function FillTab() {
                 <div className="fill-control">
                   <label>Tile Shape</label>
                   <div className="tile-shape-selector">
-                    {(Object.keys(TILE_SHAPES) as TileShapeType[]).map(shape => (
+                    {(Object.keys(TILE_SHAPES) as (keyof typeof TILE_SHAPES)[]).map(shape => (
                       <button
                         key={shape}
                         className={`tile-shape-btn ${customTileShape === shape ? 'active' : ''}`}
@@ -2166,11 +1354,6 @@ export default function FillTab() {
               </label>
               <span className="control-hint">Union all shapes into one (for text/logos)</span>
             </div>
-
-{/* Evenodd fill rule is always enabled - it correctly handles compound paths
-                (like the Three Needs bar logo) by filling areas inside an odd number of
-                polygon boundaries. The checkbox was removed since there's no reason to
-                disable it - standard fill mode produces incorrect results for compound paths. */}
           </div>
 
           <div className="fill-actions">
