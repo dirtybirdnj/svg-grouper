@@ -1,282 +1,22 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
-import { useAppContext } from '../../context/AppContext'
-import { SVGNode, OptimizationState } from '../../types/svg'
-import defaultPaperSizes from '../../config/paperSizes.json'
+import { useAppContext } from '../../../context/AppContext'
 import fontColorContrast from 'font-color-contrast'
-import { optimizeForPlotter } from '../../utils/geometry'
-import { getPlotterColor } from '../../utils/elementColor'
-import { MM_TO_PX, UI } from '../../constants'
+import { optimizeForPlotter } from '../../../utils/geometry'
+import { getPlotterColor } from '../../../utils/elementColor'
+import { MM_TO_PX, UI } from '../../../constants'
 import './ExportTab.css'
 
-// Paper size type
-interface PaperSize {
-  id: string
-  label: string
-  width: number
-  height: number
-  unit: string
-}
+// Import types and utilities from module
+import { PaperSize, COMMAND_NAMES } from './types'
+import { analyzeSVG, analyzeOptimizationState, formatBytes } from './svgAnalysis'
+import { loadPaperSizes, savePaperSizes, getDefaultPaperSizes } from './paperSizes'
+import { usePageLayout } from './usePageLayout'
 
-// Local storage key for custom paper sizes
-const PAPER_SIZES_STORAGE_KEY = 'svg-grouper-paper-sizes'
-
-// Load paper sizes from localStorage or use defaults
-function loadPaperSizes(): PaperSize[] {
-  try {
-    const stored = localStorage.getItem(PAPER_SIZES_STORAGE_KEY)
-    if (stored) {
-      const parsed = JSON.parse(stored)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed
-      }
-    }
-  } catch (e) {
-    console.error('Failed to load paper sizes from localStorage:', e)
-  }
-  return defaultPaperSizes.paperSizes as PaperSize[]
-}
-
-// Save paper sizes to localStorage
-function savePaperSizes(sizes: PaperSize[]): void {
-  try {
-    localStorage.setItem(PAPER_SIZES_STORAGE_KEY, JSON.stringify(sizes))
-  } catch (e) {
-    console.error('Failed to save paper sizes to localStorage:', e)
-  }
-}
-
-interface ColorStats {
-  color: string
-  paths: number
-  points: number
-}
-
-interface SVGStatistics {
-  totalNodes: number
-  totalPaths: number
-  totalGroups: number
-  totalShapes: number
-  maxDepth: number
-  colorPalette: ColorStats[]
-  operationCounts: Record<string, number>
-  layerStats: { name: string; paths: number; depth: number; colors: string[] }[]
-}
-
-function analyzeSVG(nodes: SVGNode[]): SVGStatistics {
-  const stats: SVGStatistics = {
-    totalNodes: 0,
-    totalPaths: 0,
-    totalGroups: 0,
-    totalShapes: 0,
-    maxDepth: 0,
-    colorPalette: [],
-    operationCounts: {},
-    layerStats: [],
-  }
-
-  // Track paths and points per color
-  const colorStats = new Map<string, { paths: number; points: number }>()
-
-  const countOperations = (element: Element) => {
-    const d = element.getAttribute('d')
-    if (d) {
-      // Count path commands
-      const commands = d.match(/[MLHVCSQTAZ]/gi) || []
-      commands.forEach(cmd => {
-        const key = cmd.toUpperCase()
-        stats.operationCounts[key] = (stats.operationCounts[key] || 0) + 1
-      })
-    }
-  }
-
-  // Count points in a path's d attribute
-  const countPoints = (element: Element): number => {
-    const d = element.getAttribute('d')
-    if (!d) return 0
-    // Count all path commands (each represents a point or control point)
-    const commands = d.match(/[MLHVCSQTAZ]/gi) || []
-    return commands.length
-  }
-
-  const addColorStats = (color: string, paths: number, points: number) => {
-    const existing = colorStats.get(color)
-    if (existing) {
-      existing.paths += paths
-      existing.points += points
-    } else {
-      colorStats.set(color, { paths, points })
-    }
-  }
-
-  const traverse = (node: SVGNode, depth: number) => {
-    stats.totalNodes++
-    stats.maxDepth = Math.max(stats.maxDepth, depth)
-
-    if (node.isGroup) {
-      stats.totalGroups++
-    }
-
-    const tagName = node.element.tagName.toLowerCase()
-    if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) {
-      stats.totalPaths++
-      countOperations(node.element)
-
-      // Track color stats
-      const color = getPlotterColor(node.element, node.fillColor)
-      if (color) {
-        const points = countPoints(node.element)
-        addColorStats(color, 1, points)
-      }
-    }
-
-    if (['rect', 'circle', 'ellipse'].includes(tagName)) {
-      stats.totalShapes++
-    }
-
-    node.children.forEach(child => traverse(child, depth + 1))
-  }
-
-  // Calculate layer stats
-  const collectLayerStats = (node: SVGNode, depth: number) => {
-    let pathCount = 0
-    const layerColors = new Set<string>()
-
-    const collectFromNode = (n: SVGNode) => {
-      const tagName = n.element.tagName.toLowerCase()
-      if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) {
-        pathCount++
-      }
-
-      // Check for fillColor from line fill (customMarkup nodes)
-      if (n.fillColor) {
-        layerColors.add(n.fillColor)
-      }
-
-      // Extract colors from this element
-      const fill = n.element.getAttribute('fill')
-      const stroke = n.element.getAttribute('stroke')
-      const style = n.element.getAttribute('style')
-
-      if (fill && fill !== 'none' && fill !== 'transparent') {
-        layerColors.add(fill)
-      }
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') {
-        layerColors.add(stroke)
-      }
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') layerColors.add(fillMatch[1].trim())
-        if (strokeMatch && strokeMatch[1] !== 'none') layerColors.add(strokeMatch[1].trim())
-      }
-
-      n.children.forEach(collectFromNode)
-    }
-    collectFromNode(node)
-
-    stats.layerStats.push({
-      name: node.name || node.id,
-      paths: pathCount,
-      depth,
-      colors: Array.from(layerColors),
-    })
-
-    node.children.forEach(child => {
-      if (child.isGroup) {
-        collectLayerStats(child, depth + 1)
-      }
-    })
-  }
-
-  nodes.forEach(node => {
-    traverse(node, 0)
-    if (node.isGroup) {
-      collectLayerStats(node, 0)
-    }
-  })
-
-  // Convert colorStats map to sorted array (heaviest first by paths + points)
-  stats.colorPalette = Array.from(colorStats.entries())
-    .map(([color, data]) => ({ color, paths: data.paths, points: data.points }))
-    .sort((a, b) => (b.paths + b.points) - (a.paths + a.points))
-
-  return stats
-}
-
-// Analyze optimization state of layers
-interface OptimizationSummary {
-  totalLayers: number
-  fillApplied: { node: SVGNode; state: NonNullable<OptimizationState['fillApplied']> }[]
-  orderOptimized: { node: SVGNode; state: NonNullable<OptimizationState['orderOptimized']> }[]
-  unoptimized: SVGNode[]
-  partiallyOptimized: SVGNode[] // Has fill but no order optimization
-}
-
-function analyzeOptimizationState(nodes: SVGNode[]): OptimizationSummary {
-  const summary: OptimizationSummary = {
-    totalLayers: 0,
-    fillApplied: [],
-    orderOptimized: [],
-    unoptimized: [],
-    partiallyOptimized: [],
-  }
-
-  const traverse = (node: SVGNode) => {
-    // Only count leaf nodes or groups with customMarkup (fill applied)
-    const isLeaf = node.children.length === 0 || node.customMarkup
-    if (isLeaf) {
-      summary.totalLayers++
-
-      const opt = node.optimizationState
-      const hasFill = !!opt?.fillApplied
-      const hasOrder = !!opt?.orderOptimized
-
-      if (hasFill && opt?.fillApplied) {
-        summary.fillApplied.push({ node, state: opt.fillApplied })
-      }
-      if (hasOrder && opt?.orderOptimized) {
-        summary.orderOptimized.push({ node, state: opt.orderOptimized })
-      }
-
-      if (hasFill && !hasOrder) {
-        summary.partiallyOptimized.push(node)
-      } else if (!hasFill && !hasOrder) {
-        // Only count as unoptimized if it has drawable content
-        const tagName = node.element.tagName.toLowerCase()
-        if (['path', 'line', 'polyline', 'polygon', 'rect', 'circle', 'ellipse'].includes(tagName) || node.customMarkup) {
-          summary.unoptimized.push(node)
-        }
-      }
-    }
-
-    // Continue traversing
-    node.children.forEach(traverse)
-  }
-
-  nodes.forEach(traverse)
-  return summary
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
-}
-
-const COMMAND_NAMES: Record<string, string> = {
-  'M': 'MoveTo',
-  'L': 'LineTo',
-  'H': 'HorizLineTo',
-  'V': 'VertLineTo',
-  'C': 'CurveTo',
-  'S': 'SmoothCurve',
-  'Q': 'QuadCurve',
-  'T': 'SmoothQuad',
-  'A': 'Arc',
-  'Z': 'ClosePath',
-}
+// Types and utilities imported from module files:
+// - analyzeSVG, analyzeOptimizationState, formatBytes from ./svgAnalysis.ts
+// - PaperSize, Margins, COMMAND_NAMES from ./types.ts
+// - loadPaperSizes, savePaperSizes, getDefaultPaperSizes from ./paperSizes.ts
+// - usePageLayout hook handles pageDimensions and pageLayout calculations
 
 export default function ExportTab() {
   const { svgContent, svgDimensions, layerNodes, fileName, svgElementRef, optimizationSettings, setActiveTab } = useAppContext()
@@ -346,72 +86,21 @@ export default function ExportTab() {
 
   // Reset to defaults
   const handleResetPaperSizes = () => {
-    const defaults = defaultPaperSizes.paperSizes as PaperSize[]
+    const defaults = getDefaultPaperSizes()
     setEditingPaperSizes(JSON.stringify(defaults, null, 2))
   }
 
-  // Calculate page dimensions based on paper size and orientation
-  const pageDimensions = useMemo(() => {
-    const size = paperSizes.find(s => s.id === paperSize)
-    if (!size) return null
-
-    const width = orientation === 'portrait' ? size.width : size.height
-    const height = orientation === 'portrait' ? size.height : size.width
-
-    return { width, height, widthPx: width * MM_TO_PX, heightPx: height * MM_TO_PX }
-  }, [paperSize, orientation, paperSizes])
-
-  // Calculate printable area and content transform
-  const pageLayout = useMemo(() => {
-    if (!pageDimensions || !svgDimensions) return null
-
-    const printableWidth = pageDimensions.width - margins.left - margins.right
-    const printableHeight = pageDimensions.height - margins.top - margins.bottom
-
-    if (printableWidth <= 0 || printableHeight <= 0) return null
-
-    // Apply design inset - this crops into the design from each edge
-    // The inset is in mm, need to convert to content's coordinate space
-    const insetPx = designInset * MM_TO_PX
-    const croppedWidth = Math.max(1, svgDimensions.width - insetPx * 2)
-    const croppedHeight = Math.max(1, svgDimensions.height - insetPx * 2)
-    const croppedWidthMm = croppedWidth / MM_TO_PX
-    const croppedHeightMm = croppedHeight / MM_TO_PX
-
-    // Calculate scale to fit cropped content in printable area
-    let scale = 1
-    if (scaleToFit) {
-      const scaleX = printableWidth / croppedWidthMm
-      const scaleY = printableHeight / croppedHeightMm
-      scale = Math.min(scaleX, scaleY) // Fit to printable area (can scale up or down)
-    }
-
-    const scaledWidth = croppedWidthMm * scale
-    const scaledHeight = croppedHeightMm * scale
-
-    // Calculate offset to center content in printable area
-    let offsetX = margins.left
-    let offsetY = margins.top
-
-    if (centerContent) {
-      offsetX = margins.left + (printableWidth - scaledWidth) / 2
-      offsetY = margins.top + (printableHeight - scaledHeight) / 2
-    }
-
-    return {
-      printableWidth,
-      printableHeight,
-      scale,
-      scaledWidth,
-      scaledHeight,
-      offsetX,
-      offsetY,
-      // Store inset in px for transform calculation
-      insetPx,
-      croppedWidthMm,
-      croppedHeightMm,
-    }
-  }, [pageDimensions, svgDimensions, margins, scaleToFit, centerContent, designInset])
+  // Use hook for page dimensions and layout calculation
+  const { pageDimensions, pageLayout } = usePageLayout({
+    paperSizes,
+    paperSize,
+    orientation,
+    margins,
+    scaleToFit,
+    centerContent,
+    designInset,
+    svgDimensions,
+  })
 
   // Calculate base preview scale to fit the page in the preview area
   useEffect(() => {
