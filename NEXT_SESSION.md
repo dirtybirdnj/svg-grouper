@@ -1,55 +1,123 @@
-# Next Session: Fill Tab & Export Improvements
+# Next Session: Codebase Modularization
 
-## Completed This Session
+## Completed This Session - Phase 1: Utility Modularization
 
-- **Merge Tab Fill Readiness UI** - Added fill readiness indicators to help users identify shapes that need merging before fill:
-  - `FillReadinessBadge` component showing green/orange/red status for each shape
-  - Summary banner at top showing overall readiness with counts
-  - Shapes with shared edges marked as "issue" (need merging)
-  - Compound paths with many subpaths marked as "warning"
-  - Isolated shapes shown as "ready" (green checkmark)
+Successfully modularized 6 large utility files into directory structures with barrel exports:
 
-- **Pattern Preview Swatch Fix** - Updated `pattern-banner` handler to use rat-king's new `banner` command:
-  - Single cell (`-n 1`) for clean preview
-  - Narrow rectangle (2" x 0.5") for consistent display
-  - Quiet mode (`-q`) to suppress info messages
-  - Uses `-p pattern` for single-pattern mode
+| File | Before | After | Purpose |
+|------|--------|-------|---------|
+| `svgParser.ts` | 328 lines | 4 files | SVG parsing, node extraction |
+| `colorDistance.ts` | 563 lines | 6 files | LAB color space, clustering, palette ops |
+| `svgDimensions.ts` | 578 lines | 7 files | ViewBox, unit conversion, normalization |
+| `fillPatterns.ts` | 609 lines | 5 files | Line ordering, travel optimization |
+| `cropSVG.ts` | 689 lines | 7 files | Cohen-Sutherland clipping, element cropping |
+| `pathAnalysis.ts` | 389 lines | 5 files | Subpath parsing, winding direction, diagnostics |
+
+**Total: 3,156 lines → 34 focused files**
+
+### Directory Structure Created
+
+```
+src/utils/
+├── svgParser/
+│   ├── types.ts
+│   ├── elementParsing.ts
+│   ├── progressiveParser.ts
+│   └── index.ts
+├── colorDistance/
+│   ├── types.ts
+│   ├── colorConversion.ts
+│   ├── distanceMetrics.ts
+│   ├── clustering.ts
+│   ├── paletteOperations.ts
+│   └── index.ts
+├── svgDimensions/
+│   ├── types.ts
+│   ├── unitConversion.ts
+│   ├── viewBoxUtils.ts
+│   ├── dimensionAnalysis.ts
+│   ├── elementTransforms.ts
+│   ├── normalization.ts
+│   └── index.ts
+├── fillPatterns/
+│   ├── types.ts
+│   ├── shapeUtils.ts
+│   ├── lineJoining.ts
+│   ├── lineOptimization.ts
+│   └── index.ts
+├── cropSVG/
+│   ├── types.ts
+│   ├── pathParsing.ts
+│   ├── lineClipping.ts
+│   ├── elementIntersection.ts
+│   ├── elementClipping.ts
+│   ├── cropSVG.ts
+│   └── index.ts
+└── pathAnalysis/
+    ├── types.ts
+    ├── subpathParsing.ts
+    ├── geometryCalc.ts
+    ├── diagnostics.ts
+    └── index.ts
+```
+
+---
+
+## In Progress: Modularization Plan
+
+### Goals
+1. **Reduce context for AI agents** - Smaller, focused files allow agents to work with less context
+2. **Improve code organization** - Single responsibility principle for each module
+3. **Enable parallel development** - Multiple agents can work on different modules simultaneously
+4. **Better maintainability** - Easier to understand, test, and modify individual modules
+
+### Remaining Phases
+
+#### Phase 2: Shared Components (~500 lines each)
+- `SVGCanvas.tsx` - Canvas rendering, zoom, pan
+- `LayerTree.tsx` - Tree view component
+- `ImportDialog.tsx` - File import UI
+- `UnifiedLayerList.tsx` - Layer management
+
+#### Phase 3: Context Refactoring
+- `AppContext.tsx` (~800 lines) - Split into domain-specific contexts
+
+#### Phase 4: Medium Components
+- `PatternTest.tsx` - Pattern testing UI
+- `OrderTab.tsx` - Ordering tab
+
+#### Phase 5: Large Tabs (Future)
+- `MergeTab.tsx` - Color merging
+- `ExportTab.tsx` - Export functionality
+- `FillTab.tsx` - Fill pattern application
+- `SortTab.tsx` - Sorting and layer management
+- `App.tsx` - Main application
 
 ---
 
 ## Previous Session Completed
 
-- **Banner ENOENT fix** - Switched `pattern-banner` handler to stdout mode (`-o -`)
-- **Transform baking** - Rewrote `normalize_svg.py` to fully bake all transforms into coordinates
-- **Merge before fill** - Added checkbox option to union all shapes before filling (for text/logos)
-- **Smart warning banner** - Shows warning when >3 shapes detected, with "Go to Merge Tab" and "Enable Merge" buttons
+- **Merge Tab Fill Readiness UI** - Added fill readiness indicators
+- **Pattern Preview Swatch Fix** - Updated `pattern-banner` handler
+- **Banner ENOENT fix** - Switched to stdout mode
+- **Transform baking** - Rewrote `normalize_svg.py`
+- **Merge before fill** - Added checkbox option
+- **Smart warning banner** - Shows warning when >3 shapes detected
 
 ---
 
-## Remaining Issues / Future Work
+## Questions for Next Session
 
-### 1. Gap Detection Between Shapes (Enhancement)
+1. **Phase 2 Priority**: Should we prioritize shared components (SVGCanvas, LayerTree) or move directly to tab refactoring?
 
-**Description:** Currently the merge tab detects shared edges, but doesn't detect shapes that are very close but not quite touching (small gaps that cause fill artifacts).
+2. **Context Split Strategy**: AppContext has ~800 lines. Options:
+   - Split by feature (SVGContext, SelectionContext, ToolContext)
+   - Split by lifecycle (LoadContext, EditContext, ExportContext)
+   - Keep unified but extract helper hooks
 
-**Implementation Ideas:**
-- Compute distance between nearest points of non-adjacent shapes
-- Flag shapes within threshold distance (e.g., < 0.5px) as potential issues
-- Suggest merging or checking alignment
+3. **Testing**: Should we add unit tests as we modularize, or defer testing?
 
-### 2. Pattern Preview in Layer List (Enhancement)
-
-**Current State:** Banner previews are fetched asynchronously and cached. Could improve by:
-- Pre-generating common pattern banners at app startup
-- Adding loading spinner while fetching
-- Better error handling when rat-king binary not found
-
-### 3. Export Tab UX Improvements
-
-**Ideas:**
-- Show estimated export time based on line count
-- Progress indicator during export
-- Preview of output dimensions
+4. **Bundle Size**: The build shows chunks >500KB. Should we implement code splitting during this refactor?
 
 ---
 
