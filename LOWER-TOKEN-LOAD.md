@@ -362,3 +362,505 @@ const renderItem = (item: MyTabListItem, state: ItemRenderState) => (
   renderItem={renderItem}
 />
 ```
+
+---
+
+# Detailed Extraction Plans
+
+## SortTab.tsx Extraction Plan (3,146 lines → ~300 lines)
+
+### File Structure Overview
+
+| Section | Lines | Description |
+|---------|-------|-------------|
+| Imports | 1-56 | React, context, utils, components |
+| Constants | 57-72 | GRID_SIZE, MIN_ZOOM, MAX_ZOOM |
+| Helper Functions | 73-260 | flattenLayer, getLayerPathCount, etc. |
+| Type Definitions | 261-310 | TreeItem, FlatItem, DragState |
+| Main Component | 311-3146 | SortTab function |
+
+### Extraction Order (Dependencies → Dependents)
+
+#### Step 1: Extract Types & Constants → `sortTypes.ts` (~100 lines)
+```
+Lines 57-72:   Constants (GRID_SIZE, MIN_ZOOM, MAX_ZOOM, colors)
+Lines 261-310: Types (TreeItem, FlatItem, DragState, etc.)
+```
+
+#### Step 2: Extract Pure Helpers → `layerHelpers.ts` (~190 lines)
+```
+Lines 73-130:  flattenLayer() - recursive layer flattening
+Lines 131-160: getLayerPathCount() - path counting
+Lines 161-200: getChildBounds() - bounding box calculation
+Lines 201-260: createTreeItems() - tree structure creation
+```
+
+#### Step 3: Extract `useSortByType` Hook (~270 lines)
+```
+Lines 420-690: handleSortByType logic including:
+  - Path extraction from layers
+  - Color-based grouping
+  - Dimension-based sorting
+  - Layer reconstruction
+```
+
+#### Step 4: Extract `useWeld` Hook (~280 lines)
+```
+Lines 750-1030: Weld operations:
+  - handleWeld() - main weld function
+  - weldSelectedPaths() - path merging
+  - reconstructLayerWithWeldedPaths()
+  - Clipper library integration
+```
+
+#### Step 5: Extract `useFlattenAll` Hook (~200 lines)
+```
+Lines 1100-1300: Flatten operations:
+  - handleFlattenAll()
+  - flattenSelectedGroups()
+  - Recursive group flattening logic
+```
+
+#### Step 6: Extract `useKeyboardShortcuts` Hook (~150 lines)
+```
+Lines 2800-2950: Keyboard handlers:
+  - Delete, Escape, Enter shortcuts
+  - Arrow key navigation
+  - Modifier key combinations
+```
+
+#### Step 7: Extract `SortCanvas` Component (~450 lines)
+```
+Lines 1500-1950: Canvas rendering:
+  - SVG rendering with pan/zoom
+  - Mouse handlers (pan, select, drag)
+  - Grid overlay
+  - Selection rectangles
+  - viewBox calculations
+```
+
+#### Step 8: Extract `SortToolbar` Component (~200 lines)
+```
+Lines 2950-3100: Toolbar buttons:
+  - Group/Ungroup buttons
+  - Sort dropdown
+  - Flatten button
+  - Weld button
+```
+
+### Final Directory Structure
+
+```
+src/components/tabs/SortTab/
+├── index.ts                 # Re-exports SortTab
+├── SortTab.tsx              # Main component (~300 lines)
+├── SortTab.css              # Styles (existing)
+├── components/
+│   ├── SortCanvas.tsx       # Canvas rendering (~450 lines)
+│   ├── SortToolbar.tsx      # Toolbar actions (~200 lines)
+│   └── SortLayerItem.tsx    # Custom list item (~150 lines)
+├── hooks/
+│   ├── useSortByType.ts     # Sort operations (~270 lines)
+│   ├── useWeld.ts           # Weld operations (~280 lines)
+│   ├── useFlattenAll.ts     # Flatten operations (~200 lines)
+│   └── useKeyboardShortcuts.ts # Key handlers (~150 lines)
+└── utils/
+    ├── sortTypes.ts         # Types & constants (~100 lines)
+    └── layerHelpers.ts      # Pure helper functions (~190 lines)
+```
+
+---
+
+## FillTab.tsx Extraction Plan (2,831 lines → ~300 lines)
+
+### File Structure Overview
+
+| Section | Lines | Description |
+|---------|-------|-------------|
+| Imports | 1-68 | React, context, types, components |
+| Types | 69-180 | FillLayerItem, PatternSettings, etc. |
+| Constants | 181-220 | Default pattern values, color lists |
+| Weave Algorithm | 221-490 | generateWeavePattern, WeaveCell, etc. |
+| Main Component | 491-2831 | FillTab function |
+
+### Extraction Order
+
+#### Step 1: Extract Types → `fillTypes.ts` (~120 lines)
+```
+Lines 69-180:  Interface definitions:
+  - FillLayerItem
+  - PatternSettings
+  - FillProgress
+  - LayerFillResult
+```
+
+#### Step 2: Extract Constants → `patternDefaults.ts` (~50 lines)
+```
+Lines 181-220: Default values:
+  - DEFAULT_SPACING
+  - DEFAULT_ANGLE
+  - PATTERN_PRESETS
+  - COLOR_SWATCHES
+```
+
+#### Step 3: Extract Weave Algorithm → `weaveAlgorithm.ts` (~270 lines)
+```
+Lines 221-490: Weave pattern generation:
+  - WeaveCell interface
+  - generateWeavePattern()
+  - calculateWeaveIntersections()
+  - clipWeaveToPolygon()
+```
+
+#### Step 4: Extract `useFillGeneration` Hook (~350 lines)
+```
+Lines 600-950: Fill orchestration:
+  - handleGenerateFill()
+  - Progress tracking
+  - Layer accumulation
+  - Error handling
+  - rat-king CLI integration
+```
+
+#### Step 5: Extract `usePatternBanners` Hook (~120 lines)
+```
+Lines 1100-1220: Banner preview management:
+  - fetchPatternBanner()
+  - Banner cache state
+  - Async loading logic
+```
+
+#### Step 6: Extract `FillLayerItem` Component (~180 lines)
+```
+Lines 1400-1580: Custom list item renderer:
+  - Pattern preview swatch
+  - Fill status indicators
+  - Action buttons (regenerate, remove)
+```
+
+#### Step 7: Extract `PatternSettings` Component (~400 lines)
+```
+Lines 1700-2100: Pattern configuration UI:
+  - Pattern type selector
+  - Spacing/angle controls
+  - Preview canvas
+  - Preset buttons
+```
+
+#### Step 8: Extract `FillCanvas` Component (~400 lines)
+```
+Lines 2200-2600: Preview canvas:
+  - SVG rendering
+  - Fill preview overlay
+  - Pan/zoom handlers
+  - Progress indicator overlay
+```
+
+### Final Directory Structure
+
+```
+src/components/tabs/FillTab/
+├── index.ts                  # Re-exports FillTab
+├── FillTab.tsx               # Main component (~300 lines)
+├── FillTab.css               # Styles (existing)
+├── components/
+│   ├── FillCanvas.tsx        # Preview canvas (~400 lines)
+│   ├── FillLayerItem.tsx     # List item renderer (~180 lines)
+│   ├── PatternSettings.tsx   # Pattern controls (~400 lines)
+│   └── FillWarningBanner.tsx # Shape count warning (~80 lines)
+├── hooks/
+│   ├── useFillGeneration.ts  # Fill orchestration (~350 lines)
+│   ├── usePatternBanners.ts  # Banner fetching (~120 lines)
+│   └── useFillProgress.ts    # Progress tracking (~80 lines)
+└── utils/
+    ├── fillTypes.ts          # Type definitions (~120 lines)
+    ├── patternDefaults.ts    # Default values (~50 lines)
+    └── weaveAlgorithm.ts     # Weave pattern logic (~270 lines)
+```
+
+---
+
+## App.tsx Extraction Plan (1,362 lines → ~200 lines)
+
+### File Structure Overview
+
+| Section | Lines | Description |
+|---------|-------|-------------|
+| Imports | 1-45 | React, components, context, utils |
+| Constants | 46-75 | Tab definitions, default state |
+| Main Component | 76-1362 | App function |
+
+### Key Function Blocks to Extract
+
+| Function | Lines | Target |
+|----------|-------|--------|
+| handleFlattenAll | 180-453 | ~273 lines → `useFlattenOperations.ts` |
+| handleOrder | 500-664 | ~164 lines → `useOrderOperations.ts` |
+| handleFillPatternAccept | 700-831 | ~131 lines → `useFillAccept.ts` |
+| Menu command handler | 900-1050 | ~150 lines → `useMenuCommands.ts` |
+| Keyboard shortcuts | 1100-1250 | ~150 lines → `useKeyboardShortcuts.ts` |
+
+### Extraction Order
+
+#### Step 1: Extract Menu Commands → `useMenuCommands.ts` (~150 lines)
+```
+Lines 900-1050: Electron menu handling:
+  - useEffect for menu-command listener
+  - Command routing (open, save, export, etc.)
+  - File dialog integration
+```
+
+#### Step 2: Extract Keyboard Shortcuts → `useKeyboardShortcuts.ts` (~150 lines)
+```
+Lines 1100-1250: Global key handlers:
+  - Cmd+S (save)
+  - Cmd+O (open)
+  - Cmd+Z (undo)
+  - Escape (cancel)
+```
+
+#### Step 3: Extract Flatten Operations → `useFlattenOperations.ts` (~280 lines)
+```
+Lines 180-453: Flatten logic:
+  - handleFlattenAll()
+  - Layer recursion
+  - Path extraction
+  - Group dissolution
+```
+
+#### Step 4: Extract Order Operations → `useOrderOperations.ts` (~170 lines)
+```
+Lines 500-664: Ordering logic:
+  - handleOrder()
+  - TSP optimization
+  - Layer reordering
+```
+
+#### Step 5: Extract Fill Accept → `useFillAccept.ts` (~140 lines)
+```
+Lines 700-831: Fill result handling:
+  - handleFillPatternAccept()
+  - Layer merging
+  - State updates
+```
+
+#### Step 6: Extract Header Component → `AppHeader.tsx` (~200 lines)
+```
+Lines 1260-1362 (JSX): Header rendering:
+  - Tab buttons
+  - Action buttons (flatten, crop)
+  - Zoom controls
+```
+
+#### Step 7: Extract Status Bar → `AppStatusBar.tsx` (~100 lines)
+```
+Footer JSX: Status bar rendering:
+  - File name
+  - Layer count
+  - Color swatches
+```
+
+### Final Directory Structure
+
+```
+src/
+├── App.tsx                      # Shell component (~200 lines)
+├── App.css                      # Styles (existing)
+├── components/
+│   ├── AppHeader.tsx            # Header bar (~200 lines)
+│   ├── AppStatusBar.tsx         # Status bar (~100 lines)
+│   └── TabContainer.tsx         # Tab switching (~100 lines)
+└── hooks/
+    ├── useMenuCommands.ts       # Electron menus (~150 lines)
+    ├── useKeyboardShortcuts.ts  # Global keys (~150 lines)
+    ├── useFlattenOperations.ts  # Flatten logic (~280 lines)
+    ├── useOrderOperations.ts    # Order logic (~170 lines)
+    └── useFillAccept.ts         # Fill acceptance (~140 lines)
+```
+
+---
+
+## geometry.ts Extraction Plan (1,402 lines → 8 modules)
+
+### File Structure Overview
+
+| Section | Lines | Description |
+|---------|-------|-------------|
+| Imports | 1-15 | Clipper2, external libs |
+| Type Definitions | 16-80 | Point, Polygon, BoundingBox, etc. |
+| Math Utilities | 81-180 | distance, lerp, normalizeAngle |
+| Path Parsing | 181-480 | parsePath, SVG path to points |
+| Polygon Analysis | 481-650 | pointInPolygon, isClockwise, area |
+| SVG Conversion | 651-850 | elementToPolygon, shapeToPath |
+| Clipping Operations | 851-1050 | union, intersect, difference |
+| Line Generation | 1051-1250 | generateHatchLines, fillPolygon |
+| Plotter Optimization | 1251-1402 | optimizePath, sortByDistance |
+
+### Module Extraction Plan
+
+#### Module 1: `geometry/types.ts` (~70 lines)
+```
+Lines 16-80: Core type definitions:
+  - Point interface
+  - Polygon type (Point[][])
+  - BoundingBox interface
+  - PathCommand type
+  - ClipOperation enum
+```
+
+#### Module 2: `geometry/math.ts` (~100 lines)
+```
+Lines 81-180: Pure math functions:
+  - distance(p1, p2)
+  - lerp(a, b, t)
+  - normalizeAngle(angle)
+  - clamp(value, min, max)
+  - degToRad, radToDeg
+```
+
+#### Module 3: `geometry/pathParsing.ts` (~300 lines)
+```
+Lines 181-480: SVG path parsing:
+  - parsePath(d: string): PathCommand[]
+  - pathToPolygon(commands): Polygon
+  - parsePathData() - tokenizer
+  - arcToBezier() - arc conversion
+  - cubicBezierPoints() - curve sampling
+```
+
+#### Module 4: `geometry/polygonAnalysis.ts` (~170 lines)
+```
+Lines 481-650: Polygon analysis:
+  - pointInPolygon(point, polygon)
+  - isClockwise(polygon)
+  - polygonArea(polygon)
+  - polygonCentroid(polygon)
+  - getBoundingBox(polygon)
+```
+
+#### Module 5: `geometry/svgConversion.ts` (~200 lines)
+```
+Lines 651-850: SVG ↔ polygon conversion:
+  - elementToPolygon(svgElement)
+  - polygonToPath(polygon): string
+  - rectToPolygon(x, y, w, h)
+  - circleToPolygon(cx, cy, r, segments)
+  - ellipseToPolygon(cx, cy, rx, ry, segments)
+```
+
+#### Module 6: `geometry/clipping.ts` (~200 lines)
+```
+Lines 851-1050: Boolean operations (Clipper2):
+  - unionPolygons(a, b)
+  - intersectPolygons(a, b)
+  - differencePolygons(a, b)
+  - clipPolygonToRect(polygon, rect)
+  - offsetPolygon(polygon, distance)
+```
+
+#### Module 7: `geometry/lineGeneration.ts` (~200 lines)
+```
+Lines 1051-1250: Fill line generation:
+  - generateHatchLines(polygon, angle, spacing)
+  - generateCrossHatch(polygon, angle, spacing)
+  - clipLinesToPolygon(lines, polygon)
+  - connectHatchLines(lines) - optimize pen travel
+```
+
+#### Module 8: `geometry/plotterOptimization.ts` (~160 lines)
+```
+Lines 1251-1402: Plotter path optimization:
+  - optimizePath(paths) - minimize pen lifts
+  - sortByDistance(paths, startPoint)
+  - findNearestPath(paths, point)
+  - reversePath(path) - for direction optimization
+```
+
+### Final Directory Structure
+
+```
+src/utils/geometry/
+├── index.ts                  # Re-exports all modules
+├── types.ts                  # Type definitions (~70 lines)
+├── math.ts                   # Math utilities (~100 lines)
+├── pathParsing.ts            # SVG path parsing (~300 lines)
+├── polygonAnalysis.ts        # Polygon analysis (~170 lines)
+├── svgConversion.ts          # SVG ↔ polygon (~200 lines)
+├── clipping.ts               # Boolean operations (~200 lines)
+├── lineGeneration.ts         # Hatch/fill lines (~200 lines)
+└── plotterOptimization.ts    # Path optimization (~160 lines)
+```
+
+---
+
+## Execution Priority Matrix
+
+### Phase 1: Quick Wins (No Dependencies)
+
+| Task | File | Lines Saved | Parallel? |
+|------|------|-------------|-----------|
+| geometry → modules | geometry.ts | N/A (reorg) | Yes |
+| App → useKeyboardShortcuts | App.tsx | ~150 | Yes |
+| App → useMenuCommands | App.tsx | ~150 | Yes |
+| FillTab → fillTypes.ts | FillTab.tsx | ~120 | Yes |
+
+### Phase 2: Hook Extractions
+
+| Task | Depends On | Lines |
+|------|------------|-------|
+| SortTab → useSortByType | sortTypes.ts | ~270 |
+| SortTab → useWeld | sortTypes.ts | ~280 |
+| FillTab → useFillGeneration | fillTypes.ts | ~350 |
+| FillTab → weaveAlgorithm.ts | fillTypes.ts | ~270 |
+| App → useFlattenOperations | None | ~280 |
+
+### Phase 3: Component Extractions
+
+| Task | Depends On | Lines |
+|------|------------|-------|
+| SortTab → SortCanvas | hooks done | ~450 |
+| SortTab → SortToolbar | hooks done | ~200 |
+| FillTab → FillCanvas | hooks done | ~400 |
+| FillTab → PatternSettings | fillTypes.ts | ~400 |
+| App → AppHeader | hooks done | ~200 |
+
+### Phase 4: Final Cleanup
+
+| Task | Description |
+|------|-------------|
+| Delete LayerTree.tsx | After SortTab uses UnifiedLayerList |
+| Delete LayerList.tsx | After confirming unused |
+| Update all imports | Point to new module locations |
+| Run full test suite | Verify no regressions |
+
+---
+
+## Agent Assignment Template
+
+When starting an extraction task:
+
+```markdown
+## Task: Extract [component/hook] from [file]
+
+### Input
+- Source file: `src/[path]/[file].tsx`
+- Lines to extract: [start]-[end]
+- Target file: `src/[path]/[new-file].ts`
+
+### Steps
+1. Read source file lines [start]-[end]
+2. Create new file with extracted code
+3. Add necessary imports to new file
+4. Update source file to import from new location
+5. Run `npm run build` to verify
+
+### Dependencies
+- Requires: [list any files that must exist first]
+- Blocks: [list any tasks that depend on this]
+
+### Success Criteria
+- [ ] New file created with extracted code
+- [ ] Source file imports from new location
+- [ ] Build passes with no TypeScript errors
+- [ ] Functionality unchanged
+```
