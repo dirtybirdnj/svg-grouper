@@ -1,10 +1,14 @@
-import { useEffect, useState, useRef, useMemo } from 'react'
+import { useEffect, useState, useRef, useMemo, lazy, Suspense } from 'react'
 import './App.css'
 import { AppProvider, useAppContext, OrderLine } from './context/AppContext'
-import { SortTab, FillTab, ExportTab } from './components/tabs'
-import OrderTab from './components/tabs/OrderTab'
-import MergeTab from './components/tabs/MergeTab'
-import PatternTest from './components/PatternTest'
+
+// Lazy load tabs for code splitting - each tab becomes its own chunk
+const SortTab = lazy(() => import('./components/tabs/SortTab/SortTab'))
+const FillTab = lazy(() => import('./components/tabs/FillTab/FillTab'))
+const ExportTab = lazy(() => import('./components/tabs/ExportTab'))
+const OrderTab = lazy(() => import('./components/tabs/OrderTab'))
+const MergeTab = lazy(() => import('./components/tabs/MergeTab'))
+const PatternTest = lazy(() => import('./components/PatternTest'))
 import { SVGNode } from './types/svg'
 import { ToolsOverlay } from './components/ToolsOverlay'
 import { FillPatternOverlay } from './components/FillPatternOverlay'
@@ -984,23 +988,25 @@ function AppContent() {
         )}
       </header>
       <div className="app-content">
-        {showPatternTest ? (
-          <PatternTest onBack={() => setShowPatternTest(false)} />
-        ) : (
-          <>
-            {activeTab === 'sort' && <SortTab />}
-            {activeTab === 'merge' && <MergeTab />}
-            {activeTab === 'fill' && <FillTab />}
-            {activeTab === 'order' && <OrderTab />}
-            {activeTab === 'export' && <ExportTab />}
-            {(activeTool === 'merge-colors' || activeTool === 'reduce-palette') && (
-              <ToolsOverlay onAccept={handleToolAccept} />
-            )}
-            {activeTool === 'fill-pattern' && (
-              <FillPatternOverlay onAccept={handleFillPatternAccept} />
-            )}
-          </>
-        )}
+        <Suspense fallback={<div className="tab-loading">Loading...</div>}>
+          {showPatternTest ? (
+            <PatternTest onBack={() => setShowPatternTest(false)} />
+          ) : (
+            <>
+              {activeTab === 'sort' && <SortTab />}
+              {activeTab === 'merge' && <MergeTab />}
+              {activeTab === 'fill' && <FillTab />}
+              {activeTab === 'order' && <OrderTab />}
+              {activeTab === 'export' && <ExportTab />}
+              {(activeTool === 'merge-colors' || activeTool === 'reduce-palette') && (
+                <ToolsOverlay onAccept={handleToolAccept} />
+              )}
+              {activeTool === 'fill-pattern' && (
+                <FillPatternOverlay onAccept={handleFillPatternAccept} />
+              )}
+            </>
+          )}
+        </Suspense>
       </div>
     </div>
   )
