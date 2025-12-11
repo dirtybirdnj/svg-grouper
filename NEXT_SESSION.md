@@ -25,7 +25,9 @@
 | `PatternTest.tsx` | Main component orchestrating all features |
 | `index.ts` | Barrel exports |
 
-### SortTab.tsx Hooks Extracted (5 hooks)
+### SortTab.tsx Full Modularization (2562 → 1006 lines, 61% reduction)
+
+**Hooks Integrated (from previous session):**
 | Hook | Purpose |
 |------|---------|
 | `useNodeOperations` | visibility, isolation, delete, reorder |
@@ -34,7 +36,19 @@
 | `usePathHighlight` | path highlighting and point markers |
 | `useFlattenOperations` | flatten all with color grouping |
 
-**Total: ~1,900 lines → 15 files + 5 hooks (~950 lines)**
+**New Hooks Created:**
+| Hook | Lines | Purpose |
+|------|-------|---------|
+| `useSortOperations` | ~400 | Sort by type/size, filter counts, extraction |
+| `usePathOperations` | ~200 | simplify paths, weld compound paths |
+| `useCropHandler` | ~180 | crop SVG with coordinate transformation |
+| `useKeyboardShortcuts` | ~130 | keyboard shortcuts for layer operations |
+
+**Bug Fixes Applied:**
+- Crop coordinate transformation: Fixed ruler padding offset causing misaligned crops
+- Fit to view: Added auto-fit when importing files to maximize display size
+
+**Total: 2562 lines → 1006 lines (61% reduction)**
 
 ---
 
@@ -148,6 +162,7 @@ src/utils/
 ### Large Tabs Still Pending
 | File | Lines | Status |
 |------|-------|--------|
+| `SortTab.tsx` | 1006 | **DONE** - Modularized from 2562 lines |
 | `FillTab.tsx` | 2363 | Has fillUtils.ts, weaveAlgorithm.ts extracted |
 | `ExportTab.tsx` | 1487 | Could extract export handlers |
 | `MergeTab.tsx` | 1377 | Could extract merge logic |

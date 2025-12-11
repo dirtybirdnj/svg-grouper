@@ -8,32 +8,27 @@ import { Rulers, RulerUnit } from '../../shared/Rulers'
 import { ScaleControls } from '../../shared/ScaleControls'
 import { SVGNode } from '../../../types/svg'
 import { parseSVGFlatProgressively } from '../../../utils/svgParser'
-import { normalizeColor } from '../../../utils/colorExtractor'
-import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../../utils/pathSimplify'
-import { linesToCompoundPath, Rect } from '../../../utils/geometry'
-import { cropSVGInBrowser, getCropDimensions } from '../../../utils/cropSVG'
+import { SIMPLIFY_PRESETS } from '../../../utils/pathSimplify'
+import { getCropDimensions } from '../../../utils/cropSVG'
 import { analyzeSVGDimensions } from '../../../utils/svgDimensions'
 import { scaleArtwork } from '../../../utils/svgTransform'
 import {
   findNodeById,
-  updateNodeChildren,
-  removeNodeById,
-  insertNodeAtPosition,
   findSiblings,
-  isDescendant,
-  updateVisibilityForSelected,
-  showAllNodes,
-  isolateNodes,
 } from '../../../utils/nodeUtils'
-import {
-  getElementColor,
-  getNodeColor,
-  getNodeStrokeWidth,
-} from '../../../utils/elementColor'
 import { useArrangeTools } from '../../../hooks/useArrangeTools'
 import { useToolHandlers } from '../../../hooks/useToolHandlers'
-import { collectLines } from './weldUtils'
-import { getElementType } from './elementTypeUtils'
+import {
+  useNodeOperations,
+  useColorOperations,
+  useGroupOperations,
+  usePathHighlight,
+  useFlattenOperations,
+  useSortOperations,
+  usePathOperations,
+  useCropHandler,
+  useKeyboardShortcuts,
+} from './hooks'
 import { collectAllColorsWithCounts, extractPathInfo, extractGroupInfo } from './pathAnalysis'
 import StatusBar from './StatusBar'
 import SidebarToolbar from './SidebarToolbar'
@@ -89,6 +84,9 @@ export default function SortTab() {
   // Ref for the canvas container to get its dimensions
   const canvasContainerRef = useRef<HTMLDivElement>(null)
 
+  // Track when we need to fit the SVG to the viewport
+  const needsFitToView = useRef(false)
+
   const [sidebarWidth, setSidebarWidth] = useState(300)
   const [isResizing, setIsResizing] = useState(false)
   const [deleteArmed, setDeleteArmed] = useState(false)
@@ -99,7 +97,6 @@ export default function SortTab() {
   const [showFilterToolbar, setShowFilterToolbar] = useState(false)
   const [layerProcessingStates] = useState<Record<string, 'pending' | 'processing' | 'complete'>>({})
   const [isIsolated, setIsIsolated] = useState(false)
-  const [highlightedPathId, setHighlightedPathId] = useState<string | null>(null)
 
   // Ruler and scaling state
   const [showRulers, setShowRulers] = useState(false)
@@ -138,10 +135,6 @@ export default function SortTab() {
     setStatusMessage,
   })
 
-  const [isHighlightPersistent, setIsHighlightPersistent] = useState(false)
-  const [showPointMarkers, setShowPointMarkers] = useState<'none' | 'start' | 'end' | 'all'>('none')
-  const [pointMarkerCoords, setPointMarkerCoords] = useState<{ x: number; y: number }[]>([])
-
   // Simplification state
   const [simplifyTolerance] = useState<number>(SIMPLIFY_PRESETS.moderate)
 
@@ -160,6 +153,9 @@ export default function SortTab() {
     setSelectedNodeIds(new Set())
     setLastSelectedNodeId(null)
     parsingRef.current = false
+
+    // Flag that we need to fit the new content to view
+    needsFitToView.current = true
 
     // If dimensions were provided by the import dialog, use them directly
     if (dimensions) {
@@ -286,41 +282,212 @@ export default function SortTab() {
     return extractGroupInfo(node)
   }, [selectedNodeIds, layerNodes])
 
-  // Clear highlight and point markers when selection changes
-  useEffect(() => {
-    setHighlightedPathId(null)
-    setIsHighlightPersistent(false)
-    setShowPointMarkers('none')
-    setPointMarkerCoords([])
-  }, [selectedNodeIds])
+  // Use extracted node operations hook
+  const {
+    handleToggleVisibility,
+    handleIsolate,
+    handleDeleteNode,
+    handleReorder,
+  } = useNodeOperations({
+    layerNodes,
+    setLayerNodes,
+    selectedNodeIds,
+    setSelectedNodeIds,
+    rebuildSvgFromLayers,
+    isIsolated,
+    setIsIsolated,
+  })
 
-  // Apply/remove highlight effect on the SVG element
-  useEffect(() => {
-    if (!highlightedPathId) return
+  // Use extracted color operations hook
+  const {
+    handleColorChange,
+    canGroupByColor,
+    handleGroupByColor,
+  } = useColorOperations({
+    layerNodes,
+    setLayerNodes,
+    selectedNodeIds,
+    setSelectedNodeIds,
+    rebuildSvgFromLayers,
+    setIsProcessing,
+  })
 
-    // Find the element in the DOM by ID
-    const element = document.getElementById(highlightedPathId)
-    if (!element) return
+  // Use extracted group operations hook
+  const {
+    handleGroupUngroup,
+    canFlipOrder,
+    handleFlipOrder,
+  } = useGroupOperations({
+    layerNodes,
+    setLayerNodes,
+    selectedNodeIds,
+    setSelectedNodeIds,
+    lastSelectedNodeId,
+    setLastSelectedNodeId,
+    rebuildSvgFromLayers,
+  })
 
-    // Store original styles
-    const originalOutline = element.style.outline
-    const originalOutlineOffset = element.style.outlineOffset
+  // Use extracted path highlight hook
+  const {
+    isHighlightPersistent,
+    showPointMarkers,
+    pointMarkerCoords,
+    handlePathInfoMouseEnter,
+    handlePathInfoMouseLeave,
+    handlePathInfoClick,
+    handleStartPointClick,
+    handleEndPointClick,
+    handlePointCountClick,
+    handleLayerPathHover,
+    handleLayerPathClick,
+  } = usePathHighlight({
+    selectedNodeIds,
+    selectedPathInfo,
+  })
 
-    // Apply highlight
-    element.style.outline = '3px solid #4a90e2'
-    element.style.outlineOffset = '2px'
+  // Use extracted flatten operations hook
+  const {
+    handleFlattenAll,
+  } = useFlattenOperations({
+    layerNodes,
+    setLayerNodes,
+    setSelectedNodeIds,
+    rebuildSvgFromLayers,
+    flattenArmed,
+    setFlattenArmed,
+    setDeleteArmed,
+    setSplitArmed,
+    setStatusMessage,
+  })
 
-    return () => {
-      // Remove highlight
-      element.style.outline = originalOutline
-      element.style.outlineOffset = originalOutlineOffset
-    }
-  }, [highlightedPathId])
+  // Use extracted sort operations hook
+  const {
+    handleSortByType,
+    handleSortBySize,
+    getFilterCounts,
+    getTotalChildrenCount,
+    canSortBySize,
+  } = useSortOperations({
+    layerNodes,
+    setLayerNodes,
+    selectedNodeIds,
+    setSelectedNodeIds,
+    setLastSelectedNodeId,
+    rebuildSvgFromLayers,
+    setIsProcessing,
+    setStatusMessage,
+    sizeSortAscending,
+    sizeSortFilter,
+    setShowFilterToolbar,
+  })
+
+  // Use extracted path operations hook
+  const {
+    canSimplify,
+    handleSimplifyPaths,
+    canWeld,
+    handleWeld,
+  } = usePathOperations({
+    selectedNodeIds,
+    layerNodes,
+    setLayerNodes,
+    rebuildSvgFromLayers,
+    setStatusMessage,
+    simplifyTolerance,
+    weldArmed,
+    setWeldArmed,
+    setDeleteArmed,
+    setSplitArmed,
+    setFlattenArmed,
+  })
+
+  // Use extracted crop handler hook
+  const {
+    rotateCropAspectRatio,
+  } = useCropHandler({
+    canvasContainerRef,
+    needsFitToView,
+    svgContent,
+    svgDimensions,
+    cropAspectRatio,
+    setCropAspectRatio,
+    cropSize,
+    setStatusMessage,
+    setIsProcessing,
+    setSvgContent,
+    setLayerNodes,
+    setSelectedNodeIds,
+    setLastSelectedNodeId,
+    setFillTargetNodeIds,
+    setOrderData,
+    setSvgDimensions,
+    originalSvgAttrs,
+    skipNextParse,
+    parsingRef,
+    setShowCrop,
+  })
+
+  // Use keyboard shortcuts hook
+  useKeyboardShortcuts({
+    selectedNodeIds,
+    layerNodes,
+    deleteArmed,
+    setDeleteArmed,
+    splitArmed,
+    setSplitArmed,
+    showFilterToolbar,
+    setShowFilterToolbar,
+    disarmActions,
+    handleToggleVisibility,
+    handleIsolate,
+    handleDeleteNode,
+    handleGroupUngroup,
+    canGroupByColor,
+    handleGroupByColor,
+    canSortBySize,
+  })
 
   // Persist ruler unit to localStorage
   useEffect(() => {
     localStorage.setItem('svg-grouper-ruler-unit', rulerUnit)
   }, [rulerUnit])
+
+  // Fit SVG to view - calculate optimal scale and center offset
+  const fitToView = useCallback(() => {
+    if (!svgDimensions || !canvasContainerRef.current) return
+
+    const container = canvasContainerRef.current
+    const containerWidth = container.clientWidth
+    const containerHeight = container.clientHeight
+
+    if (containerWidth <= 0 || containerHeight <= 0) return
+
+    // Calculate scale to fit SVG in container with padding
+    // The SVG is constrained by CSS max-width/max-height: 90%, but we want to
+    // fill more of the viewport. Use 85% to leave some margin.
+    const padding = 0.85
+    const scaleX = (containerWidth * padding) / svgDimensions.width
+    const scaleY = (containerHeight * padding) / svgDimensions.height
+    const optimalScale = Math.min(scaleX, scaleY)
+
+    // Clamp scale to reasonable bounds
+    const clampedScale = Math.max(0.1, Math.min(10, optimalScale))
+
+    // Center the SVG (offset 0,0 centers it due to transformOrigin: center center)
+    setScale(clampedScale)
+    setOffset({ x: 0, y: 0 })
+  }, [svgDimensions, setScale, setOffset])
+
+  // Auto-fit to view when a new file is loaded
+  useEffect(() => {
+    if (needsFitToView.current && svgDimensions && canvasDimensions.width > 0) {
+      needsFitToView.current = false
+      // Small delay to ensure the SVG is rendered
+      requestAnimationFrame(() => {
+        fitToView()
+      })
+    }
+  }, [svgDimensions, canvasDimensions, fitToView])
 
   // Measure canvas dimensions on resize
   useEffect(() => {
@@ -383,264 +550,7 @@ export default function SortTab() {
     setCursorPosition(null)
   }, [])
 
-  // Handlers for status bar path info interaction
-  const handlePathInfoMouseEnter = useCallback(() => {
-    if (selectedPathInfo && !isHighlightPersistent) {
-      setHighlightedPathId(selectedPathInfo.id)
-    }
-  }, [selectedPathInfo, isHighlightPersistent])
-
-  const handlePathInfoMouseLeave = useCallback(() => {
-    if (!isHighlightPersistent) {
-      setHighlightedPathId(null)
-    }
-  }, [isHighlightPersistent])
-
-  const handlePathInfoClick = useCallback(() => {
-    if (selectedPathInfo) {
-      if (isHighlightPersistent && highlightedPathId === selectedPathInfo.id) {
-        // Toggle off
-        setIsHighlightPersistent(false)
-        setHighlightedPathId(null)
-      } else {
-        // Toggle on
-        setHighlightedPathId(selectedPathInfo.id)
-        setIsHighlightPersistent(true)
-      }
-    }
-  }, [selectedPathInfo, isHighlightPersistent, highlightedPathId])
-
-  // Handler for clicking start point info
-  const handleStartPointClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!selectedPathInfo) return
-
-    if (showPointMarkers === 'start') {
-      // Toggle off
-      setShowPointMarkers('none')
-      setPointMarkerCoords([])
-    } else {
-      // Show start point and also enable highlight
-      setShowPointMarkers('start')
-      setPointMarkerCoords([selectedPathInfo.startPos])
-      setHighlightedPathId(selectedPathInfo.id)
-      setIsHighlightPersistent(true)
-    }
-  }, [selectedPathInfo, showPointMarkers])
-
-  // Handler for clicking end point info
-  const handleEndPointClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!selectedPathInfo) return
-
-    if (showPointMarkers === 'end') {
-      // Toggle off
-      setShowPointMarkers('none')
-      setPointMarkerCoords([])
-    } else {
-      // Show end point and also enable highlight
-      setShowPointMarkers('end')
-      setPointMarkerCoords([selectedPathInfo.endPos])
-      setHighlightedPathId(selectedPathInfo.id)
-      setIsHighlightPersistent(true)
-    }
-  }, [selectedPathInfo, showPointMarkers])
-
-  // Handler for clicking point count info
-  const handlePointCountClick = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!selectedPathInfo) return
-
-    if (showPointMarkers === 'all') {
-      // Toggle off
-      setShowPointMarkers('none')
-      setPointMarkerCoords([])
-    } else {
-      // Show all points and also enable highlight
-      setShowPointMarkers('all')
-      setPointMarkerCoords(selectedPathInfo.allPoints)
-      setHighlightedPathId(selectedPathInfo.id)
-      setIsHighlightPersistent(true)
-    }
-  }, [selectedPathInfo, showPointMarkers])
-
-  // Handler for hovering over path in layer tree
-  const handleLayerPathHover = useCallback((pathId: string | null) => {
-    if (!isHighlightPersistent) {
-      setHighlightedPathId(pathId)
-    }
-  }, [isHighlightPersistent])
-
-  // Handler for clicking path in layer tree
-  const handleLayerPathClick = useCallback((pathId: string) => {
-    if (isHighlightPersistent && highlightedPathId === pathId) {
-      // Toggle off
-      setIsHighlightPersistent(false)
-      setHighlightedPathId(null)
-    } else {
-      // Toggle on
-      setHighlightedPathId(pathId)
-      setIsHighlightPersistent(true)
-    }
-  }, [isHighlightPersistent, highlightedPathId])
-
-  // Handle color change from layer tree swatch double-click
-  const handleColorChange = useCallback((nodeId: string, oldColor: string, newColor: string, mode?: 'fill' | 'stroke', strokeWidth?: string) => {
-    const normalizedOld = normalizeColor(oldColor)
-    const normalizedNew = normalizeColor(newColor)
-
-    // Update colors in the node and its children
-    const updateNodeColors = (node: SVGNode): SVGNode => {
-      // Update element attributes
-      const updateElementColor = (element: Element) => {
-        const fill = element.getAttribute('fill')
-        const stroke = element.getAttribute('stroke')
-        const style = element.getAttribute('style')
-
-        if (mode === 'fill') {
-          // Set as fill, remove stroke
-          element.setAttribute('fill', normalizedNew)
-          element.setAttribute('stroke', 'none')
-          if (style) {
-            let newStyle = style
-              .replace(/fill:\s*[^;]+;?/g, '')
-              .replace(/stroke:\s*[^;]+;?/g, '')
-              .replace(/stroke-width:\s*[^;]+;?/g, '')
-              .trim()
-            if (newStyle) {
-              element.setAttribute('style', newStyle)
-            } else {
-              element.removeAttribute('style')
-            }
-          }
-        } else if (mode === 'stroke') {
-          // Set as stroke, remove fill
-          element.setAttribute('fill', 'none')
-          element.setAttribute('stroke', normalizedNew)
-          if (strokeWidth) {
-            element.setAttribute('stroke-width', strokeWidth)
-          }
-          if (style) {
-            let newStyle = style
-              .replace(/fill:\s*[^;]+;?/g, '')
-              .replace(/stroke:\s*[^;]+;?/g, '')
-              .replace(/stroke-width:\s*[^;]+;?/g, '')
-              .trim()
-            if (newStyle) {
-              element.setAttribute('style', newStyle)
-            } else {
-              element.removeAttribute('style')
-            }
-          }
-        } else {
-          // Legacy behavior - just replace colors
-          if (fill && normalizeColor(fill) === normalizedOld) {
-            element.setAttribute('fill', normalizedNew)
-          }
-          if (stroke && normalizeColor(stroke) === normalizedOld) {
-            element.setAttribute('stroke', normalizedNew)
-          }
-          if (style) {
-            let newStyle = style
-            // Replace fill color in style
-            newStyle = newStyle.replace(
-              /fill:\s*([^;]+)/g,
-              (match, color) => normalizeColor(color.trim()) === normalizedOld ? `fill: ${normalizedNew}` : match
-            )
-            // Replace stroke color in style
-            newStyle = newStyle.replace(
-              /stroke:\s*([^;]+)/g,
-              (match, color) => normalizeColor(color.trim()) === normalizedOld ? `stroke: ${normalizedNew}` : match
-            )
-            if (newStyle !== style) {
-              element.setAttribute('style', newStyle)
-            }
-          }
-        }
-      }
-
-      updateElementColor(node.element)
-
-      // Update customMarkup if present (for line fill)
-      let updatedMarkup = node.customMarkup
-      if (updatedMarkup && normalizedOld) {
-        // Replace stroke colors in the markup
-        updatedMarkup = updatedMarkup.replace(
-          new RegExp(`stroke="${normalizedOld}"`, 'gi'),
-          `stroke="${normalizedNew}"`
-        )
-        if (strokeWidth) {
-          updatedMarkup = updatedMarkup.replace(
-            /stroke-width="[^"]+"/g,
-            `stroke-width="${strokeWidth}"`
-          )
-        }
-      }
-
-      // Update fillColor if it matches
-      let updatedFillColor = node.fillColor
-      if (updatedFillColor && normalizeColor(updatedFillColor) === normalizedOld) {
-        updatedFillColor = normalizedNew
-      }
-
-      return {
-        ...node,
-        customMarkup: updatedMarkup,
-        fillColor: updatedFillColor,
-        children: node.children.map(updateNodeColors)
-      }
-    }
-
-    // Find the node and update it
-    const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.map(node => {
-        if (node.id === nodeId) {
-          return updateNodeColors(node)
-        }
-        if (node.children.length > 0) {
-          return { ...node, children: updateNodes(node.children) }
-        }
-        return node
-      })
-    }
-
-    const updatedNodes = updateNodes(layerNodes)
-    setLayerNodes(updatedNodes)
-    rebuildSvgFromLayers(updatedNodes)
-  }, [layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
-  // Handle drag-and-drop reordering of layers
-  const handleReorder = useCallback((draggedId: string, targetId: string, position: 'before' | 'after' | 'inside') => {
-    const draggedNode = findNodeById(layerNodes, draggedId)
-    const targetNode = findNodeById(layerNodes, targetId)
-
-    if (!draggedNode || !targetNode) return
-
-    // Check if we're trying to drop a parent into its own child (would create cycle)
-    if (isDescendant(draggedNode, targetId)) return
-
-    // Remove the dragged node first
-    let newNodes = removeNodeById(layerNodes, draggedId)
-
-    // Insert at new position
-    newNodes = insertNodeAtPosition(newNodes, targetId, draggedNode, position)
-
-    // Update DOM: move the element
-    const draggedElement = draggedNode.element
-    const targetElement = targetNode.element
-
-    if (position === 'before') {
-      targetElement.parentElement?.insertBefore(draggedElement, targetElement)
-    } else if (position === 'after') {
-      targetElement.parentElement?.insertBefore(draggedElement, targetElement.nextSibling)
-    } else if (position === 'inside') {
-      targetElement.insertBefore(draggedElement, targetElement.firstChild)
-    }
-
-    setLayerNodes(newNodes)
-    rebuildSvgFromLayers(newNodes)
-  }, [layerNodes, setLayerNodes, rebuildSvgFromLayers])
-
+  // Handle node selection (multi-select with Cmd, range-select with Shift)
   const handleNodeSelect = (node: SVGNode, isMultiSelect: boolean, isRangeSelect: boolean) => {
     disarmActions()
 
@@ -681,747 +591,9 @@ export default function SortTab() {
     }
   }
 
-  const handleToggleVisibility = () => {
-    // Find the first selected node to determine target visibility state
-    const firstSelectedId = Array.from(selectedNodeIds)[0]
-    if (!firstSelectedId) return
-
-    const firstSelected = findNodeById(layerNodes, firstSelectedId)
-    if (!firstSelected) return
-
-    // All selected nodes will be set to the opposite of the first node's state
-    const targetHiddenState = !firstSelected.isHidden
-
-    const updatedNodes = updateVisibilityForSelected(layerNodes, selectedNodeIds, targetHiddenState)
-    setLayerNodes(updatedNodes)
-    rebuildSvgFromLayers(updatedNodes)
-  }
-
-  const handleIsolate = () => {
-    if (isIsolated) {
-      // Un-isolate: show all layers
-      const updatedNodes = showAllNodes(layerNodes)
-      setLayerNodes(updatedNodes)
-      setIsIsolated(false)
-      rebuildSvgFromLayers(updatedNodes)
-    } else {
-      // Isolate: hide all except selected
-      const updatedNodes = isolateNodes(layerNodes, selectedNodeIds)
-      setLayerNodes(updatedNodes)
-      setIsIsolated(true)
-      rebuildSvgFromLayers(updatedNodes)
-    }
-  }
-
-  const handleDeleteNode = () => {
-    const deleteNode = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.filter(node => {
-        if (selectedNodeIds.has(node.id)) {
-          return false
-        }
-        if (node.children.length > 0) {
-          return { ...node, children: deleteNode(node.children) }
-        }
-        return true
-      }).map(node => {
-        if (node.children && node.children.length > 0) {
-          return { ...node, children: deleteNode(node.children) }
-        }
-        return node
-      })
-    }
-
-    const updatedNodes = deleteNode(layerNodes)
-    setLayerNodes(updatedNodes)
-
-    // If exactly 1 top-level node remains, auto-select it
-    if (updatedNodes.length === 1) {
-      setSelectedNodeIds(new Set([updatedNodes[0].id]))
-    } else {
-      setSelectedNodeIds(new Set())
-    }
-
-    rebuildSvgFromLayers(updatedNodes)
-  }
-
-  const canGroupByColor = (): boolean => {
-    if (selectedNodeIds.size !== 1) return false
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-
-    if (!selectedNode || selectedNode.children.length === 0) return false
-
-    const colors = new Set<string>()
-    selectedNode.children.forEach(child => {
-      const color = getElementColor(child.element)
-      if (color) colors.add(color)
-    })
-
-    return colors.size > 1
-  }
-
-  const handleGroupByColor = async () => {
-    if (selectedNodeIds.size !== 1) return
-
-    setIsProcessing(true)
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-
-    if (!selectedNode || selectedNode.children.length === 0) return
-
-    const colorGroups = new Map<string, SVGNode[]>()
-    selectedNode.children.forEach(child => {
-      const color = getElementColor(child.element) || 'no-color'
-      if (!colorGroups.has(color)) {
-        colorGroups.set(color, [])
-      }
-      colorGroups.get(color)!.push(child)
-    })
-
-    if (colorGroups.size <= 1) return
-
-    const newChildren: SVGNode[] = []
-    colorGroups.forEach((nodes, color) => {
-      if (nodes.length === 1) {
-        newChildren.push(nodes[0])
-      } else {
-        const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-        const groupId = `color-group-${color.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}`
-        newGroup.setAttribute('id', groupId)
-
-        nodes.forEach(node => {
-          newGroup.appendChild(node.element)
-        })
-
-        selectedNode.element.appendChild(newGroup)
-
-        const groupNode: SVGNode = {
-          id: groupId,
-          type: 'g',
-          name: `color-${color}`,
-          element: newGroup,
-          isGroup: true,
-          children: nodes
-        }
-
-        newChildren.push(groupNode)
-      }
-    })
-
-    const updatedNodes = updateNodeChildren(layerNodes, selectedId, newChildren)
-    setLayerNodes(updatedNodes)
-    setSelectedNodeIds(new Set())
-    rebuildSvgFromLayers(updatedNodes)
-    setIsProcessing(false)
-  }
-
-  // Sort children by color first, then by element type within each color
-  // If shift is held, group by type instead of just sorting
-  // Works on: 1) single group's children, or 2) multiple selected nodes within their parent
-  const handleSortByType = async (e?: React.MouseEvent) => {
-    if (selectedNodeIds.size === 0) return
-
-    const shouldGroup = e?.shiftKey ?? false
-
-    setIsProcessing(true)
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    // Determine mode: single group (sort children) or multiple selection (sort selected nodes)
-    const selectedIds = Array.from(selectedNodeIds)
-    let nodesToSort: SVGNode[] = []
-    let parentNode: SVGNode | null = null
-    let isSortingChildren = false
-
-    if (selectedIds.length === 1) {
-      // Single selection - sort children of the selected group
-      const selectedNode = findNodeById(layerNodes, selectedIds[0])
-      if (!selectedNode || selectedNode.children.length === 0) {
-        setIsProcessing(false)
-        return
-      }
-      nodesToSort = selectedNode.children
-      parentNode = selectedNode
-      isSortingChildren = true
-    } else {
-      // Multiple selection - sort the selected nodes within their common parent
-      // Find all selected nodes
-      const selectedNodes: SVGNode[] = []
-      for (const id of selectedIds) {
-        const node = findNodeById(layerNodes, id)
-        if (node) selectedNodes.push(node)
-      }
-
-      if (selectedNodes.length < 2) {
-        setIsProcessing(false)
-        return
-      }
-
-      // Find common parent by looking at where these nodes exist
-      // They should all be siblings at the same level
-      const findParentOf = (targetId: string, nodes: SVGNode[], parent: SVGNode | null): SVGNode | null => {
-        for (const node of nodes) {
-          if (node.id === targetId) return parent
-          if (node.children.length > 0) {
-            const found = findParentOf(targetId, node.children, node)
-            if (found !== null) return found
-          }
-        }
-        return null
-      }
-
-      // Check if all selected nodes have the same parent
-      const firstParent = findParentOf(selectedIds[0], layerNodes, null)
-      let allSameParent = true
-      for (let i = 1; i < selectedIds.length; i++) {
-        const thisParent = findParentOf(selectedIds[i], layerNodes, null)
-        if (thisParent?.id !== firstParent?.id) {
-          allSameParent = false
-          break
-        }
-      }
-
-      if (!allSameParent) {
-        setStatusMessage('error:Selected nodes must be siblings')
-        setIsProcessing(false)
-        return
-      }
-
-      parentNode = firstParent
-      nodesToSort = selectedNodes
-      isSortingChildren = false
-    }
-
-    // Get color from element
-    const getColor = (node: SVGNode): string => {
-      if (node.fillColor) return normalizeColor(node.fillColor)
-
-      const element = node.element
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-      const style = element.getAttribute('style')
-
-      if (style) {
-        const fillMatch = style.match(/fill:\s*([^;]+)/)
-        const strokeMatch = style.match(/stroke:\s*([^;]+)/)
-        if (fillMatch && fillMatch[1] !== 'none') return normalizeColor(fillMatch[1].trim())
-        if (strokeMatch && strokeMatch[1] !== 'none') return normalizeColor(strokeMatch[1].trim())
-      }
-
-      if (fill && fill !== 'none' && fill !== 'transparent') return normalizeColor(fill)
-      if (stroke && stroke !== 'none' && stroke !== 'transparent') return normalizeColor(stroke)
-
-      return '#000000'
-    }
-
-    // Get element type - distinguish between fill paths and stroke paths
-    const getType = (node: SVGNode): string => {
-      if (node.isGroup) return 'g'
-
-      const element = node.element
-      const tagName = element?.tagName?.toLowerCase() || node.type || 'unknown'
-
-      if (tagName === 'path' || tagName === 'polygon' || tagName === 'rect' || tagName === 'circle' || tagName === 'ellipse') {
-        const fill = element?.getAttribute('fill')
-        const stroke = element?.getAttribute('stroke')
-        const style = element?.getAttribute('style') || ''
-
-        const hasFillStyle = style.includes('fill:') && !style.includes('fill:none') && !style.includes('fill: none')
-        const hasStrokeStyle = style.includes('stroke:') && !style.includes('stroke:none') && !style.includes('stroke: none')
-
-        const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
-        const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
-
-        if (hasFill && !hasStroke) return 'fill-shape'
-        if (hasStroke && !hasFill) return 'stroke-path'
-        if (hasFill && hasStroke) return 'fill+stroke'
-      }
-
-      return tagName
-    }
-
-    // Categorize as fills or lines for grouping
-    const getCategory = (node: SVGNode): 'fills' | 'lines' | 'other' => {
-      const type = getType(node)
-      if (type === 'fill-shape') return 'fills'
-      if (type === 'stroke-path' || type === 'line' || type === 'polyline') return 'lines'
-      if (type === 'fill+stroke') return 'fills' // Treat as fills
-      return 'other'
-    }
-
-    const typeOrder: Record<string, number> = {
-      'g': 0, 'fill-shape': 1, 'fill+stroke': 2, 'stroke-path': 3,
-      'path': 4, 'line': 5, 'polyline': 6, 'polygon': 7,
-      'rect': 8, 'circle': 9, 'ellipse': 10, 'text': 11, 'image': 12,
-    }
-
-    let newChildren: SVGNode[]
-
-    if (shouldGroup) {
-      // Group by type - create subgroups for fills and lines
-      const fills: SVGNode[] = []
-      const lines: SVGNode[] = []
-      const other: SVGNode[] = []
-
-      nodesToSort.forEach(child => {
-        const category = getCategory(child)
-        if (category === 'fills') fills.push(child)
-        else if (category === 'lines') lines.push(child)
-        else other.push(child)
-      })
-
-      newChildren = []
-
-      // Get the parent element for DOM operations
-      const parentElement = parentNode?.element || document.querySelector('.canvas-content svg')
-      if (!parentElement) {
-        setStatusMessage('error:Could not find parent element')
-        setIsProcessing(false)
-        return
-      }
-
-      // Create Fills group if there are fills
-      if (fills.length > 0) {
-        const fillGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-        const fillGroupId = `fills-${Date.now()}`
-        fillGroup.setAttribute('id', fillGroupId)
-
-        fills.forEach(node => fillGroup.appendChild(node.element))
-        parentElement.appendChild(fillGroup)
-
-        newChildren.push({
-          id: fillGroupId,
-          type: 'g',
-          name: `Fills (${fills.length})`,
-          element: fillGroup,
-          isGroup: true,
-          children: fills
-        })
-      }
-
-      // Create Lines group if there are lines
-      if (lines.length > 0) {
-        const lineGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-        const lineGroupId = `lines-${Date.now()}`
-        lineGroup.setAttribute('id', lineGroupId)
-
-        lines.forEach(node => lineGroup.appendChild(node.element))
-        parentElement.appendChild(lineGroup)
-
-        newChildren.push({
-          id: lineGroupId,
-          type: 'g',
-          name: `Lines (${lines.length})`,
-          element: lineGroup,
-          isGroup: true,
-          children: lines
-        })
-      }
-
-      // Add other elements ungrouped
-      newChildren.push(...other)
-
-      setStatusMessage(`Grouped into ${fills.length > 0 ? 'Fills' : ''}${fills.length > 0 && lines.length > 0 ? ' and ' : ''}${lines.length > 0 ? 'Lines' : ''}`)
-    } else {
-      // Sort nodes: first by color, then by type
-      newChildren = [...nodesToSort].sort((a, b) => {
-        const colorA = getColor(a)
-        const colorB = getColor(b)
-        const colorCompare = colorA.localeCompare(colorB)
-        if (colorCompare !== 0) return colorCompare
-
-        const typeA = getType(a)
-        const typeB = getType(b)
-        return (typeOrder[typeA] ?? 99) - (typeOrder[typeB] ?? 99)
-      })
-
-      // Reorder DOM elements
-      const parentElement = parentNode?.element || document.querySelector('.canvas-content svg')
-      if (parentElement) {
-        newChildren.forEach(child => {
-          parentElement.appendChild(child.element)
-        })
-      }
-    }
-
-    // Update the node tree based on mode
-    let updatedNodes: SVGNode[]
-
-    if (isSortingChildren && parentNode) {
-      // Single group selected - update its children
-      const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
-        return nodes.map(node => {
-          if (node.id === parentNode.id) {
-            return { ...node, children: newChildren }
-          }
-          if (node.children.length > 0) {
-            return { ...node, children: updateNodeChildren(node.children) }
-          }
-          return node
-        })
-      }
-      updatedNodes = updateNodeChildren(layerNodes)
-    } else if (parentNode) {
-      // Multiple selection with a parent - update parent's children
-      // Replace selected nodes with the sorted/grouped result
-      const selectedIdSet = new Set(selectedIds)
-      const updateParentChildren = (nodes: SVGNode[]): SVGNode[] => {
-        return nodes.map(node => {
-          if (node.id === parentNode.id) {
-            // Filter out old selected nodes and add new sorted ones
-            const otherChildren = node.children.filter(c => !selectedIdSet.has(c.id))
-            return { ...node, children: [...otherChildren, ...newChildren] }
-          }
-          if (node.children.length > 0) {
-            return { ...node, children: updateParentChildren(node.children) }
-          }
-          return node
-        })
-      }
-      updatedNodes = updateParentChildren(layerNodes)
-    } else {
-      // Multiple selection at root level - update root nodes
-      const selectedIdSet = new Set(selectedIds)
-      const otherNodes = layerNodes.filter(n => !selectedIdSet.has(n.id))
-      updatedNodes = [...otherNodes, ...newChildren]
-    }
-
-    setLayerNodes(updatedNodes)
-    rebuildSvgFromLayers(updatedNodes)
-    setIsProcessing(false)
-  }
-
-  // Count fills and strokes in the selected node's children
-  const getFilterCounts = useCallback((): { fills: number; strokes: number } => {
-    if (selectedNodeIds.size !== 1) return { fills: 0, strokes: 0 }
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-    if (!selectedNode) return { fills: 0, strokes: 0 }
-
-    let fills = 0
-    let strokes = 0
-
-    selectedNode.children.forEach(child => {
-      const type = getElementType(child)
-      if (type === 'fill') fills++
-      if (type === 'stroke') strokes++
-    })
-
-    return { fills, strokes }
-  }, [selectedNodeIds, layerNodes])
-
+  // Derived values from sort operations hook
   const filterCounts = getFilterCounts()
-
-  // Get total children count for the selected node
-  const getTotalChildrenCount = useCallback((): number => {
-    if (selectedNodeIds.size !== 1) return 0
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-    return selectedNode?.children.length || 0
-  }, [selectedNodeIds, layerNodes])
-
   const totalChildrenCount = getTotalChildrenCount()
-
-  // Sort children by size (bounding box area)
-  // When filter is applied, extract filtered items into a new sibling group
-  const handleSortBySize = async (ascendingOverride?: boolean) => {
-    if (selectedNodeIds.size !== 1) return
-
-    setIsProcessing(true)
-    await new Promise(resolve => setTimeout(resolve, 50))
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-
-    if (!selectedNode || selectedNode.children.length === 0) {
-      setIsProcessing(false)
-      return
-    }
-
-    // Calculate bounding box area for an element
-    const getElementArea = (node: SVGNode): number => {
-      const element = node.element
-      if (!element) return 0
-
-      try {
-        // Try to get bounding box from SVG element
-        if (element instanceof SVGGraphicsElement && typeof element.getBBox === 'function') {
-          const bbox = element.getBBox()
-          return bbox.width * bbox.height
-        }
-      } catch {
-        // getBBox can throw if element isn't rendered
-      }
-
-      // Fallback: count children or estimate from attributes
-      if (node.children.length > 0) {
-        return node.children.reduce((sum, child) => sum + getElementArea(child), 0)
-      }
-
-      // For paths, estimate from path data length as proxy for complexity/size
-      const d = element.getAttribute('d')
-      if (d) {
-        return d.length // Rough proxy - longer path data usually means larger/more complex shape
-      }
-
-      return 0
-    }
-
-    // Use override if provided, otherwise use current state
-    const ascending = ascendingOverride !== undefined ? ascendingOverride : sizeSortAscending
-
-    if (sizeSortFilter === 'all') {
-      // No filter - just sort children in place
-      const sortedChildren = [...selectedNode.children].sort((a, b) => {
-        const areaA = getElementArea(a)
-        const areaB = getElementArea(b)
-        return ascending ? areaA - areaB : areaB - areaA
-      })
-
-      // Reorder DOM elements
-      sortedChildren.forEach(child => {
-        selectedNode.element.appendChild(child.element)
-      })
-
-      // Update the node in the tree
-      const updateNodeChildren = (nodes: SVGNode[]): SVGNode[] => {
-        return nodes.map(node => {
-          if (node.id === selectedId) {
-            return { ...node, children: sortedChildren }
-          }
-          if (node.children.length > 0) {
-            return { ...node, children: updateNodeChildren(node.children) }
-          }
-          return node
-        })
-      }
-
-      const updatedNodes = updateNodeChildren(layerNodes)
-      setLayerNodes(updatedNodes)
-      rebuildSvgFromLayers(updatedNodes)
-    } else {
-      // Filter applied - extract matching items into a new sibling group
-      const childrenToExtract: SVGNode[] = []
-      const childrenToKeep: SVGNode[] = []
-
-      selectedNode.children.forEach(child => {
-        const type = getElementType(child)
-        if ((sizeSortFilter === 'fills' && type === 'fill') ||
-            (sizeSortFilter === 'strokes' && type === 'stroke')) {
-          childrenToExtract.push(child)
-        } else {
-          childrenToKeep.push(child)
-        }
-      })
-
-      if (childrenToExtract.length === 0) {
-        setStatusMessage(`No ${sizeSortFilter === 'fills' ? 'fills' : 'lines'} found to extract`)
-        setIsProcessing(false)
-        return
-      }
-
-      // Sort extracted children by area
-      const sortedExtracted = childrenToExtract.sort((a, b) => {
-        const areaA = getElementArea(a)
-        const areaB = getElementArea(b)
-        return ascending ? areaA - areaB : areaB - areaA
-      })
-
-      // Create new group for extracted items
-      const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-      const groupId = `${sizeSortFilter}-${Date.now()}`
-      const groupName = sizeSortFilter === 'fills' ? 'Fills' : 'Lines'
-      newGroup.setAttribute('id', groupId)
-
-      // Move extracted elements to the new group
-      sortedExtracted.forEach(node => {
-        newGroup.appendChild(node.element)
-      })
-
-      // Insert the new group as a sibling after the selected node
-      const parentElement = selectedNode.element.parentElement
-      if (parentElement) {
-        parentElement.insertBefore(newGroup, selectedNode.element.nextSibling)
-      }
-
-      // Create the new group node for the tree
-      const newGroupNode: SVGNode = {
-        id: groupId,
-        type: 'g',
-        name: `${groupName} (${sortedExtracted.length})`,
-        element: newGroup,
-        isGroup: true,
-        children: sortedExtracted
-      }
-
-      // Update the tree: modify selected node's children and add new sibling group
-      const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
-        const result: SVGNode[] = []
-        for (const node of nodes) {
-          if (node.id === selectedId) {
-            // Update original node with remaining children
-            result.push({ ...node, children: childrenToKeep })
-            // Add new group as sibling right after
-            result.push(newGroupNode)
-          } else if (node.children.length > 0) {
-            result.push({ ...node, children: updateNodes(node.children) })
-          } else {
-            result.push(node)
-          }
-        }
-        return result
-      }
-
-      const updatedNodes = updateNodes(layerNodes)
-      setLayerNodes(updatedNodes)
-      setSelectedNodeIds(new Set([groupId]))
-      setLastSelectedNodeId(groupId)
-      rebuildSvgFromLayers(updatedNodes)
-      setStatusMessage(`Extracted ${sortedExtracted.length} ${sizeSortFilter === 'fills' ? 'fills' : 'lines'} into new group`)
-      setShowFilterToolbar(false)
-    }
-
-    setIsProcessing(false)
-  }
-
-  const canSortBySize = (): boolean => {
-    if (selectedNodeIds.size !== 1) return false
-
-    const selectedId = Array.from(selectedNodeIds)[0]
-    const selectedNode = findNodeById(layerNodes, selectedId)
-
-    return selectedNode !== null && selectedNode.children.length >= 2
-  }
-
-  const handleGroupUngroup = () => {
-    if (selectedNodeIds.size === 1) {
-      const selectedId = Array.from(selectedNodeIds)[0]
-      const selectedNode = findNodeById(layerNodes, selectedId)
-
-      if (selectedNode?.isGroup && selectedNode.children.length > 0) {
-        const ungroupNode = (nodes: SVGNode[], parentId: string): SVGNode[] => {
-          const result: SVGNode[] = []
-
-          for (const node of nodes) {
-            if (node.id === parentId && node.isGroup) {
-              result.push(...node.children)
-              const parent = node.element.parentElement
-              if (parent) {
-                node.children.forEach(child => {
-                  parent.insertBefore(child.element, node.element)
-                })
-                node.element.remove()
-              }
-            } else {
-              if (node.children.length > 0) {
-                result.push({ ...node, children: ungroupNode(node.children, parentId) })
-              } else {
-                result.push(node)
-              }
-            }
-          }
-
-          return result
-        }
-
-        const updatedNodes = ungroupNode(layerNodes, selectedId)
-        setLayerNodes(updatedNodes)
-        setSelectedNodeIds(new Set())
-        rebuildSvgFromLayers(updatedNodes)
-        return
-      }
-    }
-
-    if (selectedNodeIds.size > 1) {
-      const selectedIds = Array.from(selectedNodeIds)
-      const selectedIdSet = new Set(selectedIds)
-
-      // Find if all selected nodes are siblings (same level in tree)
-      // This works with the layer tree structure, not DOM elements
-      const findParentLevel = (nodes: SVGNode[], parentPath: string = ''): { level: SVGNode[], path: string } | null => {
-        // Check if any selected nodes are at this level
-        const selectedAtThisLevel = nodes.filter(n => selectedIdSet.has(n.id))
-        if (selectedAtThisLevel.length > 0) {
-          // Found selected nodes at this level
-          return { level: nodes, path: parentPath }
-        }
-
-        // Recurse into children
-        for (const node of nodes) {
-          if (node.children.length > 0) {
-            const result = findParentLevel(node.children, `${parentPath}/${node.id}`)
-            if (result) return result
-          }
-        }
-        return null
-      }
-
-      const levelInfo = findParentLevel(layerNodes)
-      if (!levelInfo) return
-
-      // Collect selected nodes from this level
-      const selectedNodes = levelInfo.level.filter(n => selectedIdSet.has(n.id))
-      if (selectedNodes.length < 2) return
-
-      // Check that ALL selected nodes are at this same level
-      // (not some at root and some nested)
-      const allAtSameLevel = selectedIds.every(id => {
-        return levelInfo.level.some(n => n.id === id)
-      })
-      if (!allAtSameLevel) {
-        return
-      }
-
-      // Create new group node - no DOM manipulation needed
-      // rebuildSvgFromLayers will create the DOM structure
-      const groupId = `group-${Date.now()}`
-      const newGroupNode: SVGNode = {
-        id: groupId,
-        type: 'g',
-        name: groupId,
-        element: document.createElementNS('http://www.w3.org/2000/svg', 'g'), // Placeholder, will be refreshed
-        isGroup: true,
-        children: selectedNodes
-      }
-
-      // Build new tree with selected nodes grouped
-      const removeAndGroup = (nodes: SVGNode[]): SVGNode[] => {
-        const result: SVGNode[] = []
-        let insertedGroup = false
-
-        for (const node of nodes) {
-          if (selectedIdSet.has(node.id)) {
-            // This is a selected node - insert group at first occurrence
-            if (!insertedGroup) {
-              result.push(newGroupNode)
-              insertedGroup = true
-            }
-            // Skip adding the node itself (it's now inside the group)
-          } else {
-            // Not selected - keep it, but recurse into children
-            if (node.children.length > 0) {
-              const newChildren = removeAndGroup(node.children)
-              result.push({ ...node, children: newChildren })
-            } else {
-              result.push(node)
-            }
-          }
-        }
-
-        return result
-      }
-
-      const updatedNodes = removeAndGroup(layerNodes)
-      setLayerNodes(updatedNodes)
-      setSelectedNodeIds(new Set([groupId]))
-      setLastSelectedNodeId(groupId)
-      rebuildSvgFromLayers(updatedNodes)
-    }
-  }
 
   // Register arrange handlers in context
   useEffect(() => {
@@ -1444,598 +616,6 @@ export default function SortTab() {
       separateCompoundPaths: handleSeparateCompoundPaths
     }
   }, [handleConvertToFills, handleNormalizeColors, handleSeparateCompoundPaths, toolHandlers])
-
-  // Check if simplification is possible
-  const canSimplify = (): boolean => {
-    if (selectedNodeIds.size === 0) return false
-
-    // Check if any selected node is a path or group with paths
-    for (const id of selectedNodeIds) {
-      const node = findNodeById(layerNodes, id)
-      if (node) {
-        if (!node.isGroup && node.element.tagName.toLowerCase() === 'path') {
-          return true
-        }
-        if (node.isGroup && node.element.querySelectorAll('path').length > 0) {
-          return true
-        }
-      }
-    }
-    return false
-  }
-
-  // Handle simplify paths
-  const handleSimplifyPaths = () => {
-    if (!canSimplify()) return
-
-    let totalBefore = 0
-    let totalAfter = 0
-
-    for (const id of selectedNodeIds) {
-      const node = findNodeById(layerNodes, id)
-      if (!node) continue
-
-      if (!node.isGroup && node.element.tagName.toLowerCase() === 'path') {
-        // Single path
-        const before = countPathPoints(node.element)
-        const result = simplifyPathElement(node.element, {
-          tolerance: simplifyTolerance,
-          highQuality: true
-        })
-
-        if (result) {
-          totalBefore += before
-          totalAfter += result.simplifiedPoints
-          node.element.setAttribute('d', result.pathData)
-        }
-      } else if (node.isGroup) {
-        // Group - simplify all paths within
-        const paths = node.element.querySelectorAll('path')
-        for (const path of paths) {
-          const before = countPathPoints(path)
-          const result = simplifyPathElement(path, {
-            tolerance: simplifyTolerance,
-            highQuality: true
-          })
-
-          if (result) {
-            totalBefore += before
-            totalAfter += result.simplifiedPoints
-            path.setAttribute('d', result.pathData)
-          }
-        }
-      }
-    }
-
-    if (totalBefore > 0) {
-      rebuildSvgFromLayers(layerNodes)
-
-      const reduction = Math.round((1 - totalAfter / totalBefore) * 100)
-      setStatusMessage(`Simplified: ${totalBefore} → ${totalAfter} points (${reduction}% reduction)`)
-    }
-  }
-
-  // Check if weld is possible (need a selected group with paths)
-  const canWeld = (): boolean => {
-    if (selectedNodeIds.size === 0) return false
-
-    for (const nodeId of selectedNodeIds) {
-      const node = findNodeById(layerNodes, nodeId)
-      if (!node) continue
-
-      // Check if this node or its children have paths
-      const hasPaths = (n: SVGNode): boolean => {
-        const tagName = n.element.tagName.toLowerCase()
-        if (['path', 'line', 'polyline', 'polygon'].includes(tagName)) return true
-        return n.children.some(hasPaths)
-      }
-
-      if (hasPaths(node)) return true
-    }
-    return false
-  }
-
-  // Handle weld - combine all paths in selected group(s) into a single compound path
-  const handleWeld = () => {
-    if (!canWeld()) return
-
-    if (!weldArmed) {
-      setWeldArmed(true)
-      setDeleteArmed(false)
-      setSplitArmed(false)
-      setFlattenArmed(false)
-      setStatusMessage('Click Weld again to confirm - will combine paths into compound path')
-      return
-    }
-
-    setWeldArmed(false)
-    setStatusMessage('')
-
-    // Process each selected node
-    let totalBefore = 0
-    let totalAfter = 0
-
-    const updateNodes = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.map(node => {
-        if (selectedNodeIds.has(node.id)) {
-          // Collect all lines from this node
-          const lines = collectLines(node)
-          totalBefore += lines.length
-
-          if (lines.length === 0) return node
-
-          // Get color and stroke width from first drawable child
-          const color = getNodeColor(node)
-          const strokeWidth = getNodeStrokeWidth(node)
-
-          // Create compound path
-          const pathD = linesToCompoundPath(lines, 2)
-          totalAfter++
-
-          // Create new path element
-          const nodeId = `welded-${node.id}`
-          const pathMarkup = `<path id="${nodeId}" d="${pathD}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round"/>`
-
-          // Parse to create element
-          const parser = new DOMParser()
-          const doc = parser.parseFromString(`<svg xmlns="http://www.w3.org/2000/svg">${pathMarkup}</svg>`, 'image/svg+xml')
-          const pathElement = doc.querySelector('path') as Element
-
-          // Return new node with compound path
-          return {
-            ...node,
-            id: nodeId,
-            name: `Welded (${lines.length} lines)`,
-            type: 'path',
-            element: pathElement,
-            isGroup: false,
-            children: [],
-            customMarkup: pathMarkup,
-          }
-        }
-
-        // Process children recursively
-        if (node.children.length > 0) {
-          return { ...node, children: updateNodes(node.children) }
-        }
-
-        return node
-      })
-    }
-
-    const updatedNodes = updateNodes(layerNodes)
-    setLayerNodes(updatedNodes)
-    rebuildSvgFromLayers(updatedNodes)
-
-    setStatusMessage(`Welded: ${totalBefore} segments → ${totalAfter} compound path(s)`)
-  }
-
-  // Check if flip order is possible
-  const canFlipOrder = (): boolean => {
-    // Can flip if multiple nodes selected, or if a single selected node has children
-    if (selectedNodeIds.size > 1) return true
-    if (selectedNodeIds.size === 1) {
-      const nodeId = Array.from(selectedNodeIds)[0]
-      const node = findNodeById(layerNodes, nodeId)
-      return node ? node.children.length > 1 : false
-    }
-    return false
-  }
-
-  // Handle flip order - reverse the order of selected nodes or children of a selected group
-  const handleFlipOrder = () => {
-    if (!canFlipOrder()) return
-
-    if (selectedNodeIds.size === 1) {
-      // Single node selected - flip its children
-      const nodeId = Array.from(selectedNodeIds)[0]
-
-      const flipChildrenOfNode = (nodes: SVGNode[]): SVGNode[] => {
-        return nodes.map(node => {
-          if (node.id === nodeId) {
-            // Reverse children order
-            const reversedChildren = [...node.children].reverse()
-            // Also reverse DOM order
-            const parent = node.element
-            reversedChildren.forEach(child => {
-              parent.appendChild(child.element)
-            })
-            return { ...node, children: reversedChildren }
-          }
-          if (node.children.length > 0) {
-            return { ...node, children: flipChildrenOfNode(node.children) }
-          }
-          return node
-        })
-      }
-
-      const updatedNodes = flipChildrenOfNode(layerNodes)
-      setLayerNodes(updatedNodes)
-      rebuildSvgFromLayers(updatedNodes)
-
-      const node = findNodeById(layerNodes, nodeId)
-      setStatusMessage(`Flipped order of ${node?.children.length || 0} children`)
-    } else {
-      // Multiple nodes selected - flip their order within their common parent
-      // Find the common parent and flip selected siblings
-      const selectedIds = Array.from(selectedNodeIds)
-
-      const flipSelectedInNodes = (nodes: SVGNode[]): SVGNode[] => {
-        // Check if selected nodes are at this level
-        const selectedAtThisLevel = nodes.filter(n => selectedIds.includes(n.id))
-
-        if (selectedAtThisLevel.length > 1) {
-          // Get indices of selected nodes
-          const indices = selectedAtThisLevel.map(n => nodes.findIndex(node => node.id === n.id))
-          const sorted = [...indices].sort((a, b) => a - b)
-
-          // Reverse the selected nodes within the array
-          const newNodes = [...nodes]
-          for (let i = 0; i < sorted.length; i++) {
-            newNodes[sorted[i]] = nodes[sorted[sorted.length - 1 - i]]
-          }
-
-          // Update DOM order for all nodes at this level
-          const parent = nodes[0]?.element.parentElement
-          if (parent) {
-            newNodes.forEach(node => {
-              parent.appendChild(node.element)
-            })
-          }
-
-          return newNodes.map(node => {
-            if (node.children.length > 0) {
-              return { ...node, children: flipSelectedInNodes(node.children) }
-            }
-            return node
-          })
-        }
-
-        // Recurse into children
-        return nodes.map(node => {
-          if (node.children.length > 0) {
-            return { ...node, children: flipSelectedInNodes(node.children) }
-          }
-          return node
-        })
-      }
-
-      const updatedNodes = flipSelectedInNodes(layerNodes)
-      setLayerNodes(updatedNodes)
-      rebuildSvgFromLayers(updatedNodes)
-      setStatusMessage(`Flipped order of ${selectedIds.length} selected items`)
-    }
-  }
-
-  // Handle flatten all - remove empty layers, ungroup all, group by color
-  const handleFlattenAll = () => {
-    if (!flattenArmed) {
-      setFlattenArmed(true)
-      setDeleteArmed(false)
-      setSplitArmed(false)
-      setStatusMessage('Click Flatten again to confirm')
-      return
-    }
-
-    setFlattenArmed(false)
-    setStatusMessage('')
-
-    const deleteEmptyLayers = (nodes: SVGNode[]): SVGNode[] => {
-      return nodes.filter(node => {
-        if (node.customMarkup) {
-          return true
-        }
-        if (node.isGroup && node.children.length === 0) {
-          node.element.remove()
-          return false
-        }
-        if (node.children.length > 0) {
-          node.children = deleteEmptyLayers(node.children)
-          if (node.isGroup && node.children.length === 0 && !node.customMarkup) {
-            node.element.remove()
-            return false
-          }
-        }
-        return true
-      })
-    }
-
-    // Track seen IDs to generate unique IDs during ungrouping
-    const seenIds = new Set<string>()
-
-    const ensureUniqueId = (node: SVGNode): void => {
-      let nodeId = node.id
-      if (seenIds.has(nodeId)) {
-        const suffix = `-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-        nodeId = `${node.id}${suffix}`
-        node.element.setAttribute('id', nodeId)
-        node.id = nodeId
-      }
-      seenIds.add(nodeId)
-    }
-
-    // Extract all leaf elements from DOM, creating nodes for them
-    const extractLeafElements = (element: Element, inheritedTransform?: string, inheritedFill?: string, inheritedStroke?: string): SVGNode[] => {
-      const result: SVGNode[] = []
-      const tag = element.tagName.toLowerCase()
-
-      // Get this element's styles (will be inherited by children)
-      const transform = element.getAttribute('transform')
-      const fill = element.getAttribute('fill')
-      const stroke = element.getAttribute('stroke')
-
-      // Compose transforms
-      const composedTransform = inheritedTransform && transform
-        ? `${inheritedTransform} ${transform}`
-        : inheritedTransform || transform || undefined
-
-      // Inherit fill/stroke (child overrides parent)
-      const effectiveFill = fill || inheritedFill
-      const effectiveStroke = stroke || inheritedStroke
-
-      if (tag === 'g') {
-        // It's a group - recurse into children
-        for (const child of Array.from(element.children)) {
-          result.push(...extractLeafElements(child, composedTransform, effectiveFill, effectiveStroke))
-        }
-      } else if (['path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'image', 'use'].includes(tag)) {
-        // It's a leaf element - apply inherited styles and create node
-        if (composedTransform) {
-          element.setAttribute('transform', composedTransform)
-        }
-        if (effectiveFill && !element.getAttribute('fill')) {
-          element.setAttribute('fill', effectiveFill)
-        }
-        if (effectiveStroke && !element.getAttribute('stroke')) {
-          element.setAttribute('stroke', effectiveStroke)
-        }
-
-        // Ensure unique ID
-        let nodeId = element.getAttribute('id')
-        if (!nodeId || seenIds.has(nodeId)) {
-          nodeId = `node-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-          element.setAttribute('id', nodeId)
-        }
-        seenIds.add(nodeId)
-
-        result.push({
-          id: nodeId,
-          type: tag,
-          name: element.getAttribute('id') || tag,
-          element: element,
-          children: [],
-          isGroup: false
-        })
-      }
-
-      return result
-    }
-
-    const ungroupAll = (nodes: SVGNode[]): SVGNode[] => {
-      let result: SVGNode[] = []
-
-      for (const node of nodes) {
-        if (node.customMarkup) {
-          ensureUniqueId(node)
-          result.push(node)
-        } else if (node.isGroup) {
-          // For groups, extract all leaf elements from DOM directly
-          // This handles cases where node.children might be incomplete
-          const leafElements = extractLeafElements(node.element)
-
-          // Move leaf elements to parent in DOM
-          const parent = node.element.parentElement
-          if (parent) {
-            for (const leaf of leafElements) {
-              parent.insertBefore(leaf.element, node.element)
-            }
-            node.element.remove()
-          }
-
-          result.push(...leafElements)
-        } else {
-          // Non-group element - keep as is
-          ensureUniqueId(node)
-          result.push(node)
-        }
-      }
-
-      return result
-    }
-
-    const groupByColor = (nodes: SVGNode[]): SVGNode[] => {
-      const colorGroups = new Map<string, SVGNode[]>()
-      nodes.forEach(node => {
-        let color: string | null = null
-        if (node.customMarkup && node.fillColor) {
-          color = node.fillColor
-        } else {
-          color = getElementColor(node.element)
-        }
-        // Normalize color to ensure consistent grouping (e.g., #fff and rgb(255,255,255) are same)
-        const colorKey = color ? normalizeColor(color) : 'no-color'
-        if (!colorGroups.has(colorKey)) {
-          colorGroups.set(colorKey, [])
-        }
-        colorGroups.get(colorKey)!.push(node)
-      })
-
-      if (colorGroups.size <= 1) return nodes
-
-      const svgElement = document.querySelector('.canvas-content svg')
-      if (!svgElement) return nodes
-
-      const newNodes: SVGNode[] = []
-      colorGroups.forEach((groupNodes, color) => {
-        if (groupNodes.length === 1) {
-          newNodes.push(groupNodes[0])
-        } else {
-          const newGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g')
-          const groupId = `color-group-${color.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
-          newGroup.setAttribute('id', groupId)
-
-          groupNodes.forEach(node => {
-            newGroup.appendChild(node.element)
-          })
-
-          svgElement.appendChild(newGroup)
-
-          const groupNode: SVGNode = {
-            id: groupId,
-            type: 'g',
-            name: `color-${color}`,
-            element: newGroup,
-            isGroup: true,
-            children: groupNodes
-          }
-
-          newNodes.push(groupNode)
-        }
-      })
-
-      return newNodes
-    }
-
-    // Execute flatten operations
-    let currentNodes = deleteEmptyLayers([...layerNodes])
-    currentNodes = ungroupAll(currentNodes)
-    currentNodes = groupByColor(currentNodes)
-
-    setLayerNodes(currentNodes)
-    setSelectedNodeIds(new Set())
-    rebuildSvgFromLayers(currentNodes)
-    setStatusMessage('Flattened: removed empty layers, ungrouped all, grouped by color')
-  }
-
-  const rotateCropAspectRatio = () => {
-    const [w, h] = cropAspectRatio.split(':')
-    setCropAspectRatio(`${h}:${w}` as '1:2' | '2:3' | '3:4' | '16:9' | '9:16')
-  }
-
-  // Apply crop to SVG
-  const handleApplyCrop = async () => {
-
-    if (!svgContent || !svgDimensions) {
-      setStatusMessage('error:No SVG content to crop')
-      return
-    }
-
-    // Get the canvas container dimensions
-    const container = canvasContainerRef.current
-    if (!container) {
-      setStatusMessage('error:Could not find canvas container')
-      return
-    }
-
-    // Find the actual SVG element to get its rendered size
-    const svgElement = container.querySelector('svg')
-    if (!svgElement) {
-      setStatusMessage('error:Could not find SVG element')
-      return
-    }
-
-    // Get the SVG element's bounding rect to see its actual rendered size
-    const svgRect = svgElement.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-
-    // Calculate viewport crop box (same as SVGCanvas overlay)
-    const [w, h] = cropAspectRatio.split(':').map(Number)
-    const aspectRatio = w / h
-    const minViewportDim = Math.min(containerRect.width, containerRect.height)
-    const baseSize = minViewportDim * cropSize
-
-    let viewportCropWidth: number
-    let viewportCropHeight: number
-
-    if (aspectRatio >= 1) {
-      viewportCropWidth = baseSize
-      viewportCropHeight = baseSize / aspectRatio
-    } else {
-      viewportCropHeight = baseSize
-      viewportCropWidth = baseSize * aspectRatio
-    }
-
-    // Viewport crop box corners (always centered in viewport)
-    const viewportCropLeft = (containerRect.width - viewportCropWidth) / 2
-    const viewportCropTop = (containerRect.height - viewportCropHeight) / 2
-
-    // SVG position relative to container
-    const svgLeftInContainer = svgRect.left - containerRect.left
-    const svgTopInContainer = svgRect.top - containerRect.top
-
-    // Calculate scale from SVG coordinates to rendered pixels
-    const effectiveScale = svgRect.width / svgDimensions.width
-
-    // Convert viewport crop box to SVG coordinates
-    const cropX = (viewportCropLeft - svgLeftInContainer) / effectiveScale
-    const cropY = (viewportCropTop - svgTopInContainer) / effectiveScale
-    const cropWidth = viewportCropWidth / effectiveScale
-    const cropHeight = viewportCropHeight / effectiveScale
-
-    setStatusMessage('Applying crop...')
-    setIsProcessing(true)
-
-    try {
-
-      // Use JavaScript-based crop that preserves fill shapes
-      const cropRect: Rect = {
-        x: cropX,
-        y: cropY,
-        width: cropWidth,
-        height: cropHeight
-      }
-
-      const croppedSvg = cropSVGInBrowser(svgContent, cropRect)
-
-
-      // Treat the cropped SVG as a new file - reset all state
-      // Clear layer nodes and selection
-      setLayerNodes([])
-      setSelectedNodeIds(new Set())
-      setLastSelectedNodeId(null)
-
-      // Clear any fill/order mode data
-      setFillTargetNodeIds([])
-      setOrderData(null)
-
-      // Reset pan/zoom before loading new content
-      setScale(1)
-      setOffset({ x: 0, y: 0 })
-
-      // Clear the SVG dimensions so they get recalculated
-      setSvgDimensions(null)
-
-      // Clear original attributes so they get recaptured for the cropped document
-      originalSvgAttrs.current = null
-
-      // Ensure the next parse is NOT skipped
-      skipNextParse.current = false
-      parsingRef.current = false
-
-      // Hide crop overlay
-      setShowCrop(false)
-
-      // Update SVG content with cropped result - this will trigger re-parsing
-      setSvgContent(croppedSvg)
-
-      setStatusMessage(`Cropped to ${cropWidth.toFixed(0)} × ${cropHeight.toFixed(0)} px`)
-    } catch (err) {
-      console.error('[Crop] Crop failed:', err)
-      setStatusMessage(`error:Crop failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
-    } finally {
-      setIsProcessing(false)
-    }
-  }
-
-  // Listen for apply-crop event from header button
-  useEffect(() => {
-    const handleApplyCropEvent = () => {
-      handleApplyCrop()
-    }
-
-    window.addEventListener('apply-crop', handleApplyCropEvent)
-    return () => window.removeEventListener('apply-crop', handleApplyCropEvent)
-  }, [svgContent, svgDimensions, scale, offset, cropSize, cropAspectRatio])
 
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -2068,91 +648,6 @@ export default function SortTab() {
   useEffect(() => {
     disarmActions()
   }, [showCrop, scale, offset, disarmActions])
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return
-      }
-
-      if (e.key === 'Escape') {
-        disarmActions()
-        return
-      }
-
-      const hasSelection = selectedNodeIds.size > 0
-
-      switch (e.key.toLowerCase()) {
-        case 'v':
-          if (hasSelection) {
-            e.preventDefault()
-            handleToggleVisibility()
-            disarmActions()
-          }
-          break
-        case 'i':
-          if (hasSelection) {
-            e.preventDefault()
-            handleIsolate()
-            disarmActions()
-          }
-          break
-        case 'd':
-          if (hasSelection) {
-            e.preventDefault()
-            if (deleteArmed) {
-              handleDeleteNode()
-              setDeleteArmed(false)
-            } else {
-              setDeleteArmed(true)
-              setSplitArmed(false)
-            }
-          }
-          break
-        case 'g':
-          if (hasSelection) {
-            e.preventDefault()
-            if (selectedNodeIds.size === 1) {
-              const selectedId = Array.from(selectedNodeIds)[0]
-              const selectedNode = findNodeById(layerNodes, selectedId)
-
-              if (selectedNode?.isGroup && selectedNode.children.length > 0) {
-                if (splitArmed) {
-                  handleGroupUngroup()
-                  setSplitArmed(false)
-                } else {
-                  setSplitArmed(true)
-                  setDeleteArmed(false)
-                }
-              }
-            } else {
-              handleGroupUngroup()
-              disarmActions()
-            }
-          }
-          break
-        case 'p':
-          if (canGroupByColor()) {
-            e.preventDefault()
-            handleGroupByColor()
-            disarmActions()
-          }
-          break
-        case 's':
-          if (canSortBySize()) {
-            e.preventDefault()
-            setShowFilterToolbar(!showFilterToolbar)
-            disarmActions()
-          }
-          break
-      }
-    }
-
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [selectedNodeIds, layerNodes, deleteArmed, splitArmed, disarmActions, showFilterToolbar])
 
   return (
     <div className="sort-tab">
