@@ -1,19 +1,19 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
-import { useAppContext } from '../../context/AppContext'
-import FileUpload from '../FileUpload'
-import SVGCanvas from '../SVGCanvas'
-import LayerTree from '../LayerTree'
-import LoadingOverlay from '../LoadingOverlay'
-import { Rulers, RulerUnit } from '../shared/Rulers'
-import { ScaleControls } from '../shared/ScaleControls'
-import { SVGNode } from '../../types/svg'
-import { parseSVGFlatProgressively } from '../../utils/svgParser'
-import { normalizeColor } from '../../utils/colorExtractor'
-import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../utils/pathSimplify'
-import { linesToCompoundPath, HatchLine, Rect } from '../../utils/geometry'
-import { cropSVGInBrowser, getCropDimensions } from '../../utils/cropSVG'
-import { analyzeSVGDimensions } from '../../utils/svgDimensions'
-import { scaleArtwork } from '../../utils/svgTransform'
+import { useAppContext } from '../../../context/AppContext'
+import FileUpload from '../../FileUpload'
+import SVGCanvas from '../../SVGCanvas'
+import LayerTree from '../../LayerTree'
+import LoadingOverlay from '../../LoadingOverlay'
+import { Rulers, RulerUnit } from '../../shared/Rulers'
+import { ScaleControls } from '../../shared/ScaleControls'
+import { SVGNode } from '../../../types/svg'
+import { parseSVGFlatProgressively } from '../../../utils/svgParser'
+import { normalizeColor } from '../../../utils/colorExtractor'
+import { simplifyPathElement, countPathPoints, SIMPLIFY_PRESETS } from '../../../utils/pathSimplify'
+import { linesToCompoundPath, Rect } from '../../../utils/geometry'
+import { cropSVGInBrowser, getCropDimensions } from '../../../utils/cropSVG'
+import { analyzeSVGDimensions } from '../../../utils/svgDimensions'
+import { scaleArtwork } from '../../../utils/svgTransform'
 import {
   findNodeById,
   updateNodeChildren,
@@ -24,14 +24,16 @@ import {
   updateVisibilityForSelected,
   showAllNodes,
   isolateNodes,
-} from '../../utils/nodeUtils'
+} from '../../../utils/nodeUtils'
 import {
   getElementColor,
   getNodeColor,
   getNodeStrokeWidth,
-} from '../../utils/elementColor'
-import { useArrangeTools } from '../../hooks/useArrangeTools'
-import { useToolHandlers } from '../../hooks/useToolHandlers'
+} from '../../../utils/elementColor'
+import { useArrangeTools } from '../../../hooks/useArrangeTools'
+import { useToolHandlers } from '../../../hooks/useToolHandlers'
+import { collectLines } from './weldUtils'
+import { getElementType } from './elementTypeUtils'
 import './SortTab.css'
 
 export default function SortTab() {
@@ -1352,48 +1354,6 @@ export default function SortTab() {
     setIsProcessing(false)
   }
 
-  // Get element type for filtering - checks if element is fill or stroke
-  const getElementType = (node: SVGNode): 'fill' | 'stroke' | 'other' => {
-    if (node.isGroup) {
-      // For groups, determine based on children content
-      let hasFillChildren = false
-      let hasStrokeChildren = false
-
-      const checkChildren = (n: SVGNode) => {
-        if (!n.isGroup) {
-          const type = getLeafElementType(n)
-          if (type === 'fill') hasFillChildren = true
-          if (type === 'stroke') hasStrokeChildren = true
-        }
-        n.children.forEach(checkChildren)
-      }
-      checkChildren(node)
-
-      if (hasFillChildren && !hasStrokeChildren) return 'fill'
-      if (hasStrokeChildren && !hasFillChildren) return 'stroke'
-      return 'other' // Mixed or empty
-    }
-    return getLeafElementType(node)
-  }
-
-  // Get type for a leaf (non-group) element
-  const getLeafElementType = (node: SVGNode): 'fill' | 'stroke' | 'other' => {
-    const element = node.element
-    const fill = element?.getAttribute('fill')
-    const stroke = element?.getAttribute('stroke')
-    const style = element?.getAttribute('style') || ''
-
-    const hasFillStyle = style.includes('fill:') && !style.includes('fill:none') && !style.includes('fill: none')
-    const hasStrokeStyle = style.includes('stroke:') && !style.includes('stroke:none') && !style.includes('stroke: none')
-
-    const hasFill = hasFillStyle || (fill && fill !== 'none' && fill !== 'transparent')
-    const hasStroke = hasStrokeStyle || (stroke && stroke !== 'none' && stroke !== 'transparent')
-
-    if (hasFill && !hasStroke) return 'fill'
-    if (hasStroke && !hasFill) return 'stroke'
-    return 'other'
-  }
-
   // Count fills and strokes in the selected node's children
   const getFilterCounts = useCallback((): { fills: number; strokes: number } => {
     if (selectedNodeIds.size !== 1) return { fills: 0, strokes: 0 }
@@ -1851,213 +1811,6 @@ export default function SortTab() {
 
     setWeldArmed(false)
     setStatusMessage('')
-
-    // Extract path d attribute as HatchLines
-    const pathToLines = (pathD: string): HatchLine[] => {
-      const lines: HatchLine[] = []
-      // Parse path d attribute to extract line segments
-      const commands = pathD.match(/[MLHVCSQTAZmlhvcsqtaz][^MLHVCSQTAZmlhvcsqtaz]*/gi) || []
-
-      let currentX = 0, currentY = 0
-      let startX = 0, startY = 0
-
-      for (const cmd of commands) {
-        const type = cmd[0]
-        const args = cmd.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n))
-
-        switch (type) {
-          case 'M':
-            currentX = args[0]
-            currentY = args[1]
-            startX = currentX
-            startY = currentY
-            // Process additional coordinates as implicit L commands
-            for (let i = 2; i < args.length; i += 2) {
-              const nextX = args[i]
-              const nextY = args[i + 1]
-              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
-              currentX = nextX
-              currentY = nextY
-            }
-            break
-          case 'm':
-            currentX += args[0]
-            currentY += args[1]
-            startX = currentX
-            startY = currentY
-            for (let i = 2; i < args.length; i += 2) {
-              const nextX = currentX + args[i]
-              const nextY = currentY + args[i + 1]
-              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
-              currentX = nextX
-              currentY = nextY
-            }
-            break
-          case 'L':
-            for (let i = 0; i < args.length; i += 2) {
-              const nextX = args[i]
-              const nextY = args[i + 1]
-              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
-              currentX = nextX
-              currentY = nextY
-            }
-            break
-          case 'l':
-            for (let i = 0; i < args.length; i += 2) {
-              const nextX = currentX + args[i]
-              const nextY = currentY + args[i + 1]
-              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: nextY })
-              currentX = nextX
-              currentY = nextY
-            }
-            break
-          case 'H':
-            for (const x of args) {
-              lines.push({ x1: currentX, y1: currentY, x2: x, y2: currentY })
-              currentX = x
-            }
-            break
-          case 'h':
-            for (const dx of args) {
-              const nextX = currentX + dx
-              lines.push({ x1: currentX, y1: currentY, x2: nextX, y2: currentY })
-              currentX = nextX
-            }
-            break
-          case 'V':
-            for (const y of args) {
-              lines.push({ x1: currentX, y1: currentY, x2: currentX, y2: y })
-              currentY = y
-            }
-            break
-          case 'v':
-            for (const dy of args) {
-              const nextY = currentY + dy
-              lines.push({ x1: currentX, y1: currentY, x2: currentX, y2: nextY })
-              currentY = nextY
-            }
-            break
-          case 'Z':
-          case 'z':
-            if (currentX !== startX || currentY !== startY) {
-              lines.push({ x1: currentX, y1: currentY, x2: startX, y2: startY })
-            }
-            currentX = startX
-            currentY = startY
-            break
-          // For curves (C, S, Q, T, A), we approximate with the start and end points
-          case 'C':
-            for (let i = 0; i < args.length; i += 6) {
-              const endX = args[i + 4]
-              const endY = args[i + 5]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-          case 'c':
-            for (let i = 0; i < args.length; i += 6) {
-              const endX = currentX + args[i + 4]
-              const endY = currentY + args[i + 5]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-          case 'S':
-          case 's':
-            for (let i = 0; i < args.length; i += 4) {
-              const endX = type === 'S' ? args[i + 2] : currentX + args[i + 2]
-              const endY = type === 'S' ? args[i + 3] : currentY + args[i + 3]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-          case 'Q':
-          case 'q':
-            for (let i = 0; i < args.length; i += 4) {
-              const endX = type === 'Q' ? args[i + 2] : currentX + args[i + 2]
-              const endY = type === 'Q' ? args[i + 3] : currentY + args[i + 3]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-          case 'T':
-          case 't':
-            for (let i = 0; i < args.length; i += 2) {
-              const endX = type === 'T' ? args[i] : currentX + args[i]
-              const endY = type === 'T' ? args[i + 1] : currentY + args[i + 1]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-          case 'A':
-          case 'a':
-            // Arc - approximate with line to endpoint
-            for (let i = 0; i < args.length; i += 7) {
-              const endX = type === 'A' ? args[i + 5] : currentX + args[i + 5]
-              const endY = type === 'A' ? args[i + 6] : currentY + args[i + 6]
-              lines.push({ x1: currentX, y1: currentY, x2: endX, y2: endY })
-              currentX = endX
-              currentY = endY
-            }
-            break
-        }
-      }
-
-      return lines
-    }
-
-    // Convert line element to HatchLine
-    const lineElementToLine = (el: Element): HatchLine | null => {
-      const x1 = parseFloat(el.getAttribute('x1') || '0')
-      const y1 = parseFloat(el.getAttribute('y1') || '0')
-      const x2 = parseFloat(el.getAttribute('x2') || '0')
-      const y2 = parseFloat(el.getAttribute('y2') || '0')
-      if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) return null
-      return { x1, y1, x2, y2 }
-    }
-
-    // Collect all lines from a node recursively
-    const collectLines = (node: SVGNode): HatchLine[] => {
-      const lines: HatchLine[] = []
-      const tagName = node.element.tagName.toLowerCase()
-
-      if (tagName === 'path') {
-        const d = node.element.getAttribute('d')
-        if (d) {
-          lines.push(...pathToLines(d))
-        }
-      } else if (tagName === 'line') {
-        const line = lineElementToLine(node.element)
-        if (line) lines.push(line)
-      } else if (tagName === 'polyline' || tagName === 'polygon') {
-        const points = node.element.getAttribute('points') || ''
-        const pairs = points.trim().split(/[\s,]+/).map(parseFloat)
-        for (let i = 0; i < pairs.length - 3; i += 2) {
-          lines.push({ x1: pairs[i], y1: pairs[i + 1], x2: pairs[i + 2], y2: pairs[i + 3] })
-        }
-        // Close polygon
-        if (tagName === 'polygon' && pairs.length >= 4) {
-          lines.push({
-            x1: pairs[pairs.length - 2],
-            y1: pairs[pairs.length - 1],
-            x2: pairs[0],
-            y2: pairs[1]
-          })
-        }
-      }
-
-      // Collect from children
-      for (const child of node.children) {
-        lines.push(...collectLines(child))
-      }
-
-      return lines
-    }
 
     // Process each selected node
     let totalBefore = 0
