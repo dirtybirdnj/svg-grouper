@@ -1,75 +1,116 @@
-# rat-king Integration Complete
+# Next Session: Fill Tab Fixes
 
-## Status: DONE (Fully Cleaned Up)
+## Issues to Fix
 
-svg-grouper now uses rat-king (Rust) exclusively for ALL pattern generation.
-All JavaScript fallback code has been removed.
+### 1. Fill Offset from Strokes (High Priority)
 
-### What Changed (Latest Session - Dec 2024)
+**Symptom:** Pattern fills are consistently offset from shape outlines - fills don't align with strokes.
 
-1. **Removed all JavaScript fill pattern code**:
-   - Deleted `fillWorker.ts` (406 lines)
-   - Gutted `fillPatterns.ts` from 2,185 → 593 lines (types only)
-   - Removed `generateFillsLocally` from FillTab.tsx (~250 lines)
-   - Removed dead clipping functions from `geometry.ts` (2,015 → 1,402 lines)
-   - **Total: ~2,660 lines of duplicate JS code removed**
+**Root Cause:** `getAllPolygonsFromElement` in `src/utils/geometry.ts:557` extracts raw coordinate attributes WITHOUT applying SVG transforms. When an element has a `transform` attribute (translate, rotate, scale, matrix), the polygon coordinates are in local space but the stroke outline is displayed with transforms applied.
 
-2. **Updated JSON interface for chains output**:
-   - rat-king now returns pre-chained polylines in addition to raw lines
-   - Added `RatKingChainStats` interface for optimization telemetry
-   - Logs chain reduction stats (e.g., "1000 lines → 50 chains, 95% reduction")
+**Diagnosis Steps:**
+1. Check if input SVGs have transforms on shape elements
+2. Log the extracted polygon bounds vs the displayed element bounds
 
-3. **P0 Hole Detection**: rat-king now properly detects holes using winding direction
+**Fix Options:**
 
-4. **P1 Line Chaining**: rat-king chains connected line segments into polylines
+**Option A: Apply transforms during polygon extraction** (Recommended)
+- Modify `getAllPolygonsFromElement` to detect and apply the element's CTM (current transform matrix)
+- Use `element.getCTM()` or `element.getScreenCTM()` to get the cumulative transform
+- Transform each extracted point by the matrix before returning
 
-### Architecture (Clean)
+**Option B: Flatten transforms in SVG before processing**
+- Add a preprocessing step that bakes all transforms into coordinates
+- Use the existing `normalizeSVG` IPC handler to flatten transforms
+- This is cleaner but requires modifying the input SVG
 
+**Files to Modify:**
+- `src/utils/geometry.ts` - `getAllPolygonsFromElement` function
+- Possibly `electron/fillGenerator.ts` - `buildSvgFromPolygons` if transforms need to be preserved
+
+---
+
+### 2. Pattern Preview Swatch (Medium Priority)
+
+**Symptom:** Layer list swatches sometimes show multiple polygons instead of one clean shape.
+
+**User Requirement:** Show pattern applied to a simple rectangle, with better default settings for visibility.
+
+**Current Code:** `src/components/tabs/FillTab.tsx:1776` - `getLayerPreview` returns cached banner SVG.
+
+**Fix:**
+1. Ensure banner requests always use a clean rectangular test shape
+2. Tune default banner settings for swatch visibility:
+   - Appropriate `width` and `height` for the swatch size
+   - `spacing` that shows the pattern clearly at swatch scale
+   - `cells: 1` to ensure single shape output
+3. Check if the returned SVG has multiple `<path>` or `<polygon>` elements and merge if needed
+
+**Files to Modify:**
+- `src/components/tabs/FillTab.tsx` - banner request parameters in `useEffect` around line 1750
+- Possibly the banner cache key generation
+
+---
+
+### 3. Banner ENOENT Error (High Priority)
+
+**Symptom:** Console error: `Failed to read banner output: ENOENT: no such file or directory`
+
+**Root Cause:** Race condition - code tries to read temp file before rat-king finishes writing it. The `close` event fires but the file isn't flushed yet.
+
+**Good News:** User confirmed rat-king now supports stdout mode (`-o -`).
+
+**Fix:** Switch from temp files to stdout in the `pattern-banner` IPC handler.
+
+**Current Code:** `electron/main.ts:388-463`
+```javascript
+// Current approach - temp file (broken)
+const tmpOutput = path.join(os.tmpdir(), `rat-king-banner-...`)
+cliArgs = [..., '-o', tmpOutput]
+// Later: fs.readFileSync(tmpOutput) - fails with ENOENT
 ```
-svg-grouper (Electron)
-    │
-    ├── FillTab.tsx (UI only - no pattern generation)
-    │       │
-    │       ▼
-    ├── fillGenerator.ts (IPC handler)
-    │       │
-    │       ▼ stdin/stdout JSON
-    └── rat-king (Rust binary)
-            │
-            └── Returns: {
-                  shapes: [{ id, lines, chains? }],
-                  chain_stats?: { input_lines, output_chains, reduction_percent }
-                }
+
+**New Code Pattern:**
+```javascript
+const cliArgs = [
+  'banner',
+  '--only', pattern,
+  '-w', width.toString(),
+  '--height', height.toString(),
+  '-n', cells.toString(),
+  '-s', spacing.toString(),
+  '--seed', seed.toString(),
+  '-o', '-',  // stdout mode
+]
+
+let stdout = ''
+proc.stdout.on('data', (data) => {
+  stdout += data.toString()
+})
+
+proc.on('close', (code) => {
+  if (code === 0) {
+    resolve(stdout)  // SVG content directly from stdout
+  } else {
+    reject(...)
+  }
+})
 ```
 
-### Patterns Available (17)
+**Files to Modify:**
+- `electron/main.ts` - `pattern-banner` IPC handler (lines 388-463)
 
-lines, crosshatch, zigzag, wiggle, spiral, fermat, concentric, radial,
-honeycomb, crossspiral, hilbert, gyroid, scribble, guilloche, lissajous,
-rose, phyllotaxis
+---
 
-### Commands
+## Implementation Order
 
-```bash
-# Rebuild rat-king if needed
-cd ~/Code/rat-king/crates
-cargo build --release
-cp target/release/rat-king ~/.cargo/bin/
+1. **Banner ENOENT fix** - Quick win, unblocks testing of swatch improvements
+2. **Swatch default settings** - Tune after banner works correctly
+3. **Fill offset fix** - Requires more investigation, bigger change
 
-# Run svg-grouper
-cd ~/Code/svg-grouper
-npm run dev
-```
+## Verification
 
-### Files Remaining (Types/Optimization Only)
-
-- `fillPatterns.ts` - Types + `optimizeLineOrderMultiPass` (post-processing)
-- `geometry.ts` - SVG parsing, polygon extraction, path conversion
-- `fillGenerator.ts` - IPC handlers for rat-king communication
-
-### Next Steps (Optional)
-
-See `RAT-KING-REFACTOR.md` for remaining features:
-- Expose all 30 rat-king patterns (currently 17)
-- Add sketchy effect support
-- Use rat-king's native harness command for PatternTest
+After fixes, verify with the "DAILY" SVG shown in the screenshot:
+- [ ] Fill lines align with stroke outlines
+- [ ] Layer list shows clean pattern swatches
+- [ ] No console errors for banner generation
