@@ -35,6 +35,8 @@ import { useToolHandlers } from '../../../hooks/useToolHandlers'
 import { collectLines } from './weldUtils'
 import { getElementType } from './elementTypeUtils'
 import { collectAllColorsWithCounts, extractPathInfo, extractGroupInfo } from './pathAnalysis'
+import StatusBar from './StatusBar'
+import SidebarToolbar from './SidebarToolbar'
 import './SortTab.css'
 
 export default function SortTab() {
@@ -2157,65 +2159,24 @@ export default function SortTab() {
       <aside className="sidebar" style={{ width: sidebarWidth }}>
         <div className="sidebar-header">
           <h2>Layers</h2>
-          <div className="sidebar-actions">
-            <button
-              className={`action-button ${showFilterToolbar ? 'active' : ''}`}
-              onClick={() => setShowFilterToolbar(!showFilterToolbar)}
-              disabled={!canSortBySize()}
-            >
-              ▼
-            </button>
-            <button
-              className="action-button"
-              onClick={handleGroupByColor}
-              disabled={!canGroupByColor()}
-              title="Group by Color (P) - Create subgroups for each color"
-            >
-              🎨
-            </button>
-            <button
-              className="action-button"
-              onClick={handleSimplifyPaths}
-              disabled={!canSimplify()}
-              title={`Simplify Paths - Reduce points (tolerance: ${simplifyTolerance})`}
-            >
-              ✂
-            </button>
-            <button
-              className="action-button"
-              onClick={handleWeld}
-              disabled={!canWeld()}
-              style={{
-                background: weldArmed ? '#e74c3c' : undefined,
-                color: weldArmed ? 'white' : undefined,
-              }}
-              title={weldArmed ? "Click again to confirm weld" : "Weld - Combine paths into compound path (reduces path count)"}
-            >
-              ⚡
-            </button>
-            <div className="toolbar-divider" />
-            <button
-              className="action-button"
-              onClick={handleFlipOrder}
-              disabled={!canFlipOrder()}
-              title="Flip Order - Reverse order of selected items or children of selected group"
-            >
-              ⇅
-            </button>
-            <button
-              className="action-button"
-              onClick={handleFlattenAll}
-              disabled={layerNodes.length === 0}
-              style={{
-                background: flattenArmed ? '#e74c3c' : undefined,
-                color: flattenArmed ? 'white' : undefined,
-              }}
-              title={flattenArmed ? "Click again to confirm flatten" : "Flatten - Remove empty layers, ungroup all, group by color"}
-            >
-              🗄️
-            </button>
-{/* Visibility and delete buttons hidden - use keyboard shortcuts V and D instead */}
-          </div>
+          <SidebarToolbar
+            showFilterToolbar={showFilterToolbar}
+            weldArmed={weldArmed}
+            flattenArmed={flattenArmed}
+            simplifyTolerance={simplifyTolerance}
+            canSortBySize={canSortBySize()}
+            canGroupByColor={canGroupByColor()}
+            canSimplify={canSimplify()}
+            canWeld={canWeld()}
+            canFlipOrder={canFlipOrder()}
+            hasLayerNodes={layerNodes.length > 0}
+            onToggleFilterToolbar={() => setShowFilterToolbar(!showFilterToolbar)}
+            onGroupByColor={handleGroupByColor}
+            onSimplifyPaths={handleSimplifyPaths}
+            onWeld={handleWeld}
+            onFlipOrder={handleFlipOrder}
+            onFlattenAll={handleFlattenAll}
+          />
         </div>
         <div className="sidebar-content">
           {isProcessing && (
@@ -2528,109 +2489,23 @@ export default function SortTab() {
         </div>
       </main>
 
-      {(statusMessage || fileName) && (
-        <div className="status-bar">
-          <div className="status-bar-left">
-            {fileName && <span className="status-filename">{fileName}</span>}
-            {statusMessage && (
-              <span className={`status-message ${statusMessage.startsWith('error:') ? 'error' : ''}`}>
-                {statusMessage.startsWith('error:') ? statusMessage.slice(6) : statusMessage}
-              </span>
-            )}
-          </div>
-          <div className="status-bar-center">
-            {svgDimensions && (
-              <span className="status-dimensions">
-                {svgDimensions.width} × {svgDimensions.height} px • {(svgDimensions.width / 96).toFixed(2)} × {(svgDimensions.height / 96).toFixed(2)} in • {(svgDimensions.width / 37.8).toFixed(2)} × {(svgDimensions.height / 37.8).toFixed(2)} cm
-              </span>
-            )}
-          </div>
-          <div className="status-bar-right">
-            {selectedPathInfo && (
-              <div
-                className={`status-path-info ${isHighlightPersistent ? 'highlight-active' : ''}`}
-                onMouseEnter={handlePathInfoMouseEnter}
-                onMouseLeave={handlePathInfoMouseLeave}
-                onClick={handlePathInfoClick}
-                title={isHighlightPersistent ? 'Click to hide highlight' : 'Hover to highlight, click to lock'}
-              >
-                {selectedPathInfo.color && (
-                  <span className="path-info-item">
-                    <span className="path-info-swatch" style={{ backgroundColor: selectedPathInfo.color }} />
-                    {selectedPathInfo.color}
-                  </span>
-                )}
-                {selectedPathInfo.strokeWidth && (
-                  <span className="path-info-item">
-                    stroke: {selectedPathInfo.strokeWidth}
-                  </span>
-                )}
-                <span
-                  className={`path-info-item clickable ${showPointMarkers === 'all' ? 'active' : ''}`}
-                  onClick={handlePointCountClick}
-                  title="Click to show all points"
-                >
-                  {selectedPathInfo.pointCount} pts
-                </span>
-                <span
-                  className={`path-info-item clickable ${showPointMarkers === 'start' ? 'active' : ''}`}
-                  onClick={handleStartPointClick}
-                  title="Click to show start point"
-                >
-                  start: ({selectedPathInfo.startPos.x.toFixed(1)}, {selectedPathInfo.startPos.y.toFixed(1)})
-                </span>
-                <span
-                  className={`path-info-item clickable ${showPointMarkers === 'end' ? 'active' : ''}`}
-                  onClick={handleEndPointClick}
-                  title="Click to show end point"
-                >
-                  end: ({selectedPathInfo.endPos.x.toFixed(1)}, {selectedPathInfo.endPos.y.toFixed(1)})
-                </span>
-              </div>
-            )}
-            {selectedGroupInfo && (
-              <div className="status-group-info">
-                <span className="group-info-summary">
-                  {selectedGroupInfo.fillCount}F / {selectedGroupInfo.pathCount}P
-                </span>
-                {Object.entries(selectedGroupInfo.colorCounts).map(([color, counts]) => (
-                  <span key={color} className="group-color-item">
-                    <span className="path-info-swatch" style={{ backgroundColor: color }} />
-                    <span className="group-color-counts">
-                      {counts.fill > 0 && <span className="count-fill">{counts.fill}F</span>}
-                      {counts.path > 0 && <span className="count-path">{counts.path}P</span>}
-                    </span>
-                  </span>
-                ))}
-              </div>
-            )}
-            {!selectedPathInfo && !selectedGroupInfo && documentColors.length > 0 && (
-              <div className="status-bar-colors">
-                {documentColors.map((color, index) => {
-                  const stats = documentColorStats.get(color)
-                  return (
-                    <span
-                      key={index}
-                      className="color-stat-item"
-                      title={`${color} - ${stats?.paths || 0} paths, ${stats?.points || 0} points`}
-                    >
-                      <span
-                        className="color-swatch"
-                        style={{
-                          backgroundColor: color,
-                        }}
-                      />
-                      <span className="color-stat-counts">
-                        {stats?.paths || 0}/{stats?.points || 0}
-                      </span>
-                    </span>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <StatusBar
+        fileName={fileName}
+        statusMessage={statusMessage}
+        svgDimensions={svgDimensions}
+        selectedPathInfo={selectedPathInfo}
+        selectedGroupInfo={selectedGroupInfo}
+        documentColors={documentColors}
+        documentColorStats={documentColorStats}
+        isHighlightPersistent={isHighlightPersistent}
+        showPointMarkers={showPointMarkers}
+        onPathInfoMouseEnter={handlePathInfoMouseEnter}
+        onPathInfoMouseLeave={handlePathInfoMouseLeave}
+        onPathInfoClick={handlePathInfoClick}
+        onStartPointClick={handleStartPointClick}
+        onEndPointClick={handleEndPointClick}
+        onPointCountClick={handlePointCountClick}
+      />
     </div>
   )
 }
