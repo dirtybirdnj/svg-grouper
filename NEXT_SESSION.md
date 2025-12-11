@@ -1,6 +1,35 @@
 # Next Session: Codebase Modularization
 
-## Completed This Session - Phase 2: Context Split + Code Splitting
+## Completed This Session - Phase 3: Component Modularization
+
+### LayerTree.tsx Split (691 → 6 files)
+| File | Purpose |
+|------|---------|
+| `types.ts` | Interface definitions for drag/drop and props |
+| `nodeUtils.ts` | Helper functions for element type detection and path info |
+| `ColorPickerPopup.tsx` | Standalone color picker popup component |
+| `LayerNode.tsx` | Recursive tree node renderer |
+| `LayerTree.tsx` | Main tree component with drag/drop logic |
+| `index.ts` | Barrel exports |
+
+### PatternTest.tsx Split (1181 → 9 files)
+| File | Purpose |
+|------|---------|
+| `types.ts` | Interface definitions for test results and settings |
+| `constants.ts` | Pattern lists, thresholds, helper polygon functions |
+| `SliderInput.tsx` | Reusable slider+text input component |
+| `usePatternGenerator.ts` | Hook for IPC-based pattern generation |
+| `PatternGrid.tsx` | Grid display of pattern preview cells |
+| `TortureTestReport.tsx` | Results table for torture test |
+| `StressTestViewport.tsx` | Zoomable/pannable SVG viewport |
+| `PatternTest.tsx` | Main component orchestrating all features |
+| `index.ts` | Barrel exports |
+
+**Total: ~1,900 lines → 15 focused files**
+
+---
+
+## Previously Completed - Phase 2: Context Split + Code Splitting
 
 ### AppContext Split (631 → 8 files)
 Split monolithic AppContext.tsx into domain-specific contexts:
