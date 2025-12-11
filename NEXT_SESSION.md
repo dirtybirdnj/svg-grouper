@@ -1,6 +1,42 @@
 # Next Session: Codebase Modularization
 
-## Completed This Session - Phase 1: Utility Modularization
+## Completed This Session - Phase 2: Context Split + Code Splitting
+
+### AppContext Split (631 → 8 files)
+Split monolithic AppContext.tsx into domain-specific contexts:
+
+| Context | Lines | Purpose |
+|---------|-------|---------|
+| `types.ts` | 60 | Shared type definitions |
+| `SVGContext.tsx` | 200 | SVG document state, rebuild, sync |
+| `LayerContext.tsx` | 70 | Layer tree, selection, O(1) node lookup |
+| `CanvasContext.tsx` | 45 | Viewport scale, offset, crop controls |
+| `ToolContext.tsx` | 95 | Active tool, fill settings, handlers |
+| `UIContext.tsx` | 115 | Tabs, loading, status, processing |
+| `FillContext.tsx` | 45 | Fill targets, weave state, order data |
+| `AppProvider.tsx` | 35 | Combined provider wrapper |
+| `index.ts` | 150 | Barrel exports + legacy useAppContext() |
+
+**Legacy compatibility**: `useAppContext()` shim combines all contexts for gradual migration.
+
+### Code Splitting Implementation
+Converted static tab imports to React.lazy() with dynamic imports:
+
+| Metric | Before | After | Change |
+|--------|--------|-------|--------|
+| Main bundle | 519 KB | 241 KB | **-54%** |
+
+Tab chunk sizes:
+- SortTab: 92 KB
+- FillTab: 45 KB
+- ExportTab: 40 KB
+- MergeTab: 23 KB
+- PatternTest: 17 KB
+- OrderTab: 13 KB
+
+---
+
+## Previously Completed - Phase 1: Utility Modularization
 
 Successfully modularized 6 large utility files into directory structures with barrel exports:
 
@@ -63,7 +99,7 @@ src/utils/
 
 ---
 
-## In Progress: Modularization Plan
+## Remaining Phases
 
 ### Goals
 1. **Reduce context for AI agents** - Smaller, focused files allow agents to work with less context
@@ -71,53 +107,22 @@ src/utils/
 3. **Enable parallel development** - Multiple agents can work on different modules simultaneously
 4. **Better maintainability** - Easier to understand, test, and modify individual modules
 
-### Remaining Phases
-
-#### Phase 2: Shared Components (~500 lines each)
+### Phase 3: Shared Components (~500 lines each)
 - `SVGCanvas.tsx` - Canvas rendering, zoom, pan
 - `LayerTree.tsx` - Tree view component
 - `ImportDialog.tsx` - File import UI
 - `UnifiedLayerList.tsx` - Layer management
 
-#### Phase 3: Context Refactoring
-- `AppContext.tsx` (~800 lines) - Split into domain-specific contexts
-
-#### Phase 4: Medium Components
+### Phase 4: Medium Components
 - `PatternTest.tsx` - Pattern testing UI
 - `OrderTab.tsx` - Ordering tab
 
-#### Phase 5: Large Tabs (Future)
+### Phase 5: Large Tabs (Future)
 - `MergeTab.tsx` - Color merging
 - `ExportTab.tsx` - Export functionality
 - `FillTab.tsx` - Fill pattern application
 - `SortTab.tsx` - Sorting and layer management
-- `App.tsx` - Main application
-
----
-
-## Previous Session Completed
-
-- **Merge Tab Fill Readiness UI** - Added fill readiness indicators
-- **Pattern Preview Swatch Fix** - Updated `pattern-banner` handler
-- **Banner ENOENT fix** - Switched to stdout mode
-- **Transform baking** - Rewrote `normalize_svg.py`
-- **Merge before fill** - Added checkbox option
-- **Smart warning banner** - Shows warning when >3 shapes detected
-
----
-
-## Questions for Next Session
-
-1. **Phase 2 Priority**: Should we prioritize shared components (SVGCanvas, LayerTree) or move directly to tab refactoring?
-
-2. **Context Split Strategy**: AppContext has ~800 lines. Options:
-   - Split by feature (SVGContext, SelectionContext, ToolContext)
-   - Split by lifecycle (LoadContext, EditContext, ExportContext)
-   - Keep unified but extract helper hooks
-
-3. **Testing**: Should we add unit tests as we modularize, or defer testing?
-
-4. **Bundle Size**: The build shows chunks >500KB. Should we implement code splitting during this refactor?
+- `App.tsx` - Main application (~1000 lines)
 
 ---
 
