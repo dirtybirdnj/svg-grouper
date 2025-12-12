@@ -1,213 +1,466 @@
 # Enhancement Suggestions for SVG Grouper
 
-This document contains suggestions for improving performance, reducing file size, and enhancing the user experience of SVG Grouper.
+Active enhancement backlog with implementation guidance for agents.
+Last updated: 2024-12-11
 
-## High Priority - File Size Reduction (Cricut Compatibility)
+---
 
-### 1. Path Simplification with simplify.js
+## Status Legend
 
-**Problem:** Files are too large for Cricut systems due to excessive points in paths.
+- **DONE** - Implemented and working
+- **PENDING** - Not started, ready for implementation
+- **PARTIAL** - Partially implemented, needs completion
 
-**Solution:** Integrate [simplify-js](https://mourner.github.io/simplify-js/) for path simplification using the Ramer-Douglas-Peucker algorithm.
+---
 
-**Implementation:**
-- Add `simplify-js` as a dependency: `npm install simplify-js`
-- Create a "Simplify Paths" button on the Sort tab
-- Allow user-configurable tolerance (0.1 - 10 pixels)
-- Apply to selected groups or individual paths
-- Show before/after point counts for user feedback
+## 1. Export Coordinate Precision Control
 
-**Code location:** `src/components/tabs/SortTab.tsx`
+**Status:** PENDING
+**Priority:** Medium
+**Effort:** 2-3 hours
 
+### Problem
+SVG coordinates can have excessive decimal places (e.g., `123.456789012`). While `pathSimplify.ts` has a `precision` parameter, it's not exposed in the Export UI.
+
+### Current State
+- `src/utils/pathSimplify.ts:55-98` has `pointsToOptimizedPathData(points, closed, precision)`
+- Precision defaults to 2 decimal places
+- NOT exposed in ExportTab UI
+
+### Implementation
+
+**Files to modify:**
+- `src/components/tabs/ExportTab/ExportTab.tsx`
+
+**Add UI control:**
+```tsx
+// Add state
+const [coordinatePrecision, setCoordinatePrecision] = useState(2)
+
+// Add slider in "Plotter Optimizations" section (~line 800)
+<div className="control-group">
+  <label>Coordinate Precision: {coordinatePrecision} decimals</label>
+  <div className="control-row">
+    <input
+      type="range"
+      min="0"
+      max="6"
+      step="1"
+      value={coordinatePrecision}
+      onChange={(e) => setCoordinatePrecision(Number(e.target.value))}
+    />
+    <span className="range-value">{coordinatePrecision}</span>
+  </div>
+  <div className="control-help">Lower = smaller file, 2 is typical for plotters</div>
+</div>
+```
+
+**Wire to export:**
+- Pass `coordinatePrecision` to the SVG serialization/rebuild function
+- Apply rounding during `rebuildSvgFromLayers()` or export
+
+---
+
+## 2. Debounce Slider Changes
+
+**Status:** PENDING
+**Priority:** High (Quick Win)
+**Effort:** 1 hour
+
+### Problem
+Sliders trigger expensive recalculations on every change event. Found 6+ range inputs that update state directly without debouncing.
+
+### Current State
+- Sliders in ExportTab, SortTab, FillTab call `setState` directly on `onChange`
+- No debounce utility exists in codebase
+- Only `useFillGeneration.ts` has any debounce logic
+
+### Implementation
+
+**Create utility:**
 ```typescript
-// Example integration
-import simplify from 'simplify-js';
+// src/hooks/useDebounce.ts
+import { useState, useEffect } from 'react'
 
-function simplifyPath(points: Point[], tolerance: number): Point[] {
-  return simplify(points, tolerance, true); // true = high quality
+export function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+
+  return debouncedValue
+}
+
+export function useDebouncedCallback<T extends (...args: any[]) => void>(
+  callback: T,
+  delay: number
+): T {
+  const timeoutRef = useRef<NodeJS.Timeout>()
+
+  return useCallback((...args: Parameters<T>) => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current)
+    timeoutRef.current = setTimeout(() => callback(...args), delay)
+  }, [callback, delay]) as T
 }
 ```
 
-### 2. Decimal Precision Reduction
+**Apply to sliders:**
+- FillTab: spacing, angle, wiggle amplitude/frequency sliders
+- ExportTab: margin, inset, stroke width sliders
+- SortTab: crop size slider
 
-**Problem:** SVG coordinates often have excessive decimal places (e.g., `123.456789012`).
-
-**Solution:** Round coordinates to 2-3 decimal places during export.
-
-**Implementation:**
-- Add option in Export tab: "Coordinate precision" (0-6 decimals)
-- Apply rounding during `rebuildSvgFromLayers()`
-- Could reduce file size by 20-40%
-
-### 3. Path Command Optimization
-
-**Problem:** Many paths use verbose L (lineto) commands where H/V could be used.
-
-**Solution:** Optimize path data during export:
-- Convert `L x,y` to `H x` when only X changes
-- Convert `L x,y` to `V y` when only Y changes
-- Use relative commands (l, h, v) when they're shorter
+**Recommended delay:** 100-150ms
 
 ---
 
-## Medium Priority - Code Efficiency
+## 3. Virtual Scrolling for Layer Trees
 
-### 4. Reduce Duplicated Code in FillTab.tsx and geometry.ts
+**Status:** PENDING
+**Priority:** Medium
+**Effort:** 4-6 hours
 
-**Problem:** `FillTab.tsx` (1400+ lines) duplicates many functions from `geometry.ts` and `fillPatterns.ts`.
+### Problem
+Layer trees with 1000+ items cause performance issues. All items render even when not visible.
 
-**Solution:** Refactor FillTab to import from utility modules:
-- `parsePathIntoSubpaths` - duplicated
-- `getPolygonPoints` - duplicated
-- `identifyOuterAndHoles` - duplicated
-- `clipLinesToPolygon` - duplicated
+### Current State
+- `UnifiedLayerList.tsx` (340 lines) renders all items
+- `LayerTree.tsx` (114 lines) + `LayerNode.tsx` (273 lines) also render all
+- No virtualization library installed
 
-**Files affected:**
-- `src/components/tabs/FillTab.tsx`
-- `src/utils/geometry.ts`
-- `src/utils/fillPatterns.ts`
+### Implementation
 
-### 5. Memoization of Expensive Calculations
+**Install dependency:**
+```bash
+npm install @tanstack/react-virtual
+# or
+npm install react-window
+```
 
-**Problem:** Some calculations are repeated on every render.
-
-**Solution:** Use `useMemo` more aggressively for:
-- `collectAllColorsWithCounts()` in SortTab
-- `getSelectedPathInfo()` / `getSelectedGroupInfo()` in SortTab
-- Layer tree traversals
-
-### 6. Virtual Scrolling for Large Layer Trees
-
-**Problem:** Layer trees with 1000+ items cause performance issues.
-
-**Solution:** Implement virtual scrolling using `react-window` or similar:
-- Only render visible items
-- Lazy load children on expand
-- Add search/filter functionality
-
----
-
-## Lower Priority - UX Improvements
-
-### 7. Fix Crop Functionality
-
-**Current Issue:** Crop overlay displays but doesn't actually crop the SVG.
-
-**Required Implementation:**
-- Calculate SVG viewBox based on crop region and current pan/zoom
-- Add "Apply Crop" button that:
-  1. Calculates the visible region in SVG coordinates
-  2. Updates SVG viewBox attribute
-  3. Optionally removes elements outside crop region
-  4. Updates layer nodes to reflect changes
-
-**Files affected:**
-- `src/components/SVGCanvas.tsx`
-- `src/components/tabs/SortTab.tsx` or new CropTab
-- `src/App.tsx` (toolbar crop button)
-
-### 8. Add Path/Point Statistics on Fill Tab
-
-**Problem:** User can't see how many paths/points will be generated before applying fill.
-
-**Solution:** Add live preview statistics:
-- Total lines to be generated
-- Estimated point count
-- Travel distance (pen up time)
-- Show these in the Fill tab sidebar
-
-### 9. Undo/Redo Support
-
-**Problem:** No way to undo changes like fill application or layer deletion.
-
-**Solution:** Implement history stack:
-- Store snapshots of `layerNodes` state
-- Add keyboard shortcuts (Cmd+Z, Cmd+Shift+Z)
-- Limit history depth (e.g., 20 states)
-
-### 10. Progress Indicator for Long Operations
-
-**Problem:** Fill generation on complex shapes can take several seconds with no feedback.
-
-**Solution:**
-- Add progress bar for fill pattern generation
-- Use Web Workers for heavy computation
-- Show "Processing..." indicator (partially implemented with `isProcessing` state)
-
----
-
-## Performance Quick Wins
-
-### 11. Debounce Slider Changes
-
-**Problem:** Spacing, angle, and inset sliders trigger expensive recalculations on every change.
-
-**Solution:** Debounce slider handlers by 100-200ms:
+**Modify UnifiedLayerList:**
 ```typescript
-const debouncedSetSpacing = useMemo(
-  () => debounce(setSpacing, 150),
-  []
-);
+// Using @tanstack/react-virtual
+import { useVirtualizer } from '@tanstack/react-virtual'
+
+function UnifiedLayerList({ items, ... }) {
+  const parentRef = useRef<HTMLDivElement>(null)
+  const flatItems = useMemo(() => flattenItems(items), [items])
+
+  const virtualizer = useVirtualizer({
+    count: flatItems.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 28, // row height in px
+    overscan: 5, // render 5 extra items above/below viewport
+  })
+
+  return (
+    <div ref={parentRef} style={{ height: '100%', overflow: 'auto' }}>
+      <div style={{ height: virtualizer.getTotalSize() }}>
+        {virtualizer.getVirtualItems().map(virtualRow => (
+          <div
+            key={virtualRow.key}
+            style={{
+              position: 'absolute',
+              top: 0,
+              transform: `translateY(${virtualRow.start}px)`,
+              height: virtualRow.size,
+            }}
+          >
+            {renderItem(flatItems[virtualRow.index])}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
 ```
 
-### 12. Lazy Load Tabs
+**Challenges:**
+- Tree expand/collapse changes list length dynamically
+- Drag-drop needs adjustment for virtual items
+- Keyboard navigation (arrow keys) must scroll to focused item
 
-**Problem:** All tab components render even when not visible.
+---
 
-**Solution:** Only render active tab component:
+## 4. Undo/Redo Support
+
+**Status:** PENDING
+**Priority:** High
+**Effort:** 6-8 hours
+
+### Problem
+No way to undo changes like fill application, layer deletion, or color changes.
+
+### Current State
+- No history/undo system exists
+- State is in multiple contexts: SVGContext, LayerContext, FillContext
+- Main state to track: `layerNodes` tree and `svgContent`
+
+### Implementation Options
+
+**Option A: Simple snapshot stack**
+```typescript
+// src/hooks/useHistory.ts
+interface HistoryState {
+  layerNodes: SVGNode[]
+  svgContent: string
+  timestamp: number
+}
+
+function useHistory(maxHistory = 20) {
+  const [past, setPast] = useState<HistoryState[]>([])
+  const [future, setFuture] = useState<HistoryState[]>([])
+
+  const pushState = useCallback((state: HistoryState) => {
+    setPast(prev => [...prev.slice(-maxHistory + 1), state])
+    setFuture([]) // clear redo stack on new action
+  }, [maxHistory])
+
+  const undo = useCallback(() => {
+    if (past.length === 0) return null
+    const prev = past[past.length - 1]
+    setPast(p => p.slice(0, -1))
+    setFuture(f => [currentState, ...f])
+    return prev
+  }, [past, currentState])
+
+  const redo = useCallback(() => {
+    if (future.length === 0) return null
+    const next = future[0]
+    setFuture(f => f.slice(1))
+    setPast(p => [...p, currentState])
+    return next
+  }, [future, currentState])
+
+  return { pushState, undo, redo, canUndo: past.length > 0, canRedo: future.length > 0 }
+}
+```
+
+**Option B: Use Immer + patches for efficient diffs**
+```bash
+npm install immer use-immer
+```
+
+**Keyboard shortcuts to add:**
+- `Cmd+Z` / `Ctrl+Z` - Undo
+- `Cmd+Shift+Z` / `Ctrl+Y` - Redo
+
+**Integration points:**
+- Wrap state-changing operations with `pushState()` call
+- Add undo/redo buttons to header
+- Show undo stack count in status bar (optional)
+
+---
+
+## 5. Error Boundaries
+
+**Status:** PENDING
+**Priority:** Medium
+**Effort:** 2 hours
+
+### Problem
+JavaScript errors crash the entire app. No graceful error handling.
+
+### Current State
+- No error boundaries exist
+- No error boundary component
+
+### Implementation
+
+**Create component:**
+```typescript
+// src/components/ErrorBoundary.tsx
+import { Component, ErrorInfo, ReactNode } from 'react'
+
+interface Props {
+  children: ReactNode
+  fallback?: ReactNode
+  onError?: (error: Error, errorInfo: ErrorInfo) => void
+}
+
+interface State {
+  hasError: boolean
+  error?: Error
+}
+
+export class ErrorBoundary extends Component<Props, State> {
+  state: State = { hasError: false }
+
+  static getDerivedStateFromError(error: Error): State {
+    return { hasError: true, error }
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('ErrorBoundary caught:', error, errorInfo)
+    this.props.onError?.(error, errorInfo)
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return this.props.fallback || (
+        <div className="error-boundary-fallback">
+          <h2>Something went wrong</h2>
+          <p>{this.state.error?.message}</p>
+          <button onClick={() => this.setState({ hasError: false })}>
+            Try Again
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+```
+
+**Wrap tabs in App.tsx:**
 ```tsx
-{activeTab === 'fill' && <FillTab />}
-{activeTab === 'sort' && <SortTab />}
-// etc.
+<ErrorBoundary fallback={<div>Tab failed to load</div>}>
+  <Suspense fallback={<div>Loading...</div>}>
+    {activeTab === 'sort' && <SortTab />}
+  </Suspense>
+</ErrorBoundary>
 ```
 
-### 13. Optimize Color Extraction
+---
 
-**Problem:** `extractColors()` in LayerTree is called for every node on every render.
+## 6. Test Coverage
 
-**Solution:**
-- Cache color extraction results on the node object
-- Only recalculate when element attributes change
+**Status:** PENDING
+**Priority:** Low (but valuable)
+**Effort:** 8+ hours initial setup
+
+### Problem
+No tests exist. No test framework installed.
+
+### Current State
+- No `__tests__` directory
+- No test files (`*.test.ts`, `*.spec.ts`)
+- No Jest/Vitest in devDependencies
+- No test scripts in package.json
+
+### Implementation
+
+**Install Vitest (recommended for Vite projects):**
+```bash
+npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom
+```
+
+**Add to package.json:**
+```json
+{
+  "scripts": {
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest --coverage"
+  }
+}
+```
+
+**Create vitest.config.ts:**
+```typescript
+import { defineConfig } from 'vitest/config'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.ts',
+  },
+})
+```
+
+**Priority test targets:**
+1. `src/utils/geometry/*.ts` - Pure functions, easy to test
+2. `src/utils/pathSimplify.ts` - Critical for file size
+3. `src/utils/colorDistance/*.ts` - Color clustering logic
+4. Custom hooks - `useFillGeneration`, `useCropHandler`
+
+**Example test:**
+```typescript
+// src/utils/geometry/__tests__/math.test.ts
+import { describe, it, expect } from 'vitest'
+import { distance, lerp } from '../math'
+
+describe('geometry/math', () => {
+  it('calculates distance between points', () => {
+    expect(distance({ x: 0, y: 0 }, { x: 3, y: 4 })).toBe(5)
+  })
+
+  it('lerps between values', () => {
+    expect(lerp(0, 10, 0.5)).toBe(5)
+    expect(lerp(0, 10, 0)).toBe(0)
+    expect(lerp(0, 10, 1)).toBe(10)
+  })
+})
+```
 
 ---
 
-## Technical Debt
+## Completed Enhancements (Reference)
 
-### 14. TypeScript Strictness
+### Path Simplification
+**Status:** DONE
+**Location:** `src/utils/pathSimplify.ts`
 
-Some type safety improvements:
-- Add explicit return types to all functions
-- Remove `any` types where possible
-- Enable `strictNullChecks` if not already
+Fully implemented with:
+- Ramer-Douglas-Peucker via simplify-js
+- Presets: minimal (0.1), light (0.5), moderate (1.0), aggressive (2.0), extreme (5.0)
+- H/V command optimization in `pointsToOptimizedPathData()`
+- Group simplification via `simplifyGroup()`
 
-### 15. Test Coverage
+### Path Command Optimization
+**Status:** DONE
+**Location:** `src/utils/pathSimplify.ts:55-98`
 
-Currently no tests. Consider adding:
-- Unit tests for geometry utilities
-- Unit tests for color extraction
-- Integration tests for fill pattern generation
+`pointsToOptimizedPathData()` already converts:
+- `L x,y` to `H x` for horizontal lines
+- `L x,y` to `V y` for vertical lines
+- Removes redundant spaces
 
-### 16. Error Boundaries
+### Code Deduplication
+**Status:** DONE (Dec 2024)
 
-Add React error boundaries to prevent full app crashes:
-- Wrap each tab in an error boundary
-- Show user-friendly error messages
-- Allow recovery without reload
+Removed ~2,660 lines per RAT-KING-REFACTOR.md:
+- Deleted `fillWorker.ts` (406 lines)
+- Gutted `fillPatterns.ts` (2,185 → 593 lines)
+- Removed duplicate geometry functions
+
+### Lazy Load Tabs
+**Status:** DONE
+
+React.lazy() implemented per NEXT_SESSION.md code splitting section.
+
+### Crop Functionality
+**Status:** DONE
+**Location:** `src/components/tabs/SortTab/hooks/useCropHandler.ts`
+
+### Memoization
+**Status:** DONE (Good coverage)
+
+125 useMemo/useCallback occurrences across 17 files.
 
 ---
 
-## Summary by Impact
+## Summary by Priority
 
-| Enhancement | File Size Impact | Performance | Complexity |
-|-------------|------------------|-------------|------------|
-| Path Simplification | High | N/A | Medium |
-| Decimal Precision | Medium | N/A | Low |
-| Code Deduplication | N/A | Low | Medium |
-| Memoization | N/A | Medium | Low |
-| Virtual Scrolling | N/A | High | High |
-| Crop Fix | N/A | N/A | Medium |
-| Undo/Redo | N/A | N/A | High |
+| Enhancement | Priority | Effort | Impact |
+|-------------|----------|--------|--------|
+| Debounce Sliders | High | 1 hr | Performance |
+| Undo/Redo | High | 6-8 hr | UX |
+| Coordinate Precision | Medium | 2-3 hr | File size |
+| Error Boundaries | Medium | 2 hr | Stability |
+| Virtual Scrolling | Medium | 4-6 hr | Performance |
+| Test Coverage | Low | 8+ hr | Maintainability |
 
 ---
 
-*Last updated: November 28, 2024*
+## Notes for Agents
+
+1. **Read before writing** - Always read existing code in the target area first
+2. **Check NEXT_SESSION.md** - Contains current architecture summary
+3. **Check ARCHITECTURE.md** - Has component/context relationships
+4. **Run build after changes** - `npm run build` catches TypeScript errors
+5. **Test manually** - No automated tests exist yet
