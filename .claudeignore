@@ -1,0 +1,3 @@
+# LLM context documentation - optimized for local LLMs with limited context
+# Claude can still read these files when explicitly asked
+llm-context/
