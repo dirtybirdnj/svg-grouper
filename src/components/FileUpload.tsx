@@ -6,9 +6,11 @@ interface FileUploadProps {
   onFileLoad: (content: string, fileName: string, dimensions?: { width: number; height: number }) => void
   onLoadStart?: () => void
   onProgress?: (progress: number, status: string) => void
+  onLoadError?: (error: string) => void
+  onLoadCancel?: () => void
 }
 
-export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: FileUploadProps) {
+export default function FileUpload({ onFileLoad, onLoadStart, onProgress, onLoadError, onLoadCancel }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingFile, setPendingFile] = useState<{ content: string; fileName: string } | null>(null)
@@ -41,10 +43,12 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
     reader.onload = (e) => {
       const content = e.target?.result as string
 
-      // Basic SVG validation
-      if (!content.includes('<svg')) {
-        setError('File does not appear to be a valid SVG')
-        onProgress?.(100, 'Error')
+      // Basic SVG validation - case insensitive, handles BOM/whitespace
+      const contentLower = content.toLowerCase()
+      if (!contentLower.includes('<svg')) {
+        const errorMsg = 'File does not appear to be a valid SVG (no <svg> tag found)'
+        setError(errorMsg)
+        onLoadError?.(errorMsg)
         return
       }
 
@@ -54,12 +58,13 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
     }
 
     reader.onerror = () => {
-      setError('Failed to read file')
-      onProgress?.(100, 'Error')
+      const errorMsg = 'Failed to read file'
+      setError(errorMsg)
+      onLoadError?.(errorMsg)
     }
 
     reader.readAsText(file)
-  }, [onFileLoad, onLoadStart, onProgress])
+  }, [onFileLoad, onLoadStart, onProgress, onLoadError])
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -109,7 +114,8 @@ export default function FileUpload({ onFileLoad, onLoadStart, onProgress }: File
 
   const handleImportCancel = useCallback(() => {
     setPendingFile(null)
-  }, [])
+    onLoadCancel?.()
+  }, [onLoadCancel])
 
   return (
     <div className="file-upload-container">

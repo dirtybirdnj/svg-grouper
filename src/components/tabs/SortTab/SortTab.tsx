@@ -249,10 +249,11 @@ export default function SortTab() {
       setLoadingState({
         isLoading: false,
         progress: 0,
-        status: 'Error parsing SVG',
+        status: '',
       })
+      setStatusMessage(`error:Failed to parse SVG: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
-  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, parsingRef, skipNextParse, setSelectedNodeIds, setLastSelectedNodeId, originalSvgAttrs, svgDimensions])
+  }, [handleProgress, setLayerNodes, setSvgDimensions, setLoadingState, setStatusMessage, parsingRef, skipNextParse, setSelectedNodeIds, setLastSelectedNodeId, originalSvgAttrs, svgDimensions, flattenOnImport, setPendingFlatten])
 
   const disarmActions = useCallback(() => {
     setDeleteArmed(false)
@@ -914,6 +915,13 @@ export default function SortTab() {
               onFileLoad={handleFileLoad}
               onLoadStart={handleLoadStart}
               onProgress={handleProgress}
+              onLoadError={(error) => {
+                setLoadingState({ isLoading: false, progress: 0, status: '' })
+                setStatusMessage(`error:${error}`)
+              }}
+              onLoadCancel={() => {
+                setLoadingState({ isLoading: false, progress: 0, status: '' })
+              }}
             />
           ) : (
             <SVGCanvas

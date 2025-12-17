@@ -1,240 +1,123 @@
-# Next Session: Codebase Modularization
+# Next Session: Bug Fixes & Error Handling
 
-## Completed This Session - Phase 4: Tab Modularization
+## Completed This Session
 
-### Tab Modularization Summary
-All four major tabs modularized into directory modules with extracted types, utilities, and hooks:
+### Bug Fixes
 
-| Tab | Before | After | Reduction | Files Created |
-|-----|--------|-------|-----------|---------------|
-| FillTab | 2363 | 1546 | -34.5% | types.ts, useFillState.ts, useFillPaths.ts, useFillGeneration.ts, useFillLayers.ts |
-| ExportTab | 1487 | 1176 | -20.9% | types.ts, svgAnalysis.ts, paperSizes.ts, usePageLayout.ts |
-| MergeTab | 1377 | 986 | -28.4% | types.ts, polygonUtils.ts, pathConversion.ts, booleanOperations.ts |
-| OrderTab | 838 | 648 | -22.7% | types.ts, lineOptimization.ts |
+**1. Image Upload Zoom Issue**
+- **Problem:** SVG appeared tiny on import, even at 1000% zoom still too small
+- **Cause:** Double-scaling - CSS `max-width: 90%` constrained SVG, then JS transform scaled it further
+- **Fix:** Removed CSS constraints in `SVGCanvas.css`, let transform handle all sizing
+- **Files:** `src/components/SVGCanvas.css`
 
-### FillTab Directory Structure
-```
-src/components/tabs/FillTab/
-├── types.ts                    # FillLayer, FillLayerListItem, ControlId
-├── hooks/
-│   ├── useFillState.ts         # ~40 consolidated state variables
-│   ├── useFillPaths.ts         # Target node & path extraction
-│   ├── useFillGeneration.ts    # IPC-based fill generation
-│   ├── useFillLayers.ts        # Layer CRUD operations
-│   └── index.ts
-├── FillTab.tsx
-├── FillTab.css
-└── index.ts
-```
+**2. SVG Dimension Mismatch**
+- **Problem:** Crop calculations were inaccurate due to SVG intrinsic size not matching `svgDimensions`
+- **Fix:** Added effect in SVGCanvas to set SVG width/height attributes to match `svgDimensions`
+- **Files:** `src/components/SVGCanvas.tsx`
 
-### ExportTab Directory Structure
-```
-src/components/tabs/ExportTab/
-├── types.ts            # PaperSize, ColorStats, SVGStatistics, PageLayout
-├── svgAnalysis.ts      # analyzeSVG, analyzeOptimizationState, formatBytes
-├── paperSizes.ts       # localStorage load/save utilities
-├── usePageLayout.ts    # Page dimension calculations
-├── ExportTab.tsx
-├── ExportTab.css
-└── index.ts
-```
+**3. Import Error Handling (Major)**
+- **Problem:** Loading overlay stuck at 100% showing "Error" with no details, no way to dismiss
+- **Root Cause:** `FileUpload.tsx` called `onProgress(100, 'Error')` on failure but never dismissed loading state
+- **Fix:** Added `onLoadError` and `onLoadCancel` callbacks to properly dismiss overlay and show errors
+- **Files:** `src/components/FileUpload.tsx`, `src/components/tabs/SortTab/SortTab.tsx`
 
-### MergeTab Directory Structure
-```
-src/components/tabs/MergeTab/
-├── types.ts              # PolygonData, MergeShapeListItem, UnionResult, BooleanResult
-├── polygonUtils.ts       # edgeKey, findTouchingShapes, unionPolygons
-├── pathConversion.ts     # pointsToPathD, polygonWithHolesToPathD, multiPolygonToPathD
-├── booleanOperations.ts  # performBooleanOperation, polygon-clipping wrappers
-├── MergeTab.tsx
-├── MergeTab.css
-└── index.ts
-```
+**4. SVG Validation Case Sensitivity**
+- **Problem:** SVG check `content.includes('<svg')` was case-sensitive
+- **Fix:** Made check case-insensitive with `content.toLowerCase().includes('<svg')`
+- **Files:** `src/components/FileUpload.tsx`
 
-### OrderTab Directory Structure
-```
-src/components/tabs/OrderTab/
-├── types.ts             # OrderedLine, LayerInfo, OrderLayerListItem
-├── lineOptimization.ts  # optimizeLinesByColor, optimizeLinesNearestNeighbor, optimizeLinesChunked
-├── OrderTab.tsx
-├── OrderTab.css
-└── index.ts
-```
+**5. Parse Error Visibility**
+- **Problem:** SVG parsing errors only logged to console, user saw nothing
+- **Fix:** Added status bar message for parse failures
+- **Files:** `src/components/tabs/SortTab/SortTab.tsx`
 
-### Shared Patterns Identified
-- **usePanZoom hook** - Used by FillTab, MergeTab, OrderTab with externalState pattern
-- **UnifiedLayerList** - Shared layer list component with configurable rendering
-- **StatSection/StatRow** - Consistent statistics display components
+### New Documentation
+
+**Project Charter Created** (`llm-context/PROJECT_CHARTER.md`)
+- Core mission: preparing vectors for pen plotter output
+- What matters vs what doesn't (viewBox is tolerated, not valued)
+- Decision framework for implementation choices
+- Technical principles for SVG handling
+- Anti-patterns to avoid
+
+### Files Changed
+```
+src/components/FileUpload.tsx        - Added onLoadError, onLoadCancel callbacks
+src/components/SVGCanvas.css         - Removed max-width/height constraints
+src/components/SVGCanvas.tsx         - Added dimension sync effect
+src/components/tabs/SortTab/SortTab.tsx - Connected error handlers, better error messages
+src/utils/cropSVG/cropSVG.ts         - Comment clarification
+llm-context/PROJECT_CHARTER.md       - NEW: Mission & decision framework
+llm-context/README.md                - Added PROJECT_CHARTER to table
+```
 
 ---
 
-## Previously Completed - Phase 3: Component Modularization
+## Known Issues
 
-### LayerTree.tsx Split (691 → 6 files)
-| File | Purpose |
-|------|---------|
-| `types.ts` | Interface definitions for drag/drop and props |
-| `nodeUtils.ts` | Helper functions for element type detection and path info |
-| `ColorPickerPopup.tsx` | Standalone color picker popup component |
-| `LayerNode.tsx` | Recursive tree node renderer |
-| `LayerTree.tsx` | Main tree component with drag/drop logic |
-| `index.ts` | Barrel exports |
+### Google Drive CloudStorage
+- **Problem:** Files in Google Drive CloudStorage are placeholders that Electron's FileReader can't access
+- **Error:** "Failed to read file" when importing from cloud-synced folders
+- **Workaround:** Copy files locally or use "Make Available Offline" in Finder
+- **Potential Fix:** Use Electron main process for file reading (bypasses sandbox)
 
-### PatternTest.tsx Split (1181 → 9 files)
-| File | Purpose |
-|------|---------|
-| `types.ts` | Interface definitions for test results and settings |
-| `constants.ts` | Pattern lists, thresholds, helper polygon functions |
-| `SliderInput.tsx` | Reusable slider+text input component |
-| `usePatternGenerator.ts` | Hook for IPC-based pattern generation |
-| `PatternGrid.tsx` | Grid display of pattern preview cells |
-| `TortureTestReport.tsx` | Results table for torture test |
-| `StressTestViewport.tsx` | Zoomable/pannable SVG viewport |
-| `PatternTest.tsx` | Main component orchestrating all features |
-| `index.ts` | Barrel exports |
-
-### SortTab.tsx Full Modularization (2562 → 1006 lines, 61% reduction)
-
-**Hooks Integrated (from previous session):**
-| Hook | Purpose |
-|------|---------|
-| `useNodeOperations` | visibility, isolation, delete, reorder |
-| `useColorOperations` | color change, group by color |
-| `useGroupOperations` | group/ungroup, flip order |
-| `usePathHighlight` | path highlighting and point markers |
-| `useFlattenOperations` | flatten all with color grouping |
-
-**New Hooks Created:**
-| Hook | Lines | Purpose |
-|------|-------|---------|
-| `useSortOperations` | ~400 | Sort by type/size, filter counts, extraction |
-| `usePathOperations` | ~200 | simplify paths, weld compound paths |
-| `useCropHandler` | ~180 | crop SVG with coordinate transformation |
-| `useKeyboardShortcuts` | ~130 | keyboard shortcuts for layer operations |
-
-**Bug Fixes Applied:**
-- Crop coordinate transformation: Fixed ruler padding offset causing misaligned crops
-- Fit to view: Added auto-fit when importing files to maximize display size
-
-**Total: 2562 lines → 1006 lines (61% reduction)**
+### Crop Functionality
+- Still needs testing after CSS changes
+- Coordinate transformation logic in `useCropHandler` may need adjustment
 
 ---
 
-## Previously Completed - Phase 2: Context Split + Code Splitting
+## Architecture Notes
 
-### AppContext Split (631 → 8 files)
-Split monolithic AppContext.tsx into domain-specific contexts:
+### Error Handling Pattern Established
+```typescript
+// FileUpload.tsx props
+interface FileUploadProps {
+  onFileLoad: (content, fileName, dimensions?) => void
+  onLoadStart?: () => void
+  onProgress?: (progress, status) => void
+  onLoadError?: (error: string) => void   // NEW - dismisses loading, shows error
+  onLoadCancel?: () => void               // NEW - dismisses loading on cancel
+}
+```
 
-| Context | Lines | Purpose |
-|---------|-------|---------|
-| `types.ts` | 60 | Shared type definitions |
-| `SVGContext.tsx` | 200 | SVG document state, rebuild, sync |
-| `LayerContext.tsx` | 70 | Layer tree, selection, O(1) node lookup |
-| `CanvasContext.tsx` | 45 | Viewport scale, offset, crop controls |
-| `ToolContext.tsx` | 95 | Active tool, fill settings, handlers |
-| `UIContext.tsx` | 115 | Tabs, loading, status, processing |
-| `FillContext.tsx` | 45 | Fill targets, weave state, order data |
-| `AppProvider.tsx` | 35 | Combined provider wrapper |
-| `index.ts` | 150 | Barrel exports + legacy useAppContext() |
-
-**Legacy compatibility**: `useAppContext()` shim combines all contexts for gradual migration.
-
-### Code Splitting Implementation
-Converted static tab imports to React.lazy() with dynamic imports:
-
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
-| Main bundle | 519 KB | 241 KB | **-54%** |
-
-Tab chunk sizes:
-- SortTab: 92 KB
-- FillTab: 50 KB
-- ExportTab: 40 KB
-- MergeTab: 23 KB
-- PatternTest: 17 KB
-- OrderTab: 13 KB
+### Status Message Convention
+```typescript
+// Prefix with 'error:' for red styling in status bar
+setStatusMessage('error:Failed to parse SVG: ' + error.message)
+setStatusMessage('Cropped to 200 × 300 px')  // Normal message
+```
 
 ---
 
-## Previously Completed - Phase 1: Utility Modularization
+## Previously Completed (Reference)
 
-Successfully modularized 6 large utility files into directory structures with barrel exports:
-
-| File | Before | After | Purpose |
-|------|--------|-------|---------|
-| `svgParser.ts` | 328 lines | 4 files | SVG parsing, node extraction |
-| `colorDistance.ts` | 563 lines | 6 files | LAB color space, clustering, palette ops |
-| `svgDimensions.ts` | 578 lines | 7 files | ViewBox, unit conversion, normalization |
-| `fillPatterns.ts` | 609 lines | 5 files | Line ordering, travel optimization |
-| `cropSVG.ts` | 689 lines | 7 files | Cohen-Sutherland clipping, element cropping |
-| `pathAnalysis.ts` | 389 lines | 5 files | Subpath parsing, winding direction, diagnostics |
-
-**Total: 3,156 lines → 34 focused files**
-
-### Directory Structure Created
-
-```
-src/utils/
-├── svgParser/
-│   ├── types.ts
-│   ├── elementParsing.ts
-│   ├── progressiveParser.ts
-│   └── index.ts
-├── colorDistance/
-│   ├── types.ts
-│   ├── colorConversion.ts
-│   ├── distanceMetrics.ts
-│   ├── clustering.ts
-│   ├── paletteOperations.ts
-│   └── index.ts
-├── svgDimensions/
-│   ├── types.ts
-│   ├── unitConversion.ts
-│   ├── viewBoxUtils.ts
-│   ├── dimensionAnalysis.ts
-│   ├── elementTransforms.ts
-│   ├── normalization.ts
-│   └── index.ts
-├── fillPatterns/
-│   ├── types.ts
-│   ├── shapeUtils.ts
-│   ├── lineJoining.ts
-│   ├── lineOptimization.ts
-│   └── index.ts
-├── cropSVG/
-│   ├── types.ts
-│   ├── pathParsing.ts
-│   ├── lineClipping.ts
-│   ├── elementIntersection.ts
-│   ├── elementClipping.ts
-│   ├── cropSVG.ts
-│   └── index.ts
-└── pathAnalysis/
-    ├── types.ts
-    ├── subpathParsing.ts
-    ├── geometryCalc.ts
-    ├── diagnostics.ts
-    └── index.ts
-```
+See sections below for prior session work on:
+- Phase 4: Tab Modularization (FillTab, ExportTab, MergeTab, OrderTab)
+- Phase 3: Component Modularization (LayerTree, PatternTest, SortTab)
+- Phase 2: Context Split + Code Splitting
+- Phase 1: Utility Modularization
 
 ---
 
 ## Remaining Work
 
-### Large Files That Could Still Be Modularized
-| File | Lines | Notes |
-|------|-------|-------|
-| `App.tsx` | 1023 | Main orchestration - could extract more hooks |
-| `SortTab.tsx` | ~1200 | Already has 5 hooks, but still large |
-| `SVGCanvas.tsx` | 320 | Reasonable size |
-| `ImportDialog.tsx` | 437 | Moderate |
-| `UnifiedLayerList.tsx` | 340 | Reasonable |
+### High Priority
+1. **Test zoom/crop fixes** with various SVG files
+2. **Better Google Drive handling** - detect cloud files, show helpful message
+3. **Error boundary** - wrap SVG rendering to catch crashes
 
-### Potential Future Improvements
-1. Extract more shared UI patterns into components
-2. Further split SortTab.tsx hooks
-3. Create unified color handling utilities
-4. Add more comprehensive type exports
+### Medium Priority
+1. Extract more hooks from `App.tsx` (1023 lines)
+2. Unified color handling utilities
+3. Better import dialog error states
+
+### Project Charter Questions (Awaiting User Input)
+1. Specific plotter hardware constraints?
+2. Fill hatching preferences (always convert vs preserve)?
+3. Multi-pen workflow details?
+4. Common SVG source tools?
+5. Definition of "clean" output?
 
 ---
 

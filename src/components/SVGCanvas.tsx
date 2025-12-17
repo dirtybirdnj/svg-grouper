@@ -64,6 +64,16 @@ export default function SVGCanvas({
     }
   }, [svgContent, svgElementRef])
 
+  // Ensure SVG element dimensions match svgDimensions for accurate scale calculations
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || !svgDimensions) return
+
+    // Set explicit width/height to match svgDimensions so intrinsic size matches expectations
+    svg.setAttribute('width', String(svgDimensions.width))
+    svg.setAttribute('height', String(svgDimensions.height))
+  }, [svgDimensions])
+
   useEffect(() => {
     // Parse and notify parent of SVG element only once per content change
     if (containerRef.current && !parsedRef.current && currentContentRef.current) {

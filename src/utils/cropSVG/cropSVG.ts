@@ -82,7 +82,7 @@ export function cropSVGInBrowser(svgString: string, cropRect: Rect): string {
     processElement(child)
   }
 
-  // Update SVG dimensions
+  // Update SVG dimensions - elements are already translated to origin by clipElement
   svg.setAttribute('width', String(actualCropRect.width))
   svg.setAttribute('height', String(actualCropRect.height))
   svg.setAttribute('viewBox', `0 0 ${actualCropRect.width} ${actualCropRect.height}`)

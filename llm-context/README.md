@@ -16,7 +16,8 @@ This enables local LLMs to make useful recommendations for bug fixes, features, 
 
 | File | Purpose | When to Use |
 |------|---------|-------------|
-| `CODEBASE.md` | Project overview, structure, tech stack, dev commands | Start here for general orientation |
+| `PROJECT_CHARTER.md` | Core mission, decision framework, what matters | **Start here** - understand why the app exists |
+| `CODEBASE.md` | Project overview, structure, tech stack, dev commands | General orientation and dev setup |
 | `API.md` | Function signatures, parameters, return types | When working with specific modules |
 | `DATA_FORMATS.md` | Custom types, interfaces, data structures | When dealing with data transformations |
 | `ARCHITECTURE.md` | System design, data flow, component relationships | For architectural decisions |
